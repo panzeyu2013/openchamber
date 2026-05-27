@@ -333,6 +333,70 @@ export const isDesktopLocalOriginActive = (): boolean => {
   return Boolean(currentUrl && isLoopbackHost(currentUrl.hostname));
 };
 
+export const isDesktopLoopbackOrigin = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  if (!isTauriShell()) return false;
+  const currentUrl = parseUrl(window.location.origin);
+  return Boolean(currentUrl && isLoopbackHost(currentUrl.hostname));
+};
+
+let _remoteSshCache: { value: boolean; checkedAt: number } | null = null;
+const REMOTE_SSH_CACHE_TTL_MS = 10_000;
+
+export const isRemoteSshActive = (): boolean => {
+  if (typeof window === 'undefined') return false;
+  if (!isDesktopShell()) return false;
+  if (isDesktopLocalOriginActive()) return false;
+
+  if (_remoteSshCache && (Date.now() - _remoteSshCache.checkedAt) < REMOTE_SSH_CACHE_TTL_MS) {
+    return _remoteSshCache.value;
+  }
+
+  const currentUrl = parseUrl(window.location.origin);
+  if (!currentUrl || !isLoopbackHost(currentUrl.hostname)) {
+    _remoteSshCache = { value: false, checkedAt: Date.now() };
+    return false;
+  }
+
+  _remoteSshCache = { value: true, checkedAt: Date.now() };
+  return true;
+};
+
+export const isOpenInAppAvailable = (): boolean => {
+  if (!isTauriShell()) return false;
+  return isDesktopLocalOriginActive() || isRemoteSshActive();
+};
+
+export type SshContext = {
+  host: string;
+  port: number;
+  instanceId: string;
+};
+
+export const getActiveSshContext = async (): Promise<SshContext | null> => {
+  if (!isRemoteSshActive()) return null;
+
+  try {
+    const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
+    const result = await tauri?.core?.invoke?.('desktop_get_active_ssh_info', {
+      origin: window.location.origin,
+    });
+    if (result && typeof result === 'object') {
+      const ctx = result as { host?: string; port?: number; instanceId?: string };
+      if (typeof ctx.host === 'string' && ctx.host.length > 0) {
+        return {
+          host: ctx.host,
+          port: typeof ctx.port === 'number' ? ctx.port : 22,
+          instanceId: typeof ctx.instanceId === 'string' ? ctx.instanceId : '',
+        };
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+};
+
 export const isDesktopShell = (): boolean => {
   if (typeof window === 'undefined') return false;
   return isTauriShell() || isElectronShell();
@@ -719,8 +783,72 @@ export const openDesktopFileInApp = async (
   }
 };
 
+export const openDesktopRemoteProjectInApp = async (
+  projectPath: string,
+  appId: string,
+  appName: string,
+): Promise<boolean> => {
+  if (!isRemoteSshActive()) {
+    return false;
+  }
+
+  const trimmedProjectPath = projectPath?.trim();
+  const trimmedAppId = appId?.trim();
+  const trimmedAppName = appName?.trim();
+
+  if (!trimmedProjectPath || !trimmedAppId || !trimmedAppName) {
+    return false;
+  }
+
+  try {
+    const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
+    await tauri?.core?.invoke?.('desktop_open_remote_in_app', {
+      projectPath: trimmedProjectPath,
+      appId: trimmedAppId,
+      appName: trimmedAppName,
+      origin: window.location.origin,
+    });
+    return true;
+  } catch (error) {
+    console.warn('Failed to open remote project in app', error);
+    return false;
+  }
+};
+
+export const openDesktopRemoteFileInApp = async (
+  filePath: string,
+  appId: string,
+  appName: string,
+): Promise<boolean> => {
+  if (!isRemoteSshActive()) {
+    return false;
+  }
+
+  const trimmedFilePath = filePath?.trim();
+  const trimmedAppId = appId?.trim();
+  const trimmedAppName = appName?.trim();
+
+  if (!trimmedFilePath || !trimmedAppId || !trimmedAppName) {
+    return false;
+  }
+
+  try {
+    const tauri = (window as unknown as { __TAURI__?: TauriGlobal }).__TAURI__;
+    await tauri?.core?.invoke?.('desktop_open_remote_file_in_app', {
+      filePath: trimmedFilePath,
+      appId: trimmedAppId,
+      appName: trimmedAppName,
+      origin: window.location.origin,
+    });
+    return true;
+  } catch (error) {
+    console.warn('Failed to open remote file in app', error);
+    return false;
+  }
+};
+
 export const filterInstalledDesktopApps = async (apps: string[]): Promise<string[]> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isDesktopLoopbackOrigin()) {
     return [];
   }
 
@@ -742,7 +870,7 @@ export const filterInstalledDesktopApps = async (apps: string[]): Promise<string
 };
 
 export const fetchDesktopAppIcons = async (apps: string[]): Promise<Record<string, string>> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isDesktopLoopbackOrigin()) {
     return {};
   }
 
@@ -789,7 +917,7 @@ export const fetchDesktopInstalledApps = async (
   apps: string[],
   force?: boolean
 ): Promise<FetchDesktopInstalledAppsResult> => {
-  if (!isTauriShell() || !isDesktopLocalOriginActive()) {
+  if (!isDesktopLoopbackOrigin()) {
     return { apps: [], success: false, hasCache: false, isCacheStale: false };
   }
 

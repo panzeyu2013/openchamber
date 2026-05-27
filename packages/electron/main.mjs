@@ -2132,6 +2132,100 @@ const buildOpenFileSpecs = ({ filePath, appId, appName }) => {
   return specs;
 };
 
+const buildOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) => {
+  const specs = [];
+  const cli = CLI_BY_APP_ID[appId];
+  if (cli) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    specs.push({ program: cli, args: ['--remote', remoteTarget, '--new-window', projectPath] });
+    const vscodeUri = `vscode://vscode-remote/${remoteTarget}${projectPath}`;
+    specs.push({ program: 'open', args: [vscodeUri] });
+  }
+  specs.push({ program: 'open', args: ['-a', appName, projectPath] });
+  return specs;
+};
+
+const buildOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
+  const specs = [];
+  const cli = CLI_BY_APP_ID[appId];
+  if (cli) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    specs.push({ program: cli, args: ['--remote', remoteTarget, '--goto', filePath] });
+    const vscodeUri = `vscode://vscode-remote/${remoteTarget}${filePath}`;
+    specs.push({ program: 'open', args: [vscodeUri] });
+  }
+  specs.push({ program: 'open', args: ['-a', appName, filePath] });
+  return specs;
+};
+
+const buildWindowsOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) => {
+  const specs = [];
+  const cli = WINDOWS_CLI_BY_APP_ID[appId];
+  if (cli) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    const resolvedCli = runWhere(cli);
+    if (resolvedCli) {
+      specs.push({ program: resolvedCli, args: ['--remote', remoteTarget, '--new-window', projectPath] });
+    }
+  }
+  const exe = findWindowsExecutable(appId);
+  if (exe) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    specs.push({ program: exe, args: ['--remote', remoteTarget, '--new-window', projectPath] });
+  }
+  return specs;
+};
+
+const buildWindowsOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
+  const specs = [];
+  const cli = WINDOWS_CLI_BY_APP_ID[appId];
+  if (cli) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    const resolvedCli = runWhere(cli);
+    if (resolvedCli) {
+      specs.push({ program: resolvedCli, args: ['--remote', remoteTarget, '--goto', filePath] });
+    }
+  }
+  const exe = findWindowsExecutable(appId);
+  if (exe) {
+    const remoteTarget = `ssh-remote+${sshInfo.host}`;
+    specs.push({ program: exe, args: ['--remote', remoteTarget, '--goto', filePath] });
+  }
+  return specs;
+};
+
+const getSshInfoByOrigin = (requestOrigin) => {
+  const instances = sshManager.readInstances().instances;
+  const hostsConfig = readDesktopHostsConfig();
+  const hosts = hostsConfig.hosts || [];
+
+  for (const instance of instances) {
+    const hostEntry = hosts.find((h) => h.id === instance.id);
+    if (!hostEntry) continue;
+
+    let hostOrigin = '';
+    try { hostOrigin = new URL(hostEntry.url).origin; } catch {}
+
+    if (hostOrigin !== requestOrigin) continue;
+
+    const status = sshManager.statuses.get(instance.id);
+    if (status?.phase !== 'ready') continue;
+
+    const session = sshManager.sessions.get(instance.id);
+    const parsed = instance.sshParsed || session?.parsed;
+    if (!parsed) continue;
+
+    const portArgIndex = parsed.args.findIndex((a) => a === '-p');
+    const port = portArgIndex >= 0 && portArgIndex + 1 < parsed.args.length
+      ? parseInt(parsed.args[portArgIndex + 1], 10) || 22
+      : 22;
+
+    return { host: parsed.destination, port, instanceId: instance.id };
+  }
+
+  return null;
+};
+
 const quoteWindowsCommandArg = (value) => `"${String(value).replace(/"/g, '""')}"`;
 
 const resolveWindowsLaunchProgram = (program) => {
@@ -2446,6 +2540,59 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         throw new Error('desktop_open_file_in_app is only supported on macOS and Windows');
       }
       runSpecChain(buildOpenFileSpecs({ filePath, appId, appName }), appName);
+      return null;
+    }
+
+    case 'desktop_get_active_ssh_info': {
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
+      if (!requestOrigin) return null;
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      return sshInfo || null;
+    }
+
+    case 'desktop_open_remote_in_app': {
+      const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
+      const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
+      const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
+      if (!projectPath || !appId || !appName || !requestOrigin) {
+        throw new Error('Project path, app id, app name, and origin are required');
+      }
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      if (!sshInfo) {
+        throw new Error('SSH connection info not available');
+      }
+      if (process.platform === 'win32') {
+        runSpecChain(buildWindowsOpenRemoteProjectSpecs({ projectPath, appId, appName, sshInfo }), appName);
+        return null;
+      }
+      if (process.platform !== 'darwin') {
+        throw new Error('desktop_open_remote_in_app is only supported on macOS and Windows');
+      }
+      runSpecChain(buildOpenRemoteProjectSpecs({ projectPath, appId, appName, sshInfo }), appName);
+      return null;
+    }
+
+    case 'desktop_open_remote_file_in_app': {
+      const filePath = typeof args.filePath === 'string' ? args.filePath.trim() : '';
+      const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
+      const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
+      if (!filePath || !appId || !appName || !requestOrigin) {
+        throw new Error('File path, app id, app name, and origin are required');
+      }
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      if (!sshInfo) {
+        throw new Error('SSH connection info not available');
+      }
+      if (process.platform === 'win32') {
+        runSpecChain(buildWindowsOpenRemoteFileSpecs({ filePath, appId, appName, sshInfo }), appName);
+        return null;
+      }
+      if (process.platform !== 'darwin') {
+        throw new Error('desktop_open_remote_file_in_app is only supported on macOS and Windows');
+      }
+      runSpecChain(buildOpenRemoteFileSpecs({ filePath, appId, appName, sshInfo }), appName);
       return null;
     }
 
