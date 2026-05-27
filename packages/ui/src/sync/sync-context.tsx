@@ -34,6 +34,10 @@ import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
 import { toast } from "@/components/ui"
 import { appendNotification } from "./notification-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
+import type { ServerTagged } from "./server-tagged"
+import { unwrapServerEvent } from "./server-tagged"
+import { useServerStore, useInitServerExistsValidator } from "./server-context"
+import { useDirectoryStore as useDirStore } from "@/stores/useDirectoryStore"
 import type { State } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 import type { PermissionRequest } from "@/types/permission"
@@ -49,6 +53,10 @@ import { listGlobalSessionPages } from "@/stores/globalSessions"
 import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests } from "./scoped-blocking-requests"
 import { EMPTY_USER_MESSAGE_HISTORY_SNAPSHOT, buildUserMessageHistorySnapshot, type UserMessageHistorySnapshot } from "./user-message-history"
+
+const _unknownServerWarned = new Set<string>()
+const _unknownServerWarnTimes = new Map<string, number>()
+let _missingServerIdWarned = 0
 
 // ---------------------------------------------------------------------------
 // Context
@@ -104,7 +112,7 @@ function useSyncSystem() {
 }
 
 function getLiveStates(childStores: ChildStoreManager): State[] {
-  return Array.from(childStores.children.values(), (store) => store.getState())
+  return childStores.getAllStores().map((store) => store.getState())
 }
 
 function useLiveSyncSelector<T>(selector: (states: State[]) => T, isEqual: (left: T, right: T) => boolean = Object.is): T {
@@ -214,7 +222,7 @@ function enqueueSessionMaterialization(directory: string, sessionID: string, chi
 
   // Defer to next microtask so we don't hold up the current event batch
   void Promise.resolve().then(async () => {
-    const store = childStores.getChild(directory)
+    const store = childStores.findChildByDirectory(directory)
     if (!store) {
       pendingSessionMaterializations.delete(k)
       return
@@ -416,6 +424,11 @@ function toSessionStatus(status: Awaited<ReturnType<typeof opencodeClient.getSes
     }
   }
   return undefined
+}
+
+function isStreamHeartbeatEvent(payload: Event): boolean {
+  const type = (payload as { type?: unknown }).type
+  return type === "server.heartbeat" || type === "openchamber:heartbeat"
 }
 
 function getActiveSessionCandidateIds(directory: string, state: DirectoryStore): string[] {
@@ -845,7 +858,7 @@ const findSessionInChildStores = (
   childStores: ChildStoreManager,
   routingIndex: EventRoutingIndex,
 ): string | null => {
-  for (const [dir, store] of childStores.children) {
+  for (const { directory: dir, store } of childStores.getAllEntries()) {
     const state = store.getState()
     if (
       state.session.some((s) => s.id === sessionID)
@@ -865,7 +878,7 @@ const childStoreHasSessionState = (
   directory: string,
   sessionID: string,
 ): boolean => {
-  const store = childStores.getChild(directory)
+  const store = childStores.findChildByDirectory(directory)
   if (!store) return false
   const state = store.getState()
   return state.session.some((session) => session.id === sessionID)
@@ -878,7 +891,7 @@ const childStoreHasMessagePartState = (
   directory: string,
   messageID: string,
 ): boolean => {
-  const store = childStores.getChild(directory)
+  const store = childStores.findChildByDirectory(directory)
   if (!store) return false
   return Object.prototype.hasOwnProperty.call(store.getState().part, messageID)
 }
@@ -899,7 +912,7 @@ const resolveDirectoryFromRoutingIndex = (
     }
 
     const indexedDirectory = routingIndex.sessionDirectoryById.get(sessionID)
-    if (indexedDirectory && childStores.getChild(indexedDirectory)) {
+    if (indexedDirectory && childStores.findChildByDirectory(indexedDirectory)) {
       return indexedDirectory
     }
 
@@ -920,13 +933,13 @@ const resolveDirectoryFromRoutingIndex = (
     const sessionFromMessage = routingIndex.messageSessionById.get(messageID)
     if (sessionFromMessage) {
       const indexedDirectory = routingIndex.sessionDirectoryById.get(sessionFromMessage)
-      if (indexedDirectory && childStores.getChild(indexedDirectory)) {
+      if (indexedDirectory && childStores.findChildByDirectory(indexedDirectory)) {
         return indexedDirectory
       }
     }
 
     // Scan child stores for a store that has parts for this message
-    for (const [dir, store] of childStores.children) {
+    for (const { directory: dir, store } of childStores.getAllEntries()) {
       if (Object.prototype.hasOwnProperty.call(store.getState().part, messageID)) {
         return dir
       }
@@ -937,9 +950,9 @@ const resolveDirectoryFromRoutingIndex = (
   if (
     (sessionID || messageID)
     && (!normalizedDirectory || normalizedDirectory === "global")
-    && childStores.children.size === 1
+    && childStores.getAllEntries().length === 1
   ) {
-    const onlyDirectory = childStores.children.keys().next().value
+    const onlyDirectory = childStores.getAllEntries()[0]?.directory
     if (typeof onlyDirectory === "string" && onlyDirectory.length > 0) {
       return onlyDirectory
     }
@@ -1280,10 +1293,21 @@ async function resyncDirectoryAfterReconnect(
 
 function handleEvent(
   rawDirectory: string,
-  payload: Event,
+  rawPayload: ServerTagged<Event>,
   childStores: ChildStoreManager,
   routingIndex: EventRoutingIndex,
 ) {
+  let serverId: string
+  let payload: Event
+  try {
+    const result = unwrapServerEvent(rawPayload)
+    serverId = result.serverId
+    payload = result.event
+  } catch (err) {
+    console.error('[handleEvent] Failed to unwrap server-tagged event:', (err as { message?: string })?.message || err)
+    return
+  }
+
   const directory = resolveDirectoryFromRoutingIndex(routingIndex, rawDirectory, payload, childStores)
 
   if (handleUiNotificationEvent(payload, directory)) {
@@ -1312,17 +1336,27 @@ function handleEvent(
       useGlobalSyncStore.setState({
         projects: applyGlobalProject(current, result.project).projects,
       })
+    } else if (result.type === "server.status") {
+      const state = useServerStore.getState()
+      const existing = state.servers.find((s) => s.id === serverId)
+      if (!existing) return
+      state.upsertServer({
+        ...existing,
+        status: result.status,
+        errorMessage: "errorMessage" in result ? (result as { errorMessage?: string }).errorMessage : existing.errorMessage,
+      })
     }
     // On server.connected / global.disposed, re-bootstrap all directories
     // but only if not during recent boot
     if (payload.type === "server.connected" || payload.type === "global.disposed") {
       if (!recent) {
-        for (const dir of childStores.children.keys()) {
-          const store = childStores.getChild(dir)
+        const entries = childStores.getAllEntries()
+        for (const { serverId: sId, directory: dir, store } of entries) {
+          if (payload.type === "server.connected" && sId !== serverId) continue
           if (store && store.getState().status !== "loading") {
             // Mark as loading to trigger re-bootstrap
             store.setState({ status: "loading" as const })
-            childStores.ensureChild(dir)
+            childStores.getOrCreateChildStore(sId, dir)
           }
         }
       }
@@ -1331,7 +1365,7 @@ function handleEvent(
   }
 
   // Directory events
-  let store = childStores.getChild(directory)
+  let store = childStores.getChildByServer(serverId, directory)
   let resolvedDirectory = directory
 
   if (!store) {
@@ -1342,7 +1376,7 @@ function handleEvent(
     if (sessionID) {
       const fallbackDir = findSessionInChildStores(sessionID, childStores, routingIndex)
       if (fallbackDir) {
-        store = childStores.getChild(fallbackDir)
+        store = childStores.getChildByServer(serverId, fallbackDir)
         resolvedDirectory = fallbackDir
       }
     }
@@ -1362,7 +1396,7 @@ function handleEvent(
     return
   }
 
-  childStores.mark(resolvedDirectory)
+  childStores.mark(serverId, resolvedDirectory)
 
   if (payload.type === "permission.asked") {
     const permission = payload.properties as PermissionRequest
@@ -1592,6 +1626,8 @@ export function SyncProvider(props: {
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
   const routingIndex = routingIndexRef.current
   const lastStreamActivityAtRef = useRef(0)
+  useInitServerExistsValidator()
+  const lastActiveEventAtByDirectoryRef = useRef(new Map<string, number>())
   const lastStatusPollAtByDirectoryRef = useRef(new Map<string, number>())
   const lastFullResyncAtByDirectoryRef = useRef(new Map<string, number>())
   const lastChildDiscoveryAtByDirectoryRef = useRef(new Map<string, number>())
@@ -1608,8 +1644,9 @@ export function SyncProvider(props: {
     [childStores, props.sdk, props.directory],
   )
 
-  const triggerDirectoryResync = useCallback((directory: string) => {
-    const store = childStores.children.get(directory)
+  const triggerDirectoryResync = useCallback((directory: string, serverId?: string) => {
+    const effectiveServerId = serverId ?? "local"
+    const store = childStores.getChildByServer(effectiveServerId, directory)
     if (!store) return
     const resyncing = resyncingDirectoriesRef.current
     if (resyncing.has(directory)) return
@@ -1634,7 +1671,7 @@ export function SyncProvider(props: {
         if (bootingDirs.has(directory)) return
         bootingDirs.add(directory)
 
-        const store = childStores.getChild(directory)
+        const store = childStores.findChildByDirectory(directory)
         if (!store) return
 
         const runBootstrap = async (attempt: number) => {
@@ -1782,6 +1819,33 @@ export function SyncProvider(props: {
         // heartbeats here caused issue #1656: the stale timer fired for any
         // quiet session, triggering redundant full resyncs every ~15s.
         lastStreamActivityAtRef.current = Date.now()
+
+        const eventServerId: string = typeof (payload as Record<string, unknown>).serverId === 'string'
+          ? (payload as Record<string, unknown>).serverId as string
+          : 'local'
+
+        if (!(payload as Record<string, unknown>).serverId && !isStreamHeartbeatEvent(payload)) {
+          if (!_missingServerIdWarned || Date.now() - _missingServerIdWarned > 30_000) {
+            console.warn('[SyncProvider] Event missing serverId, defaulting to "local":', (payload as Record<string, unknown>).type)
+            _missingServerIdWarned = Date.now()
+          }
+        }
+
+        if (eventServerId !== 'local') {
+          const servers = useServerStore.getState().servers
+          if (!servers.some((s) => s.id === eventServerId)) {
+            if (!_unknownServerWarned.has(eventServerId) || Date.now() - (_unknownServerWarnTimes.get(eventServerId) ?? 0) > 30_000) {
+              console.warn(`[SyncProvider] Ignoring event from unknown server '${eventServerId}'`)
+              _unknownServerWarned.add(eventServerId)
+              _unknownServerWarnTimes.set(eventServerId, Date.now())
+            }
+            return
+          }
+        }
+
+        if (!isStreamHeartbeatEvent(payload)) {
+          lastActiveEventAtByDirectoryRef.current.set(`${eventServerId}\x00${directory}`, Date.now())
+        }
         dispatchVSCodeRuntimeNotificationEvent(directory, payload)
         if (payload.type === "installation.update-available") {
           const version = typeof (payload.properties as { version?: unknown })?.version === "string"
@@ -1791,7 +1855,8 @@ export function SyncProvider(props: {
             dispatchOpenCodeUpdateAvailable({ version })
           }
         }
-        handleEvent(directory, payload, childStores, routingIndex)
+        const taggedPayload: ServerTagged<Event> = { ...payload, serverId: eventServerId }
+        handleEvent(directory, taggedPayload, childStores, routingIndex)
       },
       onReconnect: () => {
         useConfigStore.setState({
@@ -1802,8 +1867,8 @@ export function SyncProvider(props: {
         if (isRecentBoot()) {
           return
         }
-        for (const dir of childStores.children.keys()) {
-          triggerDirectoryResync(dir)
+        for (const { serverId: sId, directory: dir } of childStores.getAllEntries()) {
+          triggerDirectoryResync(dir, sId)
         }
       },
       onDisconnect: (reason) => {
@@ -1822,7 +1887,7 @@ export function SyncProvider(props: {
           hasEverConnected: true,
           connectionPhase: "connected",
         })
-        for (const dir of childStores.children.keys()) {
+        for (const { directory: dir } of childStores.getAllEntries()) {
           triggerDirectoryResync(dir)
         }
       },
@@ -1917,7 +1982,7 @@ export function SyncProvider(props: {
         .then(() => {
           if (stopped) return
           const now = Date.now()
-          for (const [directory, store] of childStores.children.entries()) {
+          for (const { directory, store } of childStores.getAllEntries()) {
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
@@ -2013,7 +2078,8 @@ export function SyncProvider(props: {
   // Subscribe to child store for streaming state derivation
   useEffect(() => {
     if (!props.directory) return
-    const store = childStores.getChild(props.directory)
+    const serverId = useDirStore.getState().currentServerId ?? "local"
+    const store = childStores.getOrCreateChildStore(serverId, props.directory)
     if (!store) return
     updateStreamingState(store.getState())
     const unsubscribe = store.subscribe((state) => {
@@ -2206,7 +2272,7 @@ export function useSession(sessionID?: string | null, directory?: string) {
   const { childStores } = useSyncSystem()
   const getSnapshot = useCallback(() => {
     if (directory) {
-      return childStores.getChild(directory)?.getState().session.find((session) => session.id === sessionID)
+      return childStores.findChildByDirectory(directory)?.getState().session.find((session) => session.id === sessionID)
     }
     return findLiveSession(getLiveStates(childStores), sessionID)
   }, [childStores, directory, sessionID])
