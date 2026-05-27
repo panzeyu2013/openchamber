@@ -712,8 +712,8 @@ sseFanIn.onEvent((batch) => {
     if (tagged.type !== 'server.status') {
       maybeCacheSessionInfoFromEvent(tagged);
       void maybeSendPushForTrigger(tagged);
+      sessionRuntime.processOpenCodeSsePayload(tagged);
     }
-    sessionRuntime.processOpenCodeSsePayload(tagged);
     globalMessageStreamHub.feedEvent({ payload: tagged });
   }
 });

@@ -246,7 +246,7 @@ export class ChildStoreManager {
     const list = pickDirectoriesToEvict({
       stores: allKeys,
       state: this.lifecycle,
-      pins: new Set(allKeys.filter((k) => this.pins.get(k) ?? 0 > 0)),
+      pins: new Set(allKeys.filter((k) => (this.pins.get(k) ?? 0) > 0)),
       max: MAX_DIR_STORES,
       ttl: DIR_IDLE_TTL_MS,
       now: Date.now(),

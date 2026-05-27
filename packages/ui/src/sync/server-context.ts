@@ -149,6 +149,10 @@ export function useServerActions() {
           getSyncChildStores().removeAllForServer(id)
         } catch { /* childStores may not be initialized yet */ }
         useGlobalSessionsStore.getState().removeServerEntries(id)
+        const { currentServerId, setDirectory, currentDirectory } = useDirectoryStore.getState()
+        if (currentServerId === id) {
+          setDirectory(currentDirectory, { serverId: 'local' })
+        }
         setServers(useServerStore.getState().servers.filter((s) => s.id !== id))
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

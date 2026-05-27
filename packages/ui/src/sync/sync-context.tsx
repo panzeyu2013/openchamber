@@ -1150,7 +1150,9 @@ function handleEvent(
     // but only if not during recent boot
     if (payload.type === "server.connected" || payload.type === "global.disposed") {
       if (!recent) {
-        for (const { serverId: sId, directory: dir, store } of childStores.getAllEntries()) {
+        const entries = childStores.getAllEntries()
+        for (const { serverId: sId, directory: dir, store } of entries) {
+          if (payload.type === "server.connected" && sId !== serverId) continue
           if (store.getState().status !== "loading") {
             store.setState({ status: "loading" as const })
             childStores.getOrCreateChildStore(sId, dir)

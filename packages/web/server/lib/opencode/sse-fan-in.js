@@ -181,6 +181,7 @@ export class SseFanIn {
       for (const server of this.serverManager.listServers()) {
         if (server.status === 'connecting' || server.status === 'connected') {
           if (this.subscriptions.has(server.id)) continue;
+          if (!this.serverManager.getClient(server.id)) continue;
           const startedAt = this.subscribedAt.get(server.id);
           if (!startedAt) {
             this.subscribedAt.set(server.id, now);

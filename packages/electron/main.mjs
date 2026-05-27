@@ -342,15 +342,17 @@ const sshManager = new ElectronSshManager({
         serverId: detail.id,
         phase: detail.phase,
         localUrl: detail.localUrl || null,
-        status: detail.phase === 'ready' ? 'connected' : (detail.phase === 'error' || detail.phase === 'idle' ? 'disconnected' : 'connecting'),
+        status: detail.phase === 'ready' ? 'connected' : (detail.phase === 'error' ? 'error' : (detail.phase === 'idle' ? 'disconnected' : 'connecting')),
         detail: detail.detail || null,
       });
       const sm = state.serverHandle?.getServerManager?.();
       if (sm) {
         if (detail.phase === 'ready') {
           sm.updateStatus(detail.id, 'connected');
-        } else if (detail.phase === 'idle' || detail.phase === 'error') {
+        } else if (detail.phase === 'idle') {
           sm.updateStatus(detail.id, 'disconnected');
+        } else if (detail.phase === 'error') {
+          sm.updateStatus(detail.id, 'error', detail.detail || 'SSH error');
         }
       }
     }
