@@ -2132,14 +2132,22 @@ const buildOpenFileSpecs = ({ filePath, appId, appName }) => {
   return specs;
 };
 
+const REMOTE_URI_SCHEME_BY_APP_ID = {
+  vscode: 'vscode',
+  cursor: 'cursor',
+  vscodium: 'vscodium',
+  windsurf: 'windsurf',
+};
+
 const buildOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) => {
   const specs = [];
   const cli = CLI_BY_APP_ID[appId];
   if (cli) {
     const remoteTarget = `ssh-remote+${sshInfo.host}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--new-window', projectPath] });
-    const vscodeUri = `vscode://vscode-remote/${remoteTarget}${projectPath}`;
-    specs.push({ program: 'open', args: [vscodeUri] });
+    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
+    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${projectPath}`;
+    specs.push({ program: 'open', args: [deepLinkUri] });
   }
   specs.push({ program: 'open', args: ['-a', appName, projectPath] });
   return specs;
@@ -2151,8 +2159,9 @@ const buildOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
   if (cli) {
     const remoteTarget = `ssh-remote+${sshInfo.host}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--goto', filePath] });
-    const vscodeUri = `vscode://vscode-remote/${remoteTarget}${filePath}`;
-    specs.push({ program: 'open', args: [vscodeUri] });
+    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
+    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${filePath}`;
+    specs.push({ program: 'open', args: [deepLinkUri] });
   }
   specs.push({ program: 'open', args: ['-a', appName, filePath] });
   return specs;

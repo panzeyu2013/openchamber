@@ -93,7 +93,7 @@ export const OpenInAppButton = ({ directory, className }: OpenInAppButtonProps) 
     if (!isRemote) return availableApps;
     return availableApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);
-      return meta?.supportsRemote !== false;
+      return meta?.supportsRemote === true;
     });
   }, [availableApps, isRemote]);
 

@@ -843,7 +843,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     if (!isRemoteSshActive()) return openInApps;
     return openInApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);
-      return meta?.supportsRemote !== false;
+      return meta?.supportsRemote === true;
     });
   }, [openInApps]);
 
@@ -868,10 +868,8 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       if (openedRemotely) {
         return;
       }
-      const copied = await copyTextToClipboard(selectedFile.path);
-      if (copied.ok) {
-        toast.warning(t('openInApp.toast.remoteOpenFailed'));
-      }
+      await copyTextToClipboard(selectedFile.path);
+      toast.warning(t('openInApp.toast.remoteOpenFailed'));
       return;
     }
 
