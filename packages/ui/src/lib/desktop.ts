@@ -788,7 +788,7 @@ export const openDesktopRemoteProjectInApp = async (
   appId: string,
   appName: string,
 ): Promise<boolean> => {
-  if (!isRemoteSshActive()) {
+  if (!isTauriShell() || !isRemoteSshActive()) {
     return false;
   }
 
@@ -820,7 +820,7 @@ export const openDesktopRemoteFileInApp = async (
   appId: string,
   appName: string,
 ): Promise<boolean> => {
-  if (!isRemoteSshActive()) {
+  if (!isTauriShell() || !isRemoteSshActive()) {
     return false;
   }
 

@@ -840,6 +840,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const loadOpenInApps = useOpenInAppsStore((state) => state.loadInstalledApps);
 
   const displayableOpenInApps = React.useMemo(() => {
+    // isRemoteSshActive() not in deps — page origin is immutable within a lifecycle
     if (!isRemoteSshActive()) return openInApps;
     return openInApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);

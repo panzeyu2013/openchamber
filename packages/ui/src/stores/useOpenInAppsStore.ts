@@ -250,7 +250,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
         (app) => allowed.has(app.appName) || OPEN_IN_ALWAYS_AVAILABLE_APP_IDS.has(app.id)
       );
       const withIcons = filtered.map((app) => ({
-        ...app,
+        ...getPlatformOpenInApp(app),
         iconDataUrl: iconMap.get(app.appName),
       }));
 

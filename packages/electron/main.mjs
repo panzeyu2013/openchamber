@@ -2149,7 +2149,6 @@ const buildOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) =
     const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${projectPath}`;
     specs.push({ program: 'open', args: [deepLinkUri] });
   }
-  specs.push({ program: 'open', args: ['-a', appName, projectPath] });
   return specs;
 };
 
@@ -2163,7 +2162,6 @@ const buildOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
     const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${filePath}`;
     specs.push({ program: 'open', args: [deepLinkUri] });
   }
-  specs.push({ program: 'open', args: ['-a', appName, filePath] });
   return specs;
 };
 
@@ -2204,6 +2202,9 @@ const buildWindowsOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) 
 };
 
 const getSshInfoByOrigin = (requestOrigin) => {
+  // readInstances() returns raw JSON; sshParsed may be absent for
+  // instances that have never been connected. We fall back to the
+  // active session's parsed data, and skip entries with no parsed info.
   const instances = sshManager.readInstances().instances;
   const hostsConfig = readDesktopHostsConfig();
   const hosts = hostsConfig.hosts || [];
@@ -2222,12 +2223,18 @@ const getSshInfoByOrigin = (requestOrigin) => {
 
     const session = sshManager.sessions.get(instance.id);
     const parsed = instance.sshParsed || session?.parsed;
-    if (!parsed) continue;
+    if (!parsed || !parsed.destination) continue;
 
-    const portArgIndex = parsed.args.findIndex((a) => a === '-p');
-    const port = portArgIndex >= 0 && portArgIndex + 1 < parsed.args.length
-      ? parseInt(parsed.args[portArgIndex + 1], 10) || 22
-      : 22;
+    let port = 22;
+    const portFlagIndex = parsed.args.findIndex((a) => a === '-p' || a.startsWith('-p'));
+    if (portFlagIndex >= 0) {
+      const arg = parsed.args[portFlagIndex];
+      if (arg === '-p' && portFlagIndex + 1 < parsed.args.length) {
+        port = parseInt(parsed.args[portFlagIndex + 1], 10) || 22;
+      } else if (arg.startsWith('-p') && arg.length > 2) {
+        port = parseInt(arg.slice(2), 10) || 22;
+      }
+    }
 
     return { host: parsed.destination, port, instanceId: instance.id };
   }
@@ -3252,6 +3259,12 @@ const isLocalSender = (webContents) => {
   }
 };
 
+// desktop_open_remote_in_app, desktop_open_remote_file_in_app, and
+// desktop_get_active_ssh_info are intentionally NOT in this set. They
+// depend on isLocalSender() (loopback origin check) which naturally
+// allows SSH tunnel pages served on 127.0.0.1. Remote pages on non-
+// loopback origins cannot invoke these commands — they should not be
+// able to spawn local processes or query local SSH sessions.
 const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_hosts_get',
   'desktop_host_probe',
