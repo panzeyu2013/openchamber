@@ -10,7 +10,7 @@ import { toast } from '@/components/ui';
 import { Icon } from "@/components/icon/Icon";
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { cn } from '@/lib/utils';
-import { isOpenInAppAvailable, isRemoteSshActive, openDesktopPath, openDesktopProjectInApp, openDesktopRemoteProjectInApp } from '@/lib/desktop';
+import { isOpenInAppAvailable, subscribeRemoteSshActive, getRemoteSshSnapshot, openDesktopPath, openDesktopProjectInApp, openDesktopRemoteProjectInApp } from '@/lib/desktop';
 import { DEFAULT_OPEN_IN_APP_ID, OPEN_IN_APPS } from '@/lib/openInApps';
 import { useOpenInAppsStore, type OpenInAppOption } from '@/stores/useOpenInAppsStore';
 import { useI18n } from '@/lib/i18n';
@@ -87,7 +87,7 @@ export const OpenInAppButton = ({ directory, className }: OpenInAppButtonProps) 
     initialize();
   }, [initialize]);
 
-  const isRemote = isRemoteSshActive();
+  const isRemote = React.useSyncExternalStore(subscribeRemoteSshActive, getRemoteSshSnapshot);
 
   const displayableApps = React.useMemo(() => {
     if (!isRemote) return availableApps;

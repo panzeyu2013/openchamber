@@ -54,7 +54,7 @@ import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { ensurePierreThemeRegistered } from '@/lib/shiki/appThemeRegistry';
 import { getDefaultTheme } from '@/lib/theme/themes';
-import { openDesktopFileInApp, openDesktopPath, isRemoteSshActive, openDesktopRemoteFileInApp, isOpenInAppAvailable } from '@/lib/desktop';
+import { openDesktopFileInApp, openDesktopPath, subscribeRemoteSshActive, getRemoteSshSnapshot, openDesktopRemoteFileInApp, isOpenInAppAvailable } from '@/lib/desktop';
 import { useOpenInAppsStore } from '@/stores/useOpenInAppsStore';
 import { OPEN_IN_APPS } from '@/lib/openInApps';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
@@ -839,14 +839,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const initializeOpenInApps = useOpenInAppsStore((state) => state.initialize);
   const loadOpenInApps = useOpenInAppsStore((state) => state.loadInstalledApps);
 
+  const isRemote = React.useSyncExternalStore(subscribeRemoteSshActive, getRemoteSshSnapshot);
+
   const displayableOpenInApps = React.useMemo(() => {
-    // isRemoteSshActive() not in deps — page origin is immutable within a lifecycle
-    if (!isRemoteSshActive()) return openInApps;
+    if (!isRemote) return openInApps;
     return openInApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);
       return meta?.supportsRemote === true;
     });
-  }, [openInApps]);
+  }, [openInApps, isRemote]);
 
   React.useEffect(() => {
     initializeOpenInApps();
@@ -864,7 +865,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       return;
     }
 
-    if (isRemoteSshActive()) {
+    if (isRemote) {
       const openedRemotely = await openDesktopRemoteFileInApp(selectedFile.path, app.id, app.appName);
       if (openedRemotely) {
         return;

@@ -2148,7 +2148,8 @@ const buildOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) =
     const remoteTarget = `ssh-remote+${hostPort}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--new-window', projectPath] });
     const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
-    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${projectPath}`;
+    const encodedPath = projectPath.split('/').map(encodeURIComponent).join('/');
+    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
     specs.push({ program: 'open', args: [deepLinkUri] });
   }
   return specs;
@@ -2162,7 +2163,8 @@ const buildOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
     const remoteTarget = `ssh-remote+${hostPort}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--goto', filePath] });
     const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
-    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${filePath}`;
+    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
+    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
     specs.push({ program: 'open', args: [deepLinkUri] });
   }
   return specs;
@@ -3242,7 +3244,11 @@ contextMenu({
 // shell.openPath, installed-app scans, app relaunch, and file dialogs
 // are gated to local senders — even the user's own remote UI shouldn't
 // need them, and a compromised remote can't use them either.
-const isLocalSender = (webContents) => {
+// SSH-tunnel pages (loopback origin that does NOT match the local origin)
+// are restricted to a separate whitelist: SSH context queries, remote
+// open commands, and app scans. File reads, dialogs, and local path
+// open are NOT granted to SSH tunnels — only to the true local origin.
+const isActualLocalOrigin = (webContents) => {
   try {
     const raw = typeof webContents?.getURL === 'function' ? webContents.getURL() : '';
     if (!raw) return false;
@@ -3250,26 +3256,52 @@ const isLocalSender = (webContents) => {
     const url = new URL(raw);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
     const hostname = url.hostname;
-    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+    const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
     if (state.localOrigin) {
       try {
         const allowed = new URL(state.localOrigin);
         if (allowed.origin === url.origin) return true;
-      } catch {
-      }
+      } catch {}
+      return false;
     }
-    return false;
+    // No explicit local origin configured — fall back to loopback check
+    return isLoopback;
   } catch {
     return false;
   }
 };
 
+const isSshTunnelOrigin = (webContents) => {
+  try {
+    const raw = typeof webContents?.getURL === 'function' ? webContents.getURL() : '';
+    if (!raw) return false;
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+    const hostname = url.hostname;
+    if (hostname !== 'localhost' && hostname !== '127.0.0.1' && hostname !== '::1') return false;
+    // A tunnel origin is only meaningful when a local origin is known
+    // and the loopback origin does NOT match it. If localOrigin is not
+    // configured, no origin can be classified as a tunnel.
+    if (!state.localOrigin) return false;
+    try {
+      const allowed = new URL(state.localOrigin);
+      if (allowed.origin === url.origin) return false;
+    } catch {}
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isLocalSender = (webContents) => {
+  return isActualLocalOrigin(webContents) || isSshTunnelOrigin(webContents);
+};
+
 // desktop_open_remote_in_app, desktop_open_remote_file_in_app, and
-// desktop_get_active_ssh_info are intentionally NOT in this set. They
-// depend on isLocalSender() (loopback origin check) which naturally
-// allows SSH tunnel pages served on 127.0.0.1. Remote pages on non-
-// loopback origins cannot invoke these commands — they should not be
-// able to spawn local processes or query local SSH sessions.
+// desktop_get_active_ssh_info are in SSH_TUNNEL_COMMANDS so they can
+// be called from SSH-tunneled pages on 127.0.0.1. They are NOT in
+// COMMANDS_SAFE_FOR_REMOTE because non-loopback remote pages must
+// never invoke them.
 const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_hosts_get',
   'desktop_host_probe',
@@ -3288,18 +3320,40 @@ const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_capture_page_rect',
 ]);
 
+const SSH_TUNNEL_COMMANDS = new Set([
+  'desktop_get_active_ssh_info',
+  'desktop_open_remote_in_app',
+  'desktop_open_remote_file_in_app',
+  'desktop_filter_installed_apps',
+  'desktop_get_installed_apps',
+  'desktop_fetch_app_icons',
+]);
+
 ipcMain.handle('openchamber:invoke', async (event, command, args) => {
-  if (!isLocalSender(event.sender) && !COMMANDS_SAFE_FOR_REMOTE.has(command)) {
+  const tunnelOrigin = isSshTunnelOrigin(event.sender);
+  const localOrigin = isActualLocalOrigin(event.sender);
+  const isSafeForRemote = COMMANDS_SAFE_FOR_REMOTE.has(command);
+  const isSafeForTunnel = SSH_TUNNEL_COMMANDS.has(command);
+
+  if (!localOrigin && !tunnelOrigin && !isSafeForRemote) {
     log.warn(`[ipc] rejected ${command} from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
   }
+
+  if (tunnelOrigin && !localOrigin && !isSafeForTunnel && !isSafeForRemote) {
+    log.warn(`[ipc] rejected ${command} from SSH tunnel origin: ${event.sender?.getURL?.() || '(unknown)'}`);
+    throw new Error('IPC not available for this origin');
+  }
+
   const browserWindow = BrowserWindow.fromWebContents(event.sender);
   return handleInvoke(browserWindow, command, args);
 });
 
 ipcMain.handle('openchamber:dialog:open', async (event, options) => {
-  // Native file dialogs expose absolute local paths; never grant to remote.
-  if (!isLocalSender(event.sender)) {
+  // Native file dialogs expose absolute local paths; never grant to
+  // remote OR SSH tunnel origins. Only the true local origin may
+  // open file dialogs.
+  if (!isActualLocalOrigin(event.sender)) {
     log.warn(`[ipc] rejected dialog:open from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
   }

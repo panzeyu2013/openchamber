@@ -343,6 +343,23 @@ export const isDesktopLoopbackOrigin = (): boolean => {
 let _remoteSshCache: { value: boolean; checkedAt: number; verified: boolean } | null = null;
 const REMOTE_SSH_CACHE_TTL_MS = 10_000;
 
+const _remoteSshSubscribers = new Set<() => void>();
+
+const notifyRemoteSshSubscribers = () => {
+  _remoteSshSubscribers.forEach((fn) => {
+    try { fn(); } catch {}
+  });
+};
+
+export const subscribeRemoteSshActive = (callback: () => void): (() => void) => {
+  _remoteSshSubscribers.add(callback);
+  return () => { _remoteSshSubscribers.delete(callback); };
+};
+
+export const getRemoteSshSnapshot = (): boolean => {
+  return isRemoteSshActive();
+};
+
 export const isRemoteSshActive = (): boolean => {
   if (typeof window === 'undefined') return false;
   if (!isDesktopShell()) return false;
@@ -360,14 +377,17 @@ export const isRemoteSshActive = (): boolean => {
   }
 
   // Initial heuristic: a non-local loopback origin is likely an SSH
-  // tunnel. Eagerly verify against the main process; on the next call
-  // the verified result takes effect.
+  // tunnel. Eagerly verify against the main process; subscribers are
+  // notified on completion so React can re-render with the verified
+  // result.
   _remoteSshCache = { value: true, checkedAt: Date.now(), verified: false };
 
   getActiveSshContext().then((ctx) => {
     _remoteSshCache = { value: ctx !== null, checkedAt: Date.now(), verified: true };
+    notifyRemoteSshSubscribers();
   }).catch(() => {
     _remoteSshCache = { value: false, checkedAt: Date.now(), verified: true };
+    notifyRemoteSshSubscribers();
   });
 
   return true;
