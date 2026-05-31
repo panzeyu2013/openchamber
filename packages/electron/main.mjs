@@ -3345,7 +3345,12 @@ const isSshTunnelOrigin = (webContents) => {
       const allowed = new URL(state.localOrigin);
       if (allowed.origin === url.origin) return false;
     } catch {}
-    return true;
+    // Only treat as a tunnel origin if this port maps to a ready SSH instance
+    const port = parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
+    for (const status of sshManager.statuses.values()) {
+      if (status.phase === 'ready' && status.localPort === port) return true;
+    }
+    return false;
   } catch {
     return false;
   }
