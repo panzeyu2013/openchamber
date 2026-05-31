@@ -2231,19 +2231,61 @@ const getSshInfoByOrigin = (requestOrigin) => {
     if (!parsed || !parsed.destination) continue;
 
     let port = 22;
-    for (let i = parsed.args.length - 1; i >= 0; i--) {
+    let user = '';
+    for (let i = 0; i < parsed.args.length; i++) {
       const arg = parsed.args[i];
       if (arg === '-p' && i + 1 < parsed.args.length) {
         port = parseInt(parsed.args[i + 1], 10) || 22;
-        break;
+        i++;
+        continue;
       }
       if (arg.startsWith('-p') && arg.length > 2) {
         port = parseInt(arg.slice(2), 10) || 22;
-        break;
+        continue;
+      }
+      if (arg === '-l' && i + 1 < parsed.args.length) {
+        user = parsed.args[i + 1];
+        i++;
+        continue;
+      }
+      if (arg.startsWith('-l') && arg.length > 2) {
+        user = arg.slice(2);
+        continue;
+      }
+      if (arg === '-o' && i + 1 < parsed.args.length) {
+        const opt = parsed.args[i + 1];
+        i++;
+        const eqIdx = opt.indexOf('=');
+        if (eqIdx >= 0) {
+          const key = opt.slice(0, eqIdx);
+          const value = opt.slice(eqIdx + 1);
+          if (key === 'Port' || key === 'port') {
+            port = parseInt(value, 10) || 22;
+          } else if (key === 'User' || key === 'user') {
+            user = value;
+          }
+        }
+        continue;
+      }
+      if (arg.startsWith('-o') && arg.length > 2) {
+        const opt = arg.slice(2);
+        const eqIdx = opt.indexOf('=');
+        if (eqIdx >= 0) {
+          const key = opt.slice(0, eqIdx);
+          const value = opt.slice(eqIdx + 1);
+          if (key === 'Port' || key === 'port') {
+            port = parseInt(value, 10) || 22;
+          } else if (key === 'User' || key === 'user') {
+            user = value;
+          }
+        }
+        continue;
       }
     }
 
-    return { host: parsed.destination, port, instanceId: instance.id };
+    const result = { host: parsed.destination, port, instanceId: instance.id };
+    if (user) result.user = user;
+    return result;
   }
 
   return null;
@@ -2321,7 +2363,7 @@ const runSpecChain = (specs, appName) => {
   throw new Error(`Failed to open in ${appName}: ${failures.join('; ')}`);
 };
 
-const handleInvoke = async (browserWindow, command, args = {}) => {
+const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = '') => {
   switch (command) {
     case 'desktop_start_window_drag':
       return null;
@@ -2568,8 +2610,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
 
     case 'desktop_get_active_ssh_info': {
       const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (!requestOrigin) return null;
-      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      if (senderOrigin && requestOrigin !== senderOrigin) {
+        throw new Error('Origin mismatch');
+      }
+      const resolvedOrigin = senderOrigin || requestOrigin;
+      if (!resolvedOrigin) return null;
+      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
       return sshInfo || null;
     }
 
@@ -2578,10 +2624,14 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
       const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (!projectPath || !appId || !appName || !requestOrigin) {
+      if (senderOrigin && requestOrigin !== senderOrigin) {
+        throw new Error('Origin mismatch');
+      }
+      const resolvedOrigin = senderOrigin || requestOrigin;
+      if (!projectPath || !appId || !appName || !resolvedOrigin) {
         throw new Error('Project path, app id, app name, and origin are required');
       }
-      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
       if (!sshInfo) {
         throw new Error('SSH connection info not available');
       }
@@ -2601,10 +2651,14 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
       const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (!filePath || !appId || !appName || !requestOrigin) {
+      if (senderOrigin && requestOrigin !== senderOrigin) {
+        throw new Error('Origin mismatch');
+      }
+      const resolvedOrigin = senderOrigin || requestOrigin;
+      if (!filePath || !appId || !appName || !resolvedOrigin) {
         throw new Error('File path, app id, app name, and origin are required');
       }
-      const sshInfo = getSshInfoByOrigin(requestOrigin);
+      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
       if (!sshInfo) {
         throw new Error('SSH connection info not available');
       }
@@ -3345,8 +3399,16 @@ ipcMain.handle('openchamber:invoke', async (event, command, args) => {
     throw new Error('IPC not available for this origin');
   }
 
+  let senderOrigin = '';
+  if (isSafeForTunnel) {
+    try {
+      const url = new URL(event.sender.getURL());
+      senderOrigin = url.origin;
+    } catch {}
+  }
+
   const browserWindow = BrowserWindow.fromWebContents(event.sender);
-  return handleInvoke(browserWindow, command, args);
+  return handleInvoke(browserWindow, command, args, senderOrigin);
 });
 
 ipcMain.handle('openchamber:dialog:open', async (event, options) => {
