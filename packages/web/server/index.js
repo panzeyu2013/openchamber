@@ -720,7 +720,12 @@ sseFanIn.onEvent((batch) => {
       sessionRuntime.processOpenCodeSsePayload(tagged);
     }
     if (tagged.serverId !== 'local') {
-      globalMessageStreamHub.feedEvent({ payload: tagged });
+      const directory = typeof tagged.directory === 'string' && tagged.directory.length > 0
+        ? tagged.directory
+        : typeof tagged.properties?.directory === 'string' && tagged.properties.directory.length > 0
+          ? tagged.properties.directory
+          : undefined
+      globalMessageStreamHub.feedEvent({ payload: tagged, directory })
     }
   }
 });
@@ -1256,7 +1261,7 @@ async function main(options = {}) {
   });
 
   // Multi-server aggregate routes
-  registerAggregateRoutes(app, serverManager, sseFanIn);
+  registerAggregateRoutes(app, serverManager, sseFanIn, getOpenCodeAuthHeaders);
 
   const previewProxyRuntime = createPreviewProxyRuntime({
     crypto,

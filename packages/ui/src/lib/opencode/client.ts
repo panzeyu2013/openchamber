@@ -233,6 +233,27 @@ class OpencodeService {
   }
 
   /**
+   * Get an SDK client scoped to a specific server. For the local server,
+   * returns the default client. For remote servers, creates a client
+   * pointed at the local server's proxy route (/api/servers/<id>/proxy)
+   * so all session CRUD requests are forwarded to the correct backend.
+   */
+  getServerClient(serverId: string, directory?: string): OpencodeClient {
+    if (!serverId || serverId === 'local') {
+      return directory ? this.getScopedApiClient(directory) : this.client
+    }
+    const key = `server:${serverId}${directory ? `:${directory}` : ''}`
+    const existing = this.scopedClients.get(key)
+    if (existing) return existing
+    const baseUrl = ensureAbsoluteBaseUrl(`/api/servers/${serverId}/proxy`)
+    const scoped = directory
+      ? createOpencodeClient({ baseUrl, directory })
+      : createOpencodeClient({ baseUrl })
+    this.scopedClients.set(key, scoped)
+    return scoped
+  }
+
+  /**
    * Returns an SDK client scoped to a project directory.
    * Needed for worktree APIs where backend ignores per-call directory.
    */
@@ -688,6 +709,8 @@ class OpencodeService {
       schema: Record<string, unknown>;
       retryCount?: number;
     };
+    /** Route through the proxy for a remote server */
+    serverId?: string;
   }): Promise<string> {
     // Reuse one client-side message ID across retries. The server accepts this
     // as the real user message ID, making ambiguous network retries idempotent.
@@ -763,7 +786,10 @@ class OpencodeService {
     // Use async prompt endpoint so the client doesn't block waiting
     // for model work (SSE will deliver output/status).
     // This avoids 504s from proxy timeouts on long-running turns.
-    const base = this.baseUrl.replace(/\/+$/, '');
+    const effectiveBaseUrl = params.serverId && params.serverId !== 'local'
+      ? `/api/servers/${params.serverId}/proxy`
+      : this.baseUrl
+    const base = effectiveBaseUrl.replace(/\/+$/, '');
     let url: URL;
     try {
       url = new URL(`${base}/session/${encodeURIComponent(params.id)}/prompt_async`);
@@ -873,6 +899,8 @@ class OpencodeService {
     variant?: string;
     files?: Array<FileInputLite>;
     messageId?: string;
+    /** Route through the proxy for a remote server */
+    serverId?: string;
   }): Promise<string> {
     const tempMessageId = params.messageId ?? ascendingId("msg");
 
@@ -883,7 +911,10 @@ class OpencodeService {
       }
     }
 
-    const base = this.baseUrl.replace(/\/+$/, '');
+    const effectiveBaseUrl = params.serverId && params.serverId !== 'local'
+      ? `/api/servers/${params.serverId}/proxy`
+      : this.baseUrl
+    const base = effectiveBaseUrl.replace(/\/+$/, '');
     const url = new URL(`${base}/session/${encodeURIComponent(params.id)}/command`);
     if (this.currentDirectory) {
       url.searchParams.set('directory', this.currentDirectory);

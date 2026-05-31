@@ -74,6 +74,14 @@ export function routeMessage(params: {
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
 }): Promise<void> {
+  const resolveServerId = (): string | undefined => {
+    const globalStore = useGlobalSessionsStore.getState()
+    const session = [...globalStore.activeSessions, ...globalStore.archivedSessions]
+      .find((s) => s.id === params.sessionId)
+    const raw = (session as Record<string, unknown> | undefined)?.serverId
+    return typeof raw === 'string' && raw.length > 0 && raw !== 'local' ? raw : undefined
+  }
+
   const run = (): Promise<void> => {
     if (params.inputMode === "shell") {
       const sdk = opencodeClient.getSdkClient()
@@ -100,6 +108,7 @@ export function routeMessage(params: {
         || storeCommands.find((c) => c.name === cmdName)
 
       if (isCommand) {
+        const serverId = resolveServerId()
         return optimisticSend({
           sessionId: params.sessionId,
           content: params.content,
@@ -117,12 +126,14 @@ export function routeMessage(params: {
             variant: params.variant,
             files: params.files,
             messageId: messageID,
+            serverId,
           }).then(() => {}),
         })
       }
     }
 
     // Normal prompt — optimistic insert so message appears instantly
+    const serverId = resolveServerId()
     return optimisticSend({
       sessionId: params.sessionId,
       content: params.content,
@@ -141,6 +152,7 @@ export function routeMessage(params: {
         files: params.files,
         additionalParts: params.additionalParts,
         messageId: messageID,
+        serverId,
       }).then(() => {}),
     })
   }

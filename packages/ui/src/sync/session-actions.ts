@@ -11,6 +11,7 @@ import type { ChildStoreManager } from "./child-store"
 import { opencodeClient } from "@/lib/opencode/client"
 import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
+import { useDirectoryStore } from "@/stores/useDirectoryStore"
 import { registerSessionDirectory } from "./sync-refs"
 import { isSyntheticPart } from "@/lib/messages/synthetic"
 import { materializeSessionSnapshots } from "./materialization"
@@ -26,6 +27,7 @@ const UNREVERT_REFETCH_RETRY_MS = 150
 let _sdk: OpencodeClient | null = null
 let _childStores: ChildStoreManager | null = null
 let _getDirectory: () => string = () => ""
+let _getSdkForServer: ((serverId: string) => OpencodeClient) | null = null
 let _optimisticAdd: ((input: { sessionID: string; message: Message; parts: Part[] }) => void) | null = null
 let _optimisticRemove: ((input: { sessionID: string; messageID: string }) => void) | null = null
 
@@ -35,10 +37,12 @@ export function setActionRefs(
   sdk: OpencodeClient,
   childStores: ChildStoreManager,
   getDirectory: () => string,
+  getSdkForServer?: (serverId: string) => OpencodeClient,
 ) {
   _sdk = sdk
   _childStores = childStores
   _getDirectory = getDirectory
+  if (getSdkForServer) _getSdkForServer = getSdkForServer
 }
 
 export function setOptimisticRefs(
@@ -52,6 +56,32 @@ export function setOptimisticRefs(
 function sdk() {
   if (!_sdk) throw new Error("SDK not initialized — is SyncProvider mounted?")
   return _sdk
+}
+
+function getServerIdForSession(sessionId: string): string | null {
+  if (_childStores) {
+    for (const { serverId, store } of _childStores.getAllEntries()) {
+      if (store.getState().session.some((s) => s.id === sessionId)) {
+        return serverId
+      }
+    }
+  }
+  const globalStore = useGlobalSessionsStore.getState()
+  const session = [...globalStore.activeSessions, ...globalStore.archivedSessions]
+    .find((s) => s.id === sessionId)
+  return (session as Record<string, unknown>)?.serverId as string ?? null
+}
+
+function sdkForSession(sessionId?: string): OpencodeClient {
+  const serverId = sessionId
+    ? getServerIdForSession(sessionId)
+    : useDirectoryStore.getState().currentServerId
+  if (!serverId || serverId === "local") return sdk()
+  if (_getSdkForServer) {
+    const serverSdk = _getSdkForServer(serverId)
+    if (serverSdk) return serverSdk
+  }
+  return sdk()
 }
 
 function dirStore() {
@@ -108,11 +138,13 @@ function getDirectoryStore(directory?: string) {
 }
 
 function getSessionReplyClient(sessionId?: string): OpencodeClient {
-  const directory = sessionId
-    ? useSessionUIStore.getState().getDirectoryForSession(sessionId)
-    : null
-  if (directory) {
-    return opencodeClient.getScopedSdkClient(directory)
+  if (sessionId) {
+    const serverSdk = sdkForSession(sessionId)
+    if (serverSdk !== sdk()) return serverSdk
+    const directory = useSessionUIStore.getState().getDirectoryForSession(sessionId)
+    if (directory) {
+      return opencodeClient.getScopedSdkClient(directory)
+    }
   }
   return sdk()
 }
@@ -175,6 +207,8 @@ function getRequestReplyClient(
   sessionId: string,
   requestId: string,
 ): OpencodeClient {
+  const serverSdk = sdkForSession(sessionId)
+  if (serverSdk !== sdk()) return serverSdk
   const requestDirectory = resolveDirectoryForBlockingRequest(type, sessionId, requestId)
   if (requestDirectory) {
     return opencodeClient.getScopedSdkClient(requestDirectory)
@@ -192,7 +226,8 @@ export async function createSession(
   parentID?: string | null,
 ): Promise<Session | null> {
   try {
-    const result = await sdk().session.create({
+    const client = sdkForSession()
+    const result = await client.session.create({
       directory: directoryOverride ?? dir(),
       title,
       parentID: parentID ?? undefined,
@@ -260,7 +295,7 @@ export async function deleteSession(sessionId: string, _options?: Record<string,
     ui.setCurrentSession(null)
   }
   try {
-    await sdk().session.delete({ sessionID: sessionId, directory: sessionDirectory })
+    await sdkForSession(sessionId).session.delete({ sessionID: sessionId, directory: sessionDirectory })
     useGlobalSessionsStore.getState().removeSessions([sessionId])
     return true
   } catch (error) {
@@ -292,7 +327,7 @@ export async function deleteSessionInDirectory(sessionId: string, directory: str
   const ui = useSessionUIStore.getState()
   if (ui.currentSessionId === sessionId) ui.setCurrentSession(null)
   try {
-    await sdk().session.delete({ sessionID: sessionId, directory })
+    await sdkForSession(sessionId).session.delete({ sessionID: sessionId, directory })
     useGlobalSessionsStore.getState().removeSessions([sessionId])
     return true
   } catch (error) {
@@ -311,7 +346,7 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
   }
   try {
     const archivedAt = Date.now()
-    await sdk().session.update({ sessionID: sessionId, directory: sessionDirectory, time: { archived: archivedAt } })
+    await sdkForSession(sessionId).session.update({ sessionID: sessionId, directory: sessionDirectory, time: { archived: archivedAt } })
     useGlobalSessionsStore.getState().archiveSessions([sessionId], archivedAt)
     return true
   } catch (error) {
@@ -323,7 +358,7 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
 
 export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
   const sessionDirectory = getSessionDirectory(sessionId)
-  const result = await sdk().session.update({ sessionID: sessionId, directory: sessionDirectory, title })
+  const result = await sdkForSession(sessionId).session.update({ sessionID: sessionId, directory: sessionDirectory, title })
   if (result.data) {
     useGlobalSessionsStore.getState().upsertSession(result.data)
   }
@@ -331,7 +366,7 @@ export async function updateSessionTitle(sessionId: string, title: string): Prom
 
 export async function shareSession(sessionId: string): Promise<Session | null> {
   const sessionDirectory = getSessionDirectory(sessionId)
-  const result = await sdk().session.share({ sessionID: sessionId, directory: sessionDirectory })
+  const result = await sdkForSession(sessionId).session.share({ sessionID: sessionId, directory: sessionDirectory })
   if (result.data) {
     useGlobalSessionsStore.getState().upsertSession(result.data)
   }
@@ -340,7 +375,7 @@ export async function shareSession(sessionId: string): Promise<Session | null> {
 
 export async function unshareSession(sessionId: string): Promise<Session | null> {
   const sessionDirectory = getSessionDirectory(sessionId)
-  const result = await sdk().session.unshare({ sessionID: sessionId, directory: sessionDirectory })
+  const result = await sdkForSession(sessionId).session.unshare({ sessionID: sessionId, directory: sessionDirectory })
   if (result.data) {
     useGlobalSessionsStore.getState().upsertSession(result.data)
   }
@@ -475,7 +510,7 @@ export async function optimisticSend(input: {
 
 export async function abortCurrentOperation(sessionId: string): Promise<void> {
   try {
-    await sdk().session.abort({ sessionID: sessionId, directory: dir() })
+    await sdkForSession(sessionId).session.abort({ sessionID: sessionId, directory: dir() })
   } catch (error) {
     console.error("[session-actions] abort failed", error)
   }
@@ -583,7 +618,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
-      await sdk().session.abort({ sessionID: sessionId, directory: dir() })
+      await sdkForSession(sessionId).session.abort({ sessionID: sessionId, directory: dir() })
     } catch {
       // ignore abort errors
     }
@@ -650,7 +685,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
   // Call SDK and merge authoritative result into store
   try {
     const directory = dir()
-    const result = await sdk().session.revert({ sessionID: sessionId, directory, messageID: messageId })
+    const result = await sdkForSession(sessionId).session.revert({ sessionID: sessionId, directory, messageID: messageId })
     if (result.data) {
       const current = store.getState()
       const updated = [...current.session]
@@ -686,7 +721,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
 
 export async function refetchSessionMessages(sessionId: string): Promise<void> {
   const store = dirStore()
-  const result = await sdk().session.messages({ sessionID: sessionId, directory: dir(), limit: MESSAGE_REFETCH_LIMIT })
+  const result = await sdkForSession(sessionId).session.messages({ sessionID: sessionId, directory: dir(), limit: MESSAGE_REFETCH_LIMIT })
   const records = (result.data ?? []).filter((record: { info?: { id?: string } }) => !!record?.info?.id)
   if (records.length === 0) return
 
@@ -717,13 +752,13 @@ export async function unrevertSession(sessionId: string): Promise<void> {
   const status = state.session_status[sessionId]
   if (status && status.type !== "idle") {
     try {
-      await sdk().session.abort({ sessionID: sessionId, directory: dir() })
+      await sdkForSession(sessionId).session.abort({ sessionID: sessionId, directory: dir() })
     } catch {
       // ignore
     }
   }
 
-  const result = await sdk().session.unrevert({ sessionID: sessionId, directory: dir() })
+  const result = await sdkForSession(sessionId).session.unrevert({ sessionID: sessionId, directory: dir() })
   if (result.data) {
     const current = store.getState()
     const sessions = [...current.session]
@@ -766,7 +801,7 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
     .trim()
   const fileParts = parts.filter((p) => p.type === "file" && !isSyntheticPart(p)) as Array<Record<string, unknown>>
 
-  const result = await sdk().session.fork({ sessionID: sessionId, directory: dir(), messageID: messageId })
+  const result = await sdkForSession(sessionId).session.fork({ sessionID: sessionId, directory: dir(), messageID: messageId })
   if (!result.data) return
 
   const forkedSession = result.data

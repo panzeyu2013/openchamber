@@ -1464,17 +1464,21 @@ export function SyncProvider(props: {
 
     childStores.configure({
       onBootstrap: (directory, serverId) => {
-        if (bootingDirs.has(directory)) return
-        bootingDirs.add(directory)
+        const bootKey = `${serverId}:${directory}`
+        if (bootingDirs.has(bootKey)) return
+        bootingDirs.add(bootKey)
 
         const store = childStores.getChildByServer(serverId, directory)
         if (!store) return
 
         const runBootstrap = async (attempt: number) => {
           const globalState = useGlobalSyncStore.getState()
+          const effectiveSdk = serverId !== "local"
+            ? opencodeClient.getServerClient(serverId)
+            : props.sdk
           await bootstrapDirectory({
             directory,
-            sdk: props.sdk,
+            sdk: effectiveSdk,
             getState: () => store.getState(),
             set: (patch) => {
               store.setState(patch)
@@ -1488,7 +1492,7 @@ export function SyncProvider(props: {
               providers: globalState.providers,
             },
             loadSessions: (dir) => retry(async () => {
-              const result = await props.sdk.session.list({
+              const result = await effectiveSdk.session.list({
                 directory: dir,
                 roots: true,
                 limit: 50,
@@ -1541,13 +1545,22 @@ export function SyncProvider(props: {
         }
 
         runBootstrap(0).finally(() => {
-          bootingDirs.delete(directory)
+          bootingDirs.delete(bootKey)
         })
       },
       onDispose: (directory) => {
-        bootingDirs.delete(directory)
+        for (const key of bootingDirs) {
+          if (key.endsWith(`:${directory}`)) {
+            bootingDirs.delete(key)
+          }
+        }
       },
-      isBooting: (directory) => bootingDirs.has(directory),
+      isBooting: (directory) => {
+        for (const key of bootingDirs) {
+          if (key.endsWith(`:${directory}`)) return true
+        }
+        return false
+      },
       isLoadingSessions: () => false,
     })
   }, [childStores, props.sdk, routingIndex])
@@ -1577,7 +1590,10 @@ export function SyncProvider(props: {
       },
       onEvent: (directory, payload) => {
         if (!isStreamHeartbeatEvent(payload)) {
-          lastActiveEventAtByDirectoryRef.current.set(directory, Date.now())
+          const sId = typeof (payload as Record<string, unknown>).serverId === 'string'
+            ? (payload as Record<string, unknown>).serverId as string
+            : 'local'
+          lastActiveEventAtByDirectoryRef.current.set(`${sId}:${directory}`, Date.now())
         }
         dispatchVSCodeRuntimeNotificationEvent(directory, payload)
         if (payload.type === "installation.update-available") {
@@ -1645,8 +1661,9 @@ export function SyncProvider(props: {
       serverId: string,
     ) => {
       const polling = statusPollingDirectoriesRef.current
-      if (polling.has(directory)) return
-      polling.add(directory)
+      const pollKey = `${serverId}:${directory}`
+      if (polling.has(pollKey)) return
+      polling.add(pollKey)
       try {
         const before = store.getState()
         const statuses = await resyncDirectorySessionStatuses(directory, store, candidateSessionIds)
@@ -1658,7 +1675,7 @@ export function SyncProvider(props: {
           triggerDirectoryResync(directory, serverId)
         }
       } finally {
-        polling.delete(directory)
+        polling.delete(pollKey)
       }
     }
 
@@ -1673,24 +1690,26 @@ export function SyncProvider(props: {
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
-              lastActiveEventAtByDirectoryRef.current.delete(directory)
-              lastStatusPollAtByDirectoryRef.current.delete(directory)
-              lastFullResyncAtByDirectoryRef.current.delete(directory)
+              const entryKey = `${sId}:${directory}`
+              lastActiveEventAtByDirectoryRef.current.delete(entryKey)
+              lastStatusPollAtByDirectoryRef.current.delete(entryKey)
+              lastFullResyncAtByDirectoryRef.current.delete(entryKey)
               continue
             }
 
-            if (!lastActiveEventAtByDirectoryRef.current.has(directory)) {
-              lastActiveEventAtByDirectoryRef.current.set(directory, now)
+            const entryKey = `${sId}:${directory}`
+            if (!lastActiveEventAtByDirectoryRef.current.has(entryKey)) {
+              lastActiveEventAtByDirectoryRef.current.set(entryKey, now)
             }
 
-            const lastStatusPollAt = lastStatusPollAtByDirectoryRef.current.get(directory) ?? 0
+            const lastStatusPollAt = lastStatusPollAtByDirectoryRef.current.get(entryKey) ?? 0
             if (now - lastStatusPollAt >= ACTIVE_SESSION_STATUS_POLL_INTERVAL_MS) {
-              lastStatusPollAtByDirectoryRef.current.set(directory, now)
+              lastStatusPollAtByDirectoryRef.current.set(entryKey, now)
               void pollDirectoryStatuses(directory, store, candidateSessionIds, sId).catch(() => undefined)
             }
 
-            const lastActiveEventAt = lastActiveEventAtByDirectoryRef.current.get(directory) ?? now
-            const lastFullResyncAt = lastFullResyncAtByDirectoryRef.current.get(directory) ?? 0
+            const lastActiveEventAt = lastActiveEventAtByDirectoryRef.current.get(entryKey) ?? now
+            const lastFullResyncAt = lastFullResyncAtByDirectoryRef.current.get(entryKey) ?? 0
             if (
               now - lastActiveEventAt >= ACTIVE_SESSION_STALE_EVENT_MS
               && now - lastFullResyncAt >= ACTIVE_SESSION_FULL_RESYNC_COOLDOWN_MS
@@ -1756,6 +1775,7 @@ export function SyncProvider(props: {
       props.sdk,
       childStores,
       () => opencodeClient.getDirectory() || props.directory,
+      (serverId: string) => opencodeClient.getServerClient(serverId),
     )
   }, [props.sdk, props.directory, childStores, routingIndex])
 

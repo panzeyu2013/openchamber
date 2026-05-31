@@ -174,7 +174,7 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
 
   const result: ProjectEntry[] = [];
   const seenIds = new Set<string>();
-  const seenPaths = new Set<string>();
+  const seenKeys = new Set<string>();
 
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue;
@@ -186,12 +186,17 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     const normalizedPath = normalizeProjectPath(rawPath);
     if (!normalizedPath) continue;
 
-    const id = createProjectIdFromPath(normalizedPath);
+    const serverId = typeof candidate.serverId === 'string' && candidate.serverId.trim().length > 0
+      ? candidate.serverId.trim()
+      : 'local';
+
+    const id = createProjectIdFromPath(normalizedPath, serverId);
     if (!id) continue;
 
-    if (seenIds.has(id) || seenPaths.has(normalizedPath)) continue;
+    const dedupKey = `${serverId}:${normalizedPath}`;
+    if (seenIds.has(id) || seenKeys.has(dedupKey)) continue;
     seenIds.add(id);
-    seenPaths.add(normalizedPath);
+    seenKeys.add(dedupKey);
 
     const project: ProjectEntry = {
       id,
@@ -369,7 +374,8 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       const normalizedPath = validation.normalizedPath;
-      const existing = get().projects.find((project) => project.path === normalizedPath);
+      const currentServerId = useDirectoryStore.getState().currentServerId ?? 'local';
+      const existing = get().projects.find((project) => project.path === normalizedPath && (project.serverId ?? 'local') === currentServerId);
       if (existing) {
         get().setActiveProject(existing.id);
         return existing;
@@ -377,8 +383,7 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const now = Date.now();
       const label = options?.label?.trim() || deriveProjectLabel(normalizedPath);
-      const id = createProjectIdFromPath(normalizedPath);
-      const currentServerId = useDirectoryStore.getState().currentServerId ?? 'local';
+      const id = createProjectIdFromPath(normalizedPath, currentServerId);
       const entry: ProjectEntry = {
         id,
         path: normalizedPath,

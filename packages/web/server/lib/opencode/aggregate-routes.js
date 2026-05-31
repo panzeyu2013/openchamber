@@ -8,7 +8,7 @@
  *   GET    /api/servers/all/sessions  → aggregate session list across servers
  */
 
-export function registerAggregateRoutes(router, serverManager, sseFanIn) {
+export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpenCodeAuthHeaders) {
   router.get('/api/servers', (_req, res) => {
     try {
       const list = serverManager.listServers();
@@ -98,7 +98,10 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn) {
       if (url) {
         try {
           const { createOpencodeClient } = await import('@opencode-ai/sdk');
-          client = createOpencodeClient({ baseUrl: url });
+          const headers = typeof getOpenCodeAuthHeaders === 'function'
+            ? getOpenCodeAuthHeaders() ?? {}
+            : {};
+          client = createOpencodeClient({ baseUrl: url, headers });
         } catch (sdkErr) {
           return res.status(500).json({
             error: `Failed to create SDK client for remote server: ${sdkErr?.message || sdkErr}`,
@@ -147,4 +150,99 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn) {
       res.status(500).json({ error: err?.message || 'Failed to register server' });
     }
   });
+
+  // Generic proxy middleware: forwards /api/servers/:serverId/proxy/* to the
+  // corresponding remote server. The UI creates per-server OpencodeClient
+  // instances pointed at /api/servers/<serverId>/proxy so all session CRUD
+  // (create, delete, send, abort, etc.) routes through the correct server.
+  router.use((req, res, next) => {
+    const prefix = '/api/servers/'
+    const url = req.path
+    if (!url.startsWith(prefix)) return next()
+
+    const afterPrefix = url.slice(prefix.length)
+    const slashIndex = afterPrefix.indexOf('/')
+    if (slashIndex === -1) return next()
+
+    const serverId = afterPrefix.slice(0, slashIndex)
+    const afterServerId = afterPrefix.slice(slashIndex)
+
+    if (!afterServerId.startsWith('/proxy') && afterServerId !== '/proxy') return next()
+
+    const remainingPath = afterServerId.slice('/proxy'.length) || '/'
+
+    const serverEntry = serverManager.getServer(serverId)
+    if (!serverEntry || !serverEntry.url) {
+      return res.status(404).json({ error: `Server '${serverId}' not found or has no URL` })
+    }
+
+    const client = serverManager.getClient(serverId)
+    if (!client) {
+      return res.status(502).json({ error: `No client available for server '${serverId}'` })
+    }
+
+    const baseUrl = serverEntry.url.replace(/\/$/, '')
+    const targetUrl = `${baseUrl}${remainingPath}`
+    const queryIndex = req.url.indexOf('?')
+    const queryString = queryIndex !== -1 ? req.url.slice(queryIndex) : ''
+
+    const headers = { ...req.headers }
+    // Remove hop-by-hop and host headers
+    delete headers['host']
+    delete headers['connection']
+    delete headers['transfer-encoding']
+    delete headers['keep-alive']
+
+    // Attach auth headers if available
+    if (typeof getOpenCodeAuthHeaders === 'function') {
+      const authHeaders = getOpenCodeAuthHeaders()
+      if (authHeaders && typeof authHeaders === 'object') {
+        Object.assign(headers, authHeaders)
+      }
+    }
+
+    const bodyChunks = []
+    req.on('data', (chunk) => bodyChunks.push(chunk))
+    req.on('end', async () => {
+      try {
+        const body = bodyChunks.length > 0
+          ? Buffer.concat(bodyChunks)
+          : undefined
+
+        const upstreamRes = await fetch(`${targetUrl}${queryString}`, {
+          method: req.method,
+          headers,
+          body,
+        })
+
+        const resHeaders = {}
+        for (const [key, value] of upstreamRes.headers.entries()) {
+          if (key.toLowerCase() === 'transfer-encoding' || key.toLowerCase() === 'content-encoding') continue
+          resHeaders[key] = value
+        }
+        res.status(upstreamRes.status).set(resHeaders)
+
+        if (upstreamRes.body) {
+          const reader = upstreamRes.body.getReader()
+          const pump = async () => {
+            while (true) {
+              const { done, value } = await reader.read()
+              if (done) {
+                res.end()
+                break
+              }
+              res.write(value)
+            }
+          }
+          await pump()
+        } else {
+          res.end()
+        }
+      } catch (err) {
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Proxy to '${serverId}' failed: ${err?.message || err}` })
+        }
+      }
+    })
+  })
 }

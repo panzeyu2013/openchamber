@@ -133,11 +133,14 @@ export function createGlobalMessageStreamHub({
     buildUrlFailed = false;
   };
 
-  const feedEvent = ({ payload }) => {
+  const feedEvent = ({ payload, directory }) => {
     if (payload && typeof payload === 'object' && !payload.serverId) {
       payload = { ...payload, serverId: 'local' };
     }
-    const normalized = normalizeEvent({ envelope: {}, payload });
+    const envelope = typeof directory === 'string' && directory.length > 0
+      ? { directory }
+      : {};
+    const normalized = normalizeEvent({ envelope, payload });
     for (const subscriber of Array.from(eventSubscribers)) {
       notifySubscriber('event', subscriber, normalized);
     }
