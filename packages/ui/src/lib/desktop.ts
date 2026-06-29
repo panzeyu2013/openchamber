@@ -360,7 +360,7 @@ export const isDesktopLocalOriginActive = (): boolean => {
     return true;
   }
 
-  return Boolean(currentUrl && isLoopbackHost(currentUrl.hostname));
+  return false;
 };
 
 export const isDesktopLoopbackOrigin = (): boolean => {
@@ -375,6 +375,7 @@ export const isDesktopLoopbackOrigin = (): boolean => {
 let _remoteSshCache: { value: boolean; checkedAt: number } | null = null;
 let _remoteSshPending = false;
 let _remoteSshContextPromise: Promise<SshContext | null> | null = null;
+let _remoteSshGeneration = 0;
 const REMOTE_SSH_CACHE_TTL_MS = 10_000;
 
 const _remoteSshSubscribers = new Set<() => void>();
@@ -393,14 +394,21 @@ export const subscribeRemoteSshActive = (callback: () => void): (() => void) => 
 };
 
 export const getRemoteSshSnapshot = (): boolean => {
-  return _remoteSshCache?.value ?? false;
+  if (!_remoteSshCache) return false;
+  if ((Date.now() - _remoteSshCache.checkedAt) < REMOTE_SSH_CACHE_TTL_MS) {
+    return _remoteSshCache.value;
+  }
+  void isRemoteSshActive();
+  return _remoteSshCache.value;
 };
 
 export const invalidateRemoteSshCache = (): void => {
-  _remoteSshCache = { value: false, checkedAt: Date.now() };
+  _remoteSshGeneration += 1;
+  _remoteSshCache = null;
   _remoteSshPending = false;
   _remoteSshContextPromise = null;
   notifyRemoteSshSubscribers();
+  void isRemoteSshActive();
 };
 
 export const isRemoteSshActive = (): boolean => {
@@ -444,16 +452,25 @@ export const isRemoteSshActive = (): boolean => {
 
   _remoteSshContextPromise = getActiveSshContext();
   const contextPromise = _remoteSshContextPromise;
+  const generationAtStart = _remoteSshGeneration;
   const timeoutPromise = new Promise<SshContext | null>((resolve) => {
     setTimeout(() => resolve(null), 5000);
   });
 
   Promise.race([contextPromise, timeoutPromise]).then((ctx) => {
+    if (_remoteSshGeneration !== generationAtStart) {
+      _remoteSshPending = false;
+      return;
+    }
     _remoteSshCache = { value: ctx !== null, checkedAt: Date.now() };
     _remoteSshPending = false;
     _remoteSshContextPromise = null;
     notifyRemoteSshSubscribers();
   }).catch(() => {
+    if (_remoteSshGeneration !== generationAtStart) {
+      _remoteSshPending = false;
+      return;
+    }
     _remoteSshCache = { value: false, checkedAt: Date.now() };
     _remoteSshPending = false;
     _remoteSshContextPromise = null;
@@ -474,29 +491,37 @@ export type SshContext = {
   instanceId: string;
 };
 
+let _activeSshContextPromise: Promise<SshContext | null> | null = null;
+
 export const getActiveSshContext = async (): Promise<SshContext | null> => {
   if (!isElectronShell()) return null;
 
-  if (_remoteSshContextPromise) return _remoteSshContextPromise;
+  if (_activeSshContextPromise) return _activeSshContextPromise;
 
-  try {
-    const result = await invokeDesktop('desktop_get_active_ssh_info', {
-      origin: window.location.origin,
-    });
-    if (result && typeof result === 'object') {
-      const ctx = result as { host?: string; port?: number; instanceId?: string };
-      if (typeof ctx.host === 'string' && ctx.host.length > 0) {
-        return {
-          host: ctx.host,
-          port: typeof ctx.port === 'number' ? ctx.port : 22,
-          instanceId: typeof ctx.instanceId === 'string' ? ctx.instanceId : '',
-        };
+  _activeSshContextPromise = (async () => {
+    try {
+      const result = await invokeDesktop('desktop_get_active_ssh_info', {
+        origin: getRuntimeApiBaseUrl() || window.location.origin,
+      });
+      if (result && typeof result === 'object') {
+        const ctx = result as { host?: string; port?: number; instanceId?: string };
+        if (typeof ctx.host === 'string' && ctx.host.length > 0) {
+          return {
+            host: ctx.host,
+            port: typeof ctx.port === 'number' ? ctx.port : 22,
+            instanceId: typeof ctx.instanceId === 'string' ? ctx.instanceId : '',
+          };
+        }
       }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      _activeSshContextPromise = null;
     }
-    return null;
-  } catch {
-    return null;
-  }
+  })();
+
+  return _activeSshContextPromise;
 };
 
 export const isDesktopShell = (): boolean => {
@@ -919,7 +944,7 @@ export const openDesktopRemoteProjectInApp = async (
       projectPath: trimmedProjectPath,
       appId: trimmedAppId,
       appName: trimmedAppName,
-      origin: window.location.origin,
+      origin: getRuntimeApiBaseUrl() || window.location.origin,
     });
     return true;
   } catch (error) {
@@ -951,7 +976,7 @@ export const openDesktopRemoteFileInApp = async (
       filePath: trimmedFilePath,
       appId: trimmedAppId,
       appName: trimmedAppName,
-      origin: window.location.origin,
+      origin: getRuntimeApiBaseUrl() || window.location.origin,
     });
     return true;
   } catch (error) {

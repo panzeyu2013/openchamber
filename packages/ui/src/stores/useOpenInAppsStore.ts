@@ -76,6 +76,84 @@ const applyInstalledApps = (
   set({ availableApps: withIcons.length > 0 ? withIcons : getAlwaysAvailableApps(), hasLoadedApps });
 };
 
+const _loadInstalledAppsInternal = async (
+  force: boolean | undefined,
+  set: (partial: Partial<OpenInAppsState>) => void,
+  get: () => OpenInAppsState,
+) => {
+  if (!isOpenInAppAvailable()) {
+    return;
+  }
+
+  if (loading && !force) {
+    return;
+  }
+
+  const state = get();
+  if (state.hasLoadedApps && !force) {
+    return;
+  }
+
+  const appNames = OPEN_IN_APPS.map((app) => app.appName);
+  clearRetryTimeout();
+
+  if (force) {
+    retryAttempt = 0;
+  }
+
+  loading = true;
+  keepScanning = false;
+  set({ isScanning: true });
+
+  try {
+    const {
+      apps: installed,
+      success,
+      hasCache,
+      isCacheStale,
+    } = await fetchDesktopInstalledApps(appNames, force);
+
+    const shouldRetryEmptyScan = success && !hasCache && installed.length === 0 && retryAttempt < 3;
+
+    set({ isCacheStale: hasCache ? isCacheStale : false });
+    applyInstalledApps(installed, success ? !shouldRetryEmptyScan : false, set);
+
+    if (success) {
+      if (shouldRetryEmptyScan) {
+        const delays = [800, 1600, 3200];
+        const delay = delays[retryAttempt] ?? 3200;
+        retryAttempt += 1;
+        keepScanning = true;
+        retryTimeout = setTimeout(() => {
+          void _loadInstalledAppsInternal(undefined, set, get);
+        }, delay);
+        return;
+      }
+
+      retryAttempt = 0;
+      keepScanning = false;
+      return;
+    }
+
+    if (retryAttempt < 3) {
+      const delays = [1000, 3000, 7000];
+      const delay = delays[retryAttempt] ?? 7000;
+      retryAttempt += 1;
+      keepScanning = true;
+      retryTimeout = setTimeout(() => {
+        void _loadInstalledAppsInternal(undefined, set, get);
+      }, delay);
+    } else {
+      keepScanning = false;
+    }
+  } finally {
+    loading = false;
+    if (!keepScanning) {
+      set({ isScanning: false });
+    }
+  }
+};
+
 export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
   selectedAppId: getStoredAppId(),
   availableApps: getAlwaysAvailableApps(),
@@ -87,85 +165,10 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
     if (initialized || typeof window === 'undefined') {
       return;
     }
+    clearRetryTimeout();
     initialized = true;
 
-    const applyApps = (installed: InstalledDesktopAppInfo[], hasLoadedApps = true) => {
-      applyInstalledApps(installed, hasLoadedApps, set);
-    };
-
-    const loadInstalledApps = async (force?: boolean) => {
-      if (!isOpenInAppAvailable()) {
-        return;
-      }
-
-      if (loading) {
-        return;
-      }
-
-      const state = get();
-      if (state.hasLoadedApps && !force) {
-        return;
-      }
-
-      const appNames = OPEN_IN_APPS.map((app) => app.appName);
-      clearRetryTimeout();
-
-      if (force) {
-        set({ hasLoadedApps: false });
-      }
-
-      loading = true;
-      keepScanning = false;
-      set({ isScanning: true });
-
-      try {
-        const {
-          apps: installed,
-          success,
-          hasCache,
-          isCacheStale,
-        } = await fetchDesktopInstalledApps(appNames, force);
-
-        const shouldRetryEmptyScan = success && !hasCache && installed.length === 0 && retryAttempt < 3;
-
-        set({ isCacheStale: hasCache ? isCacheStale : false });
-        applyApps(installed, success ? !shouldRetryEmptyScan : false);
-
-        if (success) {
-          if (shouldRetryEmptyScan) {
-            const delays = [800, 1600, 3200];
-            const delay = delays[retryAttempt] ?? 3200;
-            retryAttempt += 1;
-            keepScanning = true;
-            retryTimeout = setTimeout(() => {
-              void loadInstalledApps();
-            }, delay);
-            return;
-          }
-
-          retryAttempt = 0;
-          keepScanning = false;
-          return;
-        }
-
-        if (retryAttempt < 3) {
-          const delays = [1000, 3000, 7000];
-          const delay = delays[retryAttempt] ?? 7000;
-          retryAttempt += 1;
-          keepScanning = true;
-          retryTimeout = setTimeout(() => {
-            void loadInstalledApps();
-          }, delay);
-        }
-      } finally {
-        loading = false;
-        if (!keepScanning) {
-          set({ isScanning: false });
-        }
-      }
-    };
-
-    void loadInstalledApps();
+    void _loadInstalledAppsInternal(undefined, set, get);
 
     const settingsHandler = (event: Event) => {
       const detail = (event as CustomEvent<DesktopSettings>).detail;
@@ -185,7 +188,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
     };
 
     const appReadyHandler = () => {
-      void loadInstalledApps();
+      void _loadInstalledAppsInternal(undefined, set, get);
     };
 
     const updateHandler = (event: Event) => {
@@ -195,10 +198,11 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
         return;
       }
 
+      clearRetryTimeout();
       retryAttempt = 3;
       keepScanning = false;
       set({ isScanning: false, isCacheStale: false });
-      applyApps(detail);
+      applyInstalledApps(detail, true, set);
     };
 
     window.addEventListener('openchamber:settings-synced', settingsHandler);
@@ -207,12 +211,12 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
 
     const appReady = (window as unknown as { __openchamberAppReady?: boolean }).__openchamberAppReady;
     if (appReady) {
-      void loadInstalledApps();
+      void _loadInstalledAppsInternal(undefined, set, get);
     }
 
     window.setTimeout(() => {
       if (!get().hasLoadedApps) {
-        void loadInstalledApps();
+        void _loadInstalledAppsInternal(undefined, set, get);
       }
     }, 5000);
   },
@@ -222,48 +226,7 @@ export const useOpenInAppsStore = create<OpenInAppsState>()((set, get) => ({
       get().initialize();
     }
 
-    if (!isOpenInAppAvailable()) {
-      return;
-    }
-
-    if (loading) {
-      return;
-    }
-
-    const state = get();
-    if (state.hasLoadedApps && !force) {
-      return;
-    }
-
-    const appNames = OPEN_IN_APPS.map((app) => app.appName);
-    clearRetryTimeout();
-
-    if (force) {
-      set({ hasLoadedApps: false });
-    }
-
-    loading = true;
-    keepScanning = false;
-    set({ isScanning: true });
-
-    try {
-      const {
-        apps: installed,
-        success,
-        hasCache,
-        isCacheStale,
-      } = await fetchDesktopInstalledApps(appNames, force);
-
-      if (success) {
-        applyInstalledApps(installed, installed.length > 0, set);
-      }
-      set({ isCacheStale: hasCache ? isCacheStale : false });
-    } finally {
-      loading = false;
-      if (!keepScanning) {
-        set({ isScanning: false });
-      }
-    }
+    await _loadInstalledAppsInternal(force, set, get);
   },
 
   selectApp: async (appId: string) => {

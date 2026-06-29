@@ -44,6 +44,9 @@ const AppIcon = ({
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
 
   const src = iconDataUrl || fallbackIconDataUrl;
+  React.useEffect(() => {
+    setFailed(false);
+  }, [src]);
 
   if (src && !failed) {
     return (
@@ -92,7 +95,7 @@ export const OpenInAppButton = ({ directory, className }: OpenInAppButtonProps) 
   const isAvailable = isElectronShell() && (isDesktopLocalOriginActive() || isRemote);
 
   const displayableApps = React.useMemo(() => {
-    if (!isRemote || isDesktopLocalOriginActive()) return availableApps;
+    if (!isRemote) return availableApps;
     return availableApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);
       return meta?.supportsRemote === true;

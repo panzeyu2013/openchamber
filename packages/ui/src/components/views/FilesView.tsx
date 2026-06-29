@@ -120,6 +120,10 @@ const OpenInAppListIcon = ({ label, iconDataUrl }: { label: string; iconDataUrl?
   const [failed, setFailed] = React.useState(false);
   const initial = label.trim().slice(0, 1).toUpperCase() || '?';
 
+  React.useEffect(() => {
+    setFailed(false);
+  }, [iconDataUrl]);
+
   if (iconDataUrl && !failed) {
     return (
       <img
@@ -974,7 +978,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const isAvailable = isElectronShell() && (isDesktopLocalOriginActive() || isRemote);
 
   const displayableOpenInApps = React.useMemo(() => {
-    if (!isRemote || isDesktopLocalOriginActive()) return openInApps;
+    if (!isRemote) return openInApps;
     return openInApps.filter((app) => {
       const meta = OPEN_IN_APPS.find((a) => a.id === app.id);
       return meta?.supportsRemote === true;

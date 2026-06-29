@@ -3069,10 +3069,13 @@ const buildOpenRemoteProjectSpecs = ({ projectPath, appId, appName, sshInfo }) =
     const hostPort = sshInfo.port && sshInfo.port !== 22 ? `${hostPart}:${sshInfo.port}` : hostPart;
     const remoteTarget = `ssh-remote+${hostPort}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--new-window', projectPath] });
-    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
-    const encodedPath = projectPath.split('/').map(encodeURIComponent).join('/');
-    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
-    specs.push({ program: 'open', args: [deepLinkUri] });
+    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId];
+    if (scheme) {
+      const prefixedPath = projectPath.startsWith('/') ? projectPath : `/${projectPath}`;
+      const encodedPath = prefixedPath.split('/').map(encodeURIComponent).join('/');
+      const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
+      specs.push({ program: 'open', args: [deepLinkUri] });
+    }
   }
   return specs;
 };
@@ -3086,10 +3089,13 @@ const buildOpenRemoteFileSpecs = ({ filePath, appId, appName, sshInfo }) => {
     const hostPort = sshInfo.port && sshInfo.port !== 22 ? `${hostPart}:${sshInfo.port}` : hostPart;
     const remoteTarget = `ssh-remote+${hostPort}`;
     specs.push({ program: cli, args: ['--remote', remoteTarget, '--goto', filePath] });
-    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId] || 'vscode';
-    const encodedPath = filePath.split('/').map(encodeURIComponent).join('/');
-    const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
-    specs.push({ program: 'open', args: [deepLinkUri] });
+    const scheme = REMOTE_URI_SCHEME_BY_APP_ID[appId];
+    if (scheme) {
+      const prefixedPath = filePath.startsWith('/') ? filePath : `/${filePath}`;
+      const encodedPath = prefixedPath.split('/').map(encodeURIComponent).join('/');
+      const deepLinkUri = `${scheme}://vscode-remote/${remoteTarget}${encodedPath}`;
+      specs.push({ program: 'open', args: [deepLinkUri] });
+    }
   }
   return specs;
 };
@@ -3146,44 +3152,58 @@ const getSshInfoByOrigin = (requestOrigin) => {
 
   for (const instance of instances) {
     const hostEntry = hosts.find((h) => h.id === instance.id);
-    if (!hostEntry) continue;
 
     let hostOrigin = '';
-    try { hostOrigin = new URL(hostEntry.url).origin; } catch {}
-
-    if (hostOrigin !== requestOrigin) continue;
+    if (hostEntry) {
+      try { hostOrigin = new URL(hostEntry.url).origin; } catch {}
+    }
 
     const status = sshManager.statuses.get(instance.id);
     if (status?.phase !== 'ready') continue;
+
+    // Match against the configured host URL origin (primary path).
+    // If port forwarding remapped the port (e.g. 4096 was taken), also
+    // match against the status.localUrl origin (same source as isSshTunnelOrigin).
+    let matched = hostOrigin === requestOrigin;
+    if (!matched && status.localUrl) {
+      try { matched = new URL(status.localUrl).origin === requestOrigin; } catch {}
+    }
+    if (!matched) continue;
 
     const session = sshManager.sessions.get(instance.id);
     const parsed = instance.sshParsed || session?.parsed;
     if (!parsed || !parsed.destination) continue;
 
+    const validPort = (value) => {
+      const n = parseInt(value, 10);
+      return Number.isFinite(n) && n >= 1 && n <= 65535 ? n : null;
+    };
+
     let port = 22;
     let user = '';
-    for (let i = 0; i < parsed.args.length; i++) {
-      const arg = parsed.args[i];
-      if (arg === '-p' && i + 1 < parsed.args.length) {
-        port = parseInt(parsed.args[i + 1], 10) || 22;
+    const args = Array.isArray(parsed.args) ? parsed.args : [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '-p' && i + 1 < args.length) {
+        port = validPort(args[i + 1]) ?? 22;
         i++;
         continue;
       }
       if (arg.startsWith('-p') && arg.length > 2) {
-        port = parseInt(arg.slice(2), 10) || 22;
+        port = validPort(arg.slice(2)) ?? 22;
         continue;
       }
-      if (arg === '-P' && i + 1 < parsed.args.length) {
-        port = parseInt(parsed.args[i + 1], 10) || 22;
+      if (arg === '-P' && i + 1 < args.length) {
+        port = validPort(args[i + 1]) ?? 22;
         i++;
         continue;
       }
       if (arg.startsWith('-P') && arg.length > 2) {
-        port = parseInt(arg.slice(2), 10) || 22;
+        port = validPort(arg.slice(2)) ?? 22;
         continue;
       }
-      if (arg === '-l' && i + 1 < parsed.args.length) {
-        user = parsed.args[i + 1];
+      if (arg === '-l' && i + 1 < args.length) {
+        user = args[i + 1];
         i++;
         continue;
       }
@@ -3191,27 +3211,18 @@ const getSshInfoByOrigin = (requestOrigin) => {
         user = arg.slice(2);
         continue;
       }
-      if (arg === '-o' && i + 1 < parsed.args.length) {
-        const opt = parsed.args[i + 1];
+      if (arg === '-o' && i + 1 < args.length) {
+        const opt = args[i + 1];
         const eqIdx = opt.indexOf('=');
         if (eqIdx >= 0) {
           const key = opt.slice(0, eqIdx);
           const value = opt.slice(eqIdx + 1);
           if (key === 'Port' || key === 'port') {
-            port = parseInt(value, 10) || 22;
+            port = validPort(value) ?? 22;
           } else if (key === 'User' || key === 'user') {
             user = value;
           }
           i++;
-        } else if (i + 2 < parsed.args.length) {
-          const key = opt;
-          const value = parsed.args[i + 2];
-          if (key === 'Port' || key === 'port') {
-            port = parseInt(value, 10) || 22;
-          } else if (key === 'User' || key === 'user') {
-            user = value;
-          }
-          i += 2;
         }
         continue;
       }
@@ -3222,7 +3233,7 @@ const getSshInfoByOrigin = (requestOrigin) => {
           const key = opt.slice(0, eqIdx);
           const value = opt.slice(eqIdx + 1);
           if (key === 'Port' || key === 'port') {
-            port = parseInt(value, 10) || 22;
+            port = validPort(value) ?? 22;
           } else if (key === 'User' || key === 'user') {
             user = value;
           }
@@ -3595,13 +3606,9 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
     }
 
     case 'desktop_get_active_ssh_info': {
-      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (senderOrigin && requestOrigin !== senderOrigin) {
-        throw new Error('Origin mismatch');
-      }
-      const resolvedOrigin = senderOrigin || requestOrigin;
-      if (!resolvedOrigin) return null;
-      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
+      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      if (!requestOrigin) return null;
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
       return sshInfo || null;
     }
 
@@ -3609,15 +3616,11 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
       const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (senderOrigin && requestOrigin !== senderOrigin) {
-        throw new Error('Origin mismatch');
-      }
-      const resolvedOrigin = senderOrigin || requestOrigin;
-      if (!projectPath || !appId || !appName || !resolvedOrigin) {
+      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      if (!projectPath || !appId || !appName || !requestOrigin) {
         throw new Error('Project path, app id, app name, and origin are required');
       }
-      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
       if (!sshInfo) {
         throw new Error('SSH connection info not available');
       }
@@ -3636,15 +3639,11 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
       const filePath = typeof args.filePath === 'string' ? args.filePath.trim() : '';
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
-      if (senderOrigin && requestOrigin !== senderOrigin) {
-        throw new Error('Origin mismatch');
-      }
-      const resolvedOrigin = senderOrigin || requestOrigin;
-      if (!filePath || !appId || !appName || !resolvedOrigin) {
+      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      if (!filePath || !appId || !appName || !requestOrigin) {
         throw new Error('File path, app id, app name, and origin are required');
       }
-      const sshInfo = getSshInfoByOrigin(resolvedOrigin);
+      const sshInfo = getSshInfoByOrigin(requestOrigin);
       if (!sshInfo) {
         throw new Error('SSH connection info not available');
       }
@@ -4384,7 +4383,6 @@ const isActualLocalOrigin = (webContents) => {
     if (url.protocol === `${UI_PROTOCOL}:` && url.hostname === 'app') return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
     const hostname = url.hostname;
-    const isLoopback = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
     if (state.localOrigin) {
       try {
         const allowed = new URL(state.localOrigin);
@@ -4397,8 +4395,7 @@ const isActualLocalOrigin = (webContents) => {
         if (allowed.origin === url.origin) return true;
       } catch {}
     }
-    if (state.localOrigin) return false;
-    return isLoopback;
+    return false;
   } catch {
     return false;
   }
@@ -4420,10 +4417,15 @@ const isSshTunnelOrigin = (webContents) => {
       const allowed = new URL(state.localOrigin);
       if (allowed.origin === url.origin) return false;
     } catch {}
-    // Only treat as a tunnel origin if this port maps to a ready SSH instance
-    const port = parseInt(url.port, 10) || (url.protocol === 'https:' ? 443 : 80);
+    // Match on the full localUrl origin, not just the port, so that a
+    // non-SSH process on a colliding loopback port cannot be classified
+    // as a tunnel origin.
     for (const status of sshManager.statuses.values()) {
-      if (status.phase === 'ready' && status.localPort === port) return true;
+      if (status.phase !== 'ready' || !status.localUrl) continue;
+      try {
+        const tunnelOrigin = new URL(status.localUrl).origin;
+        if (tunnelOrigin === url.origin) return true;
+      } catch {}
     }
     return false;
   } catch {
