@@ -3606,7 +3606,7 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
     }
 
     case 'desktop_get_active_ssh_info': {
-      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
       if (!requestOrigin) return null;
       const sshInfo = getSshInfoByOrigin(requestOrigin);
       return sshInfo || null;
@@ -3616,7 +3616,7 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
       const projectPath = typeof args.projectPath === 'string' ? args.projectPath.trim() : '';
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
       if (!projectPath || !appId || !appName || !requestOrigin) {
         throw new Error('Project path, app id, app name, and origin are required');
       }
@@ -3639,7 +3639,7 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
       const filePath = typeof args.filePath === 'string' ? args.filePath.trim() : '';
       const appId = typeof args.appId === 'string' ? args.appId.trim().toLowerCase() : '';
       const appName = typeof args.appName === 'string' ? args.appName.trim() : '';
-      const requestOrigin = senderOrigin || (typeof args.origin === 'string' ? args.origin.trim() : '');
+      const requestOrigin = typeof args.origin === 'string' ? args.origin.trim() : '';
       if (!filePath || !appId || !appName || !requestOrigin) {
         throw new Error('File path, app id, app name, and origin are required');
       }
@@ -4382,7 +4382,6 @@ const isActualLocalOrigin = (webContents) => {
     const url = new URL(raw);
     if (url.protocol === `${UI_PROTOCOL}:` && url.hostname === 'app') return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    const hostname = url.hostname;
     if (state.localOrigin) {
       try {
         const allowed = new URL(state.localOrigin);
