@@ -36,7 +36,7 @@ import { appendNotification } from "./notification-store"
 import { applyGlobalSessionStatusEvent } from "./global-session-status"
 import type { ServerTagged } from "./server-tagged"
 import { unwrapServerEvent } from "./server-tagged"
-import { useServerStore, useInitServerExistsValidator } from "./server-context"
+import { useServerStore, useInitServerExistsValidator, fetchServerList } from "./server-context"
 import { useDirectoryStore as useDirStore } from "@/stores/useDirectoryStore"
 import type { State } from "./types"
 import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
@@ -1339,12 +1339,29 @@ function handleEvent(
     } else if (result.type === "server.status") {
       const state = useServerStore.getState()
       const existing = state.servers.find((s) => s.id === serverId)
-      if (!existing) return
-      state.upsertServer({
-        ...existing,
-        status: result.status,
-        errorMessage: "errorMessage" in result ? (result as { errorMessage?: string }).errorMessage : existing.errorMessage,
-      })
+      if (existing) {
+        state.upsertServer({
+          ...existing,
+          status: result.status,
+          errorMessage: "errorMessage" in result ? (result as { errorMessage?: string }).errorMessage : existing.errorMessage,
+        })
+      } else {
+        // New server discovered via SSE (e.g. SSH tunnel just connected).
+        // Create a minimal placeholder and fetch full details in the
+        // background so the sidebar can show the server header immediately.
+        state.upsertServer({
+          id: serverId,
+          label: serverId,
+          type: 'remote-url' as const,
+          status: result.status,
+          url: '',
+          errorMessage: "errorMessage" in result ? (result as { errorMessage?: string }).errorMessage : undefined,
+        })
+        void fetchServerList().then((servers) => {
+          const full = servers.find((s) => s.id === serverId)
+          if (full) useServerStore.getState().upsertServer(full)
+        }).catch(() => { /* best-effort */ })
+      }
     }
     // On server.connected / global.disposed, re-bootstrap all directories
     // but only if not during recent boot
@@ -1780,6 +1797,18 @@ export function SyncProvider(props: {
     const generation = ++globalBootstrapGeneration
     bootingRoot = true
     const globalActions = useGlobalSyncStore.getState().actions
+    // Fetch server list in parallel with global bootstrap so the store
+    // is populated before server.status SSE events arrive (otherwise they
+    // are silently dropped — see handleEvent's "unknown server" guard).
+    fetchServerList().then((servers) => {
+      if (globalBootstrapGeneration === generation) {
+        useServerStore.getState().setServers(servers)
+      }
+    }).catch(() => {
+      // Server list fetch is best-effort; the store starts empty and
+      // servers are discovered via SSE events when they connect.
+    })
+
     bootstrapGlobal(props.sdk, (patch) => {
       if (globalBootstrapGeneration === generation) {
         globalActions.set(patch)
@@ -1834,12 +1863,18 @@ export function SyncProvider(props: {
         if (eventServerId !== 'local') {
           const servers = useServerStore.getState().servers
           if (!servers.some((s) => s.id === eventServerId)) {
-            if (!_unknownServerWarned.has(eventServerId) || Date.now() - (_unknownServerWarnTimes.get(eventServerId) ?? 0) > 30_000) {
-              console.warn(`[SyncProvider] Ignoring event from unknown server '${eventServerId}'`)
-              _unknownServerWarned.add(eventServerId)
-              _unknownServerWarnTimes.set(eventServerId, Date.now())
+            // Allow server.status events through so a newly registered
+            // server (e.g. via SSH tunnel or DesktopHostSwitcher) can
+            // create its store entry. All other events from unknown
+            // servers are still dropped.
+            if ((payload as Record<string, unknown>).type !== 'server.status') {
+              if (!_unknownServerWarned.has(eventServerId) || Date.now() - (_unknownServerWarnTimes.get(eventServerId) ?? 0) > 30_000) {
+                console.warn(`[SyncProvider] Ignoring event from unknown server '${eventServerId}'`)
+                _unknownServerWarned.add(eventServerId)
+                _unknownServerWarnTimes.set(eventServerId, Date.now())
+              }
+              return
             }
-            return
           }
         }
 
