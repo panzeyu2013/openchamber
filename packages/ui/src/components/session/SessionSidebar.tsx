@@ -196,7 +196,7 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
   const [collapsedProjects, setCollapsedProjects] = React.useState<Set<string>>(new Set());
   const [collapsedServers, setCollapsedServers] = React.useState<Set<string>>(() => {
     try {
-      const raw = getSafeStorage().getItem(SERVER_COLLAPSE_STORAGE_KEY);
+      const raw = safeStorage.getItem(SERVER_COLLAPSE_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {

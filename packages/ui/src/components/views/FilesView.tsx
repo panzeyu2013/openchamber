@@ -69,8 +69,9 @@ import { Icon } from "@/components/icon/Icon";
 import { useMessageTTS } from '@/hooks/useMessageTTS';
 import { ensurePierreThemeRegistered } from '@/lib/shiki/appThemeRegistry';
 import { getDefaultTheme } from '@/lib/theme/themes';
-import { isElectronShell, isDesktopLocalOriginActive, openDesktopFileInApp, openDesktopPath, subscribeRemoteSshActive, getRemoteSshSnapshot, openDesktopRemoteFileInApp } from '@/lib/desktop';
+import { isElectronShell, isDesktopLocalOriginActive, openDesktopFileInApp, openDesktopPath, openDesktopRemoteFileInApp } from '@/lib/desktop';
 import { useOpenInAppsStore } from '@/stores/useOpenInAppsStore';
+import { useServerStore } from '@/sync/server-context';
 import { OPEN_IN_APPS } from '@/lib/openInApps';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { useI18n } from '@/lib/i18n';
@@ -973,7 +974,9 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const initializeOpenInApps = useOpenInAppsStore((state) => state.initialize);
   const loadOpenInApps = useOpenInAppsStore((state) => state.loadInstalledApps);
 
-  const isRemote = React.useSyncExternalStore(subscribeRemoteSshActive, getRemoteSshSnapshot);
+  const isRemote = useServerStore((s) =>
+    s.servers.some((srv) => srv.type === 'ssh' && srv.status === 'connected')
+  );
 
   const isAvailable = isElectronShell() && (isDesktopLocalOriginActive() || isRemote);
 
@@ -1001,7 +1004,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       return;
     }
 
-    if (getRemoteSshSnapshot()) {
+    if (isRemote) {
       const openedRemotely = await openDesktopRemoteFileInApp(selectedFile.path, app.id, app.appName);
       if (openedRemotely) {
         return;
@@ -1029,7 +1032,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
       }
     }
     toast.error(t('filesView.toast.openInAppFailed', { app: app.appName }));
-  }, [root, selectedFile?.path, t]);
+  }, [root, selectedFile?.path, t, isRemote]);
 
   const handleOpenDialog = React.useCallback((type: 'createFile' | 'createFolder' | 'rename' | 'delete', data: { path: string; name?: string; type?: 'file' | 'directory' }) => {
     setActiveDialog(type);
