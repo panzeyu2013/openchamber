@@ -112,3 +112,86 @@ describe("unregisterServer", () => {
     expect(called).toBe(true)
   })
 })
+
+describe("server discovery race", () => {
+  test("placeholder created via upsertServer is replaced by fetchServerList", async () => {
+    useServerStore.setState({ servers: [], status: "idle" })
+
+    // Step 1: Simulate handleEvent — server.status arrives for unknown server,
+    // creates a minimal placeholder (id === label, status from event)
+    useServerStore.getState().upsertServer({
+      id: "ssh-1",
+      label: "ssh-1",
+      type: "remote-url",
+      status: "connecting",
+      url: "",
+    })
+    expect(useServerStore.getState().servers).toHaveLength(1)
+    expect(useServerStore.getState().servers[0].label).toBe("ssh-1")
+    expect(useServerStore.getState().servers[0].url).toBe("")
+
+    // Step 2: fetchServerList returns full server data (background fetch)
+    const fullServer: ServerInfo = {
+      id: "ssh-1",
+      label: "Production Server",
+      type: "ssh",
+      status: "connected",
+      url: "ssh://prod.example.com",
+    }
+    ;(globalThis as Record<string, unknown>).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([fullServer]),
+      })
+    )
+
+    const { fetchServerList } = await import("./server-context")
+    const servers = await fetchServerList()
+    const matched = servers.find((s) => s.id === "ssh-1")
+    expect(matched).toBeTruthy()
+    expect(matched!.label).toBe("Production Server")
+    expect(matched!.status).toBe("connected")
+
+    // Step 3: Replace placeholder with full data (as done in handleEvent)
+    useServerStore.getState().upsertServer(fullServer)
+    const updated = useServerStore.getState().servers.find((s) => s.id === "ssh-1")
+    expect(updated!.label).toBe("Production Server")
+    expect(updated!.url).toBe("ssh://prod.example.com")
+    expect(updated!.status).toBe("connected")
+  })
+
+  test("server.status events fill store before fetchServerList completes", async () => {
+    useServerStore.setState({ servers: [], status: "idle" })
+
+    // server.status for server "a" arrives, creates placeholder
+    useServerStore.getState().upsertServer({ id: "a", label: "a", type: "remote-url", status: "connecting", url: "" })
+    // server.status for server "b" arrives, creates placeholder
+    useServerStore.getState().upsertServer({ id: "b", label: "b", type: "remote-url", status: "connected", url: "" })
+
+    expect(useServerStore.getState().servers).toHaveLength(2)
+
+    // Background fetchServerList completes
+    ;(globalThis as Record<string, unknown>).fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve([
+          { id: "a", label: "Server A", type: "remote-url", status: "connected", url: "http://a" },
+          { id: "b", label: "Server B", type: "remote-url", status: "connected", url: "http://b" },
+        ]),
+      })
+    )
+
+    const { fetchServerList } = await import("./server-context")
+    const servers = await fetchServerList()
+
+    // Replace placeholders with full data
+    for (const full of servers) {
+      useServerStore.getState().upsertServer(full)
+    }
+
+    const all = useServerStore.getState().servers
+    expect(all).toHaveLength(2)
+    expect(all.find((s) => s.id === "a")!.label).toBe("Server A")
+    expect(all.find((s) => s.id === "b")!.label).toBe("Server B")
+  })
+})

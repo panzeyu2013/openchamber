@@ -329,8 +329,9 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
 
     async function forwardRequest(body) {
       try {
-        // DNS rebinding defense: resolve hostname at proxy time
+        // DNS rebinding defense: resolve hostname at proxy time and pin to IP
         const parsedUrl = new URL(targetUrl)
+        let pinnedUrl = targetUrl
         if (parsedUrl.hostname && !isIP(parsedUrl.hostname)) {
           const resolvedIp = await resolveDnsAtProxyTime(parsedUrl.hostname, targetUrl)
           if (!resolvedIp) {
@@ -339,9 +340,11 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
           if (isPrivateIp(resolvedIp)) {
             return res.status(502).json({ error: `Proxy to '${serverId}' failed: destination resolved to private IP` })
           }
+          // Pin resolved IP to prevent DNS rebinding between check and fetch
+          pinnedUrl = `${parsedUrl.protocol}//${resolvedIp}${parsedUrl.pathname}${parsedUrl.search}${parsedUrl.hash}`
         }
 
-        const upstreamRes = await fetch(`${targetUrl}${queryString}`, {
+        const upstreamRes = await fetch(`${pinnedUrl}${queryString}`, {
           method: req.method,
           headers,
           body,
