@@ -11,6 +11,7 @@ import { useDirectoryStore } from './useDirectoryStore';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import { PROJECT_COLORS } from '@/lib/projectMeta';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 
@@ -47,7 +48,7 @@ interface ProjectsStore {
   projects: ProjectEntry[];
   activeProjectId: string | null;
 
-  addProject: (path: string, options?: { label?: string; id?: string }) => ProjectEntry | null;
+  addProject: (path: string, options?: { label?: string; id?: string; serverId?: string }) => ProjectEntry | null;
   removeProject: (id: string) => void;
   setActiveProject: (id: string) => void;
   setActiveProjectIdOnly: (id: string) => void;
@@ -213,7 +214,6 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
 
   const result: ProjectEntry[] = [];
   const seenIds = new Set<string>();
-  const seenPaths = new Set<string>();
 
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue;
@@ -225,16 +225,19 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     const normalizedPath = normalizeProjectPath(rawPath);
     if (!normalizedPath) continue;
 
-    const id = createProjectIdFromPath(normalizedPath);
+    const rawServerId = typeof candidate.serverId === 'string' ? candidate.serverId.trim() : '';
+    const serverId = rawServerId.length > 0 ? rawServerId : 'local';
+
+    const id = createProjectIdFromPath(normalizedPath, serverId !== 'local' ? serverId : undefined);
     if (!id) continue;
 
-    if (seenIds.has(id) || seenPaths.has(normalizedPath)) continue;
+    if (seenIds.has(id)) continue;
     seenIds.add(id);
-    seenPaths.add(normalizedPath);
 
     const project: ProjectEntry = {
       id,
       path: normalizedPath,
+      serverId: serverId !== 'local' ? serverId : undefined,
     };
 
     if (typeof candidate.label === 'string' && candidate.label.trim().length > 0) {
@@ -524,7 +527,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       return { ok: true, normalizedPath: normalized };
     },
 
-    addProject: (path: string, options?: { label?: string; id?: string }) => {
+    addProject: (path: string, options?: { label?: string; id?: string; serverId?: string }) => {
       if (isVSCodeProjectsRuntime) {
         return null;
       }
@@ -535,7 +538,10 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       const normalizedPath = validation.normalizedPath;
-      const existing = get().projects.find((project) => project.path === normalizedPath);
+      const effectiveServerId = options?.serverId || 'local';
+      const existing = get().projects.find(
+        (project) => project.path === normalizedPath && (project.serverId || 'local') === effectiveServerId
+      );
       if (existing) {
         get().setActiveProject(existing.id);
         return existing;
@@ -543,7 +549,7 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const now = Date.now();
       const label = options?.label?.trim() || deriveProjectLabel(normalizedPath);
-      const id = createProjectIdFromPath(normalizedPath);
+      const id = createProjectIdFromPath(normalizedPath, effectiveServerId !== 'local' ? effectiveServerId : undefined);
       const entry: ProjectEntry = {
         id,
         path: normalizedPath,
@@ -551,6 +557,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         color: pickAutoColor(get().projects),
         addedAt: now,
         lastOpenedAt: now,
+        serverId: effectiveServerId !== 'local' ? effectiveServerId : undefined,
       };
 
       const nextProjects = [...get().projects, entry];
@@ -562,6 +569,9 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       get().setActiveProject(entry.id);
       void get().discoverProjectIcon(entry.id);
+      if (effectiveServerId !== 'local') {
+        void useGlobalSessionsStore.getState().refreshGlobalSessionsForServer(effectiveServerId);
+      }
       return entry;
     },
 
@@ -595,7 +605,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         const nextActive = nextProjects.find((project) => project.id === nextActiveId);
         if (nextActive) {
           opencodeClient.setDirectory(nextActive.path);
-          useDirectoryStore.getState().setDirectory(nextActive.path, { showOverlay: false });
+          useDirectoryStore.getState().setDirectory(nextActive.path, { showOverlay: false, serverId: nextActive.serverId || 'local' });
         }
       } else {
         void useDirectoryStore.getState().goHome();
@@ -624,9 +634,8 @@ export const useProjectsStore = create<ProjectsStore>()(
       persistProjects(nextProjects, id);
 
       opencodeClient.setDirectory(target.path);
-      useDirectoryStore.getState().setDirectory(target.path, { showOverlay: false });
+      useDirectoryStore.getState().setDirectory(target.path, { showOverlay: false, serverId: target.serverId || 'local' });
     },
-
     setActiveProjectIdOnly: (id: string) => {
       if (isVSCodeProjectsRuntime) {
         return;
@@ -882,7 +891,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         const activeProject = incomingProjects.find((project) => project.id === incomingActive);
         if (activeProject) {
           opencodeClient.setDirectory(activeProject.path);
-          useDirectoryStore.getState().setDirectory(activeProject.path, { showOverlay: false });
+          useDirectoryStore.getState().setDirectory(activeProject.path, { showOverlay: false, serverId: activeProject.serverId || 'local' });
         }
       }
     },

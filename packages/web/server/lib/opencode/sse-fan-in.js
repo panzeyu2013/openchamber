@@ -22,11 +22,14 @@ export class SseFanIn {
     this.flushTimer = null;
     this.lastEventAt = new Map();
     this.subscribedAt = new Map();
+    this._reconnectAttempts = new Map();
+    this._intentionallyDisconnected = new Set();
     this.heartbeatTimer = null;
     this.heartbeatIntervalMs = opts.heartbeatMs ?? 120_000;
     this.connectTimeoutMs = opts.connectTimeoutMs ?? 15_000;
     this.BATCH_INTERVAL = opts.batchInterval ?? DEFAULT_BATCH_INTERVAL;
     this.heartbeatCheckIntervalMs = opts.heartbeatCheckIntervalMs ?? 15000;
+    this._heartbeatRunning = false;
   }
 
   startAll() {
@@ -63,13 +66,17 @@ export class SseFanIn {
     if (!wasConnected) {
       this.serverManager.updateStatus(serverId, 'connecting');
       this.dispatchSynthetic(serverId, 'server.status', { status: 'connecting' });
-    }
+        this._reconnectAttempts.set(serverId, (this._reconnectAttempts.get(serverId) ?? 0) + 1);
+        this._intentionallyDisconnected.delete(serverId);
+      }
     this.subscribedAt.set(serverId, Date.now());
+    this.lastEventAt.set(serverId, Date.now());
 
     try {
       const subscription = client.events.subscribe((event) => {
         try {
           this.lastEventAt.set(serverId, Date.now());
+          this._reconnectAttempts.delete(serverId);
           const currentStatus = this.serverManager.getServer(serverId)?.status;
           if (currentStatus !== 'connected') {
             this.serverManager.updateStatus(serverId, 'connected');
@@ -91,7 +98,7 @@ export class SseFanIn {
     }
   }
 
-  unsubscribeServer(serverId) {
+  unsubscribeServer(serverId, intentional = false) {
     const sub = this.subscriptions.get(serverId);
     if (sub && typeof sub.unsubscribe === 'function') {
       try { sub.unsubscribe(); } catch { /* ignore */ }
@@ -100,6 +107,14 @@ export class SseFanIn {
     this.lastEventAt.delete(serverId);
     this.subscribedAt.delete(serverId);
     this._clearPending(serverId);
+    if (intentional) {
+      this._intentionallyDisconnected.add(serverId);
+    }
+    const entry = this.serverManager.getServer(serverId);
+    const currentStatus = entry?.status;
+    if (currentStatus === 'degraded' || currentStatus === 'error') {
+      return;
+    }
     this.serverManager.updateStatus(serverId, 'disconnected');
     this.dispatchSynthetic(serverId, 'server.status', { status: 'disconnected' });
   }
@@ -190,6 +205,16 @@ export class SseFanIn {
   }
 
   async _runHeartbeat() {
+    if (this._heartbeatRunning) return;
+    this._heartbeatRunning = true;
+    try {
+      await this._runHeartbeatInner();
+    } finally {
+      this._heartbeatRunning = false;
+    }
+  }
+
+  async _runHeartbeatInner() {
     const now = Date.now();
     const subscribedIds = [...this.subscriptions.keys()];
     for (const serverId of subscribedIds) {
@@ -238,6 +263,11 @@ export class SseFanIn {
       // Auto-reconnect disconnected servers that have a client
       if (server.status === 'disconnected' || server.status === 'error') {
         if (server.id === 'local') continue;
+        if (server.type === 'ssh') continue;
+        if (this._intentionallyDisconnected.has(server.id)) continue;
+        const reconnectAttempts = this._reconnectAttempts.get(server.id) ?? 0;
+        const MAX_AUTO_RECONNECT_ATTEMPTS = 3;
+        if (reconnectAttempts >= MAX_AUTO_RECONNECT_ATTEMPTS) continue;
         let client = this.serverManager.getClient(server.id);
         // Try to create a client if one doesn't exist but we have a URL
         if (!client && server.url) {

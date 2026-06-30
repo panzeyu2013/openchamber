@@ -2,6 +2,7 @@ import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { toast } from '@/components/ui';
 import { useI18n } from '@/lib/i18n';
+import { Icon } from '@/components/icon/Icon';
 import { useDeviceInfo } from '@/lib/device';
 import { isDesktopShell } from '@/lib/desktop';
 import { sessionEvents } from '@/lib/sessionEvents';
@@ -1643,49 +1644,67 @@ export const SessionSidebar: React.FC<SessionSidebarProps> = ({
               status={serverSection.status}
               isCollapsed={collapsedServers.has(serverSection.serverId)}
               isActive={serverSection.serverId === activeServerId}
+              hidden={serverSection.hidden ?? false}
               errorMessage={serverSection.errorMessage}
+              requiresUserAction={serverSection.requiresUserAction ?? false}
               onToggleCollapse={() => toggleServerCollapse(serverSection.serverId)}
               onConnect={serverSection.serverId !== 'local' ? () => connectServer(serverSection.serverId, serverSection.label, serverSection.type, serverSection.url) : undefined}
               onDisconnect={serverSection.serverId !== 'local' ? () => disconnectServer(serverSection.serverId) : undefined}
             />
             {!collapsedServers.has(serverSection.serverId) ? (
-              <SidebarProjectsList
-                topContent={topContent}
-                sharedSessionsOnly={false}
-                hasSharedSessions={false}
-                sectionsForRender={serverSection.projectSections}
-                projectSections={serverSection.projectSections}
-                activeProjectId={activeProjectId}
-                showOnlyMainWorkspace={false}
-                hasSessionSearchQuery={hasSessionSearchQuery}
-                emptyState={emptyState}
-                searchEmptyState={searchEmptyState}
-                renderGroupSessions={renderGroupSessions}
-                homeDirectory={homeDirectory}
-                collapsedProjects={collapsedProjects}
-                hideDirectoryControls={hideDirectoryControls}
-                projectRepoStatus={projectRepoStatus}
-                isDesktopShellRuntime={isDesktopShellRuntime}
-                stuckProjectHeaders={stuckProjectHeaders}
-                mobileVariant={mobileVariant}
-                alwaysShowActions={alwaysShowSidebarActions}
-                toggleProject={toggleProject}
-                setActiveProjectIdOnly={setActiveProjectIdOnly}
-                setActiveMainTab={setActiveMainTab}
-                setSessionSwitcherOpen={setSessionSwitcherOpen}
-                openNewSessionDraft={openNewSessionDraftFromTree}
-                openNewWorktreeDialog={openNewWorktreeDialog}
-                openProjectEditDialog={setEditingProjectDialogId}
-                removeProject={removeProject}
-                projectHeaderSentinelRefs={projectHeaderSentinelRefs}
-                reorderProjects={reorderProjects}
-                getOrderedGroups={getOrderedGroups}
-                setGroupOrderByProject={setGroupOrderByProject}
-                openSidebarMenuKey={openSidebarMenuKey}
-                setOpenSidebarMenuKey={setOpenSidebarMenuKey}
-                isInlineEditing={isInlineEditing}
-                hideScrollWrapper
-              />
+              serverSection.projectSections.length > 0 ? (
+                <SidebarProjectsList
+                  topContent={topContent}
+                  sharedSessionsOnly={false}
+                  hasSharedSessions={false}
+                  sectionsForRender={serverSection.projectSections}
+                  projectSections={serverSection.projectSections}
+                  activeProjectId={activeProjectId}
+                  showOnlyMainWorkspace={false}
+                  hasSessionSearchQuery={hasSessionSearchQuery}
+                  emptyState={emptyState}
+                  searchEmptyState={searchEmptyState}
+                  renderGroupSessions={renderGroupSessions}
+                  homeDirectory={homeDirectory}
+                  collapsedProjects={collapsedProjects}
+                  hideDirectoryControls={hideDirectoryControls}
+                  projectRepoStatus={projectRepoStatus}
+                  isDesktopShellRuntime={isDesktopShellRuntime}
+                  stuckProjectHeaders={stuckProjectHeaders}
+                  mobileVariant={mobileVariant}
+                  alwaysShowActions={alwaysShowSidebarActions}
+                  toggleProject={toggleProject}
+                  setActiveProjectIdOnly={setActiveProjectIdOnly}
+                  setActiveMainTab={setActiveMainTab}
+                  setSessionSwitcherOpen={setSessionSwitcherOpen}
+                  openNewSessionDraft={openNewSessionDraftFromTree}
+                  openNewWorktreeDialog={openNewWorktreeDialog}
+                  openProjectEditDialog={setEditingProjectDialogId}
+                  removeProject={removeProject}
+                  projectHeaderSentinelRefs={projectHeaderSentinelRefs}
+                  reorderProjects={reorderProjects}
+                  getOrderedGroups={getOrderedGroups}
+                  setGroupOrderByProject={setGroupOrderByProject}
+                  openSidebarMenuKey={openSidebarMenuKey}
+                  setOpenSidebarMenuKey={setOpenSidebarMenuKey}
+                  isInlineEditing={isInlineEditing}
+                  hideScrollWrapper
+                />
+              ) : serverSection.type !== 'local' ? (
+                <div className="px-4 py-6 text-center">
+                  <p className="text-muted-foreground typography-meta mb-2">
+                    {t('server.sidebar.noProjects', { label: serverSection.label })}
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => sessionEvents.requestDirectoryDialog()}
+                    className="inline-flex items-center gap-1 rounded-md text-primary hover:text-primary/80 typography-ui-label transition-colors"
+                  >
+                    <Icon name="folder-add" className="h-3.5 w-3.5" />
+                    <span>{t('sessions.sidebar.header.actions.addProject')}</span>
+                  </button>
+                </div>
+              ) : null
             ) : null}
           </React.Fragment>
         ))

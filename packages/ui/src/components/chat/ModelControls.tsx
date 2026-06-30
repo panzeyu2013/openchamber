@@ -27,6 +27,10 @@ import { getEditModeColors } from '@/lib/permissions/editModeColors';
 import { cn, fuzzyMatch } from '@/lib/utils';
 import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useGlobalSessionsStore, resolveGlobalSessionServerId } from '@/stores/useGlobalSessionsStore';
+import { useRemoteConfig } from '@/sync/remote-config-cache';
+import type { Config } from '@opencode-ai/sdk/v2';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useDirectorySync, useSessionMessages } from '@/sync/sync-context';
@@ -292,7 +296,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 }) => {
     const { t } = useI18n();
     const { isReady, isUnavailable } = useOpenCodeReadiness();
-    const readinessLabel = isUnavailable ? t('common.unavailable') : t('common.loading');
     const providers = useConfigStore((state) => state.providers);
     const currentProviderId = useConfigStore((state) => state.currentProviderId);
     const currentModelId = useConfigStore((state) => state.currentModelId);
@@ -311,7 +314,100 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const getCurrentAgent = useConfigStore((state) => state.getCurrentAgent);
     const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
 
-    // Use visible agents (excludes hidden internal agents)
+    const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
+    const activeProjectId = useProjectsStore((s) => s.activeProjectId);
+    const globalSessionCount = useGlobalSessionsStore((s) => s.activeSessions.length);
+
+    const resolvedServerId = React.useMemo(() => {
+        if (currentSessionId) {
+            const store = useGlobalSessionsStore.getState()
+            const session = [...store.activeSessions, ...store.archivedSessions]
+                .find((s) => s.id === currentSessionId)
+            if (session) return resolveGlobalSessionServerId(session)
+        }
+        if (activeProjectId) {
+            const project = useProjectsStore.getState().projects.find((p) => p.id === activeProjectId)
+            if (project?.serverId) return project.serverId
+        }
+        return 'local'
+    }, [currentSessionId, activeProjectId, globalSessionCount])
+
+    const remoteConfig = useRemoteConfig(resolvedServerId !== 'local' ? resolvedServerId : '')
+    const isRemote = resolvedServerId !== 'local'
+
+    const remoteProviders = React.useMemo(() => {
+        const config: Config | null = remoteConfig.config
+        if (!config?.provider) return [] as typeof providers
+        return Object.entries(config.provider).map(([key, p]) => ({
+            id: p.id ?? key,
+            name: p.name ?? key,
+            source: 'config' as const,
+            env: p.env ?? [],
+            options: (p.options ?? {}) as Record<string, unknown>,
+            models: Object.entries(p.models ?? {}).map(([modelKey, m]) => ({
+                id: (m as Record<string, unknown>).id as string ?? modelKey,
+                name: (m as Record<string, unknown>).name as string ?? modelKey,
+                providerID: p.id ?? key,
+                api: { id: '', url: '', npm: '' },
+                family: (m as Record<string, unknown>).family as string,
+                capabilities: {
+                    temperature: false,
+                    reasoning: Boolean((m as Record<string, unknown>).reasoning),
+                    attachment: false,
+                    toolcall: Boolean((m as Record<string, unknown>).tool_call),
+                    input: { text: true, audio: false, image: false, video: false, pdf: false },
+                    output: { text: true, audio: false, image: false, video: false, pdf: false },
+                    interleaved: false,
+                },
+                cost: {
+                    input: ((m as Record<string, unknown>).cost as Record<string, number> | undefined)?.input ?? 0,
+                    output: ((m as Record<string, unknown>).cost as Record<string, number> | undefined)?.output ?? 0,
+                    cache: {
+                        read: ((m as Record<string, unknown>).cost as Record<string, number> | undefined)?.cache_read ?? 0,
+                        write: ((m as Record<string, unknown>).cost as Record<string, number> | undefined)?.cache_write ?? 0,
+                    },
+                },
+                limit: {
+                    context: ((m as Record<string, unknown>).limit as Record<string, number> | undefined)?.context ?? 128_000,
+                    output: ((m as Record<string, unknown>).limit as Record<string, number> | undefined)?.output ?? 4_096,
+                },
+                status: 'active' as const,
+                options: {} as Record<string, unknown>,
+                variants: (m as Record<string, unknown>).variants as Record<string, unknown>,
+            })),
+        })) as typeof providers
+    }, [remoteConfig.config])
+
+    const effectiveProviders = isRemote ? remoteProviders : providers
+    const remoteConfigLoading = isRemote && remoteConfig.isLoading
+    const remoteConfigError = isRemote && remoteConfig.error
+
+    const getEffectiveProvider = React.useCallback((providerId: string) => {
+        return effectiveProviders.find((p) => p.id === providerId)
+    }, [effectiveProviders])
+
+    const getEffectiveModelVariants = React.useCallback((providerId: string, modelId: string) => {
+        const p = effectiveProviders.find((entry) => entry.id === providerId)
+        const model = p?.models.find((entry) => entry.id === modelId) as { variants?: Record<string, unknown> } | undefined
+        const variants = model?.variants
+        return variants ? Object.keys(variants) : []
+    }, [effectiveProviders])
+
+    const getEffectiveModelMetadata = React.useCallback((providerId: string, modelId: string) => {
+        return isRemote ? undefined : getModelMetadata(providerId, modelId)
+    }, [isRemote, getModelMetadata])
+
+    const isRemoteReady = isRemote && !remoteConfigLoading && !remoteConfigError
+    const isOpenCodeReady = (!isRemote && isReady) || isRemoteReady
+    const isControlDisabled = isRemote && (remoteConfigLoading || !!remoteConfigError)
+    const readinessLabel = (() => {
+        if (remoteConfigLoading) return t('chat.modelControls.loadingModels')
+        if (remoteConfigError) return t('chat.modelControls.modelLoadFailed', { server: resolvedServerId })
+        if (isOpenCodeReady) return ''
+        return isUnavailable ? t('common.unavailable') : t('common.loading')
+    })()
+    const isSpinning = (!isRemote && !isReady) || remoteConfigLoading
+
     const agents = getVisibleAgents();
     const primaryAgents = React.useMemo(() => agents.filter((agent) => agent.mode === 'primary'), [agents]);
     const tracedReadyRef = React.useRef(false);
@@ -328,7 +424,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         });
     }, [agents.length, currentAgentName, currentModelId, currentProviderId, isReady, providers.length]);
 
-    const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const getDirectoryForSession = useSessionUIStore((s) => s.getDirectoryForSession);
     const sync = useSync();
 
@@ -531,12 +626,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const controlTextSize = isCompact ? 'typography-micro' : 'typography-meta';
     const inlineGapClass = sizeVariant === 'mobile' ? 'gap-x-1' : sizeVariant === 'vscode' ? 'gap-x-2' : 'gap-x-3';
 
-    const currentProvider = getCurrentProvider();
+    const currentProvider = isRemote ? getEffectiveProvider(currentProviderId) : getCurrentProvider();
     const models = Array.isArray(currentProvider?.models) ? currentProvider.models : [];
 
     const visibleProviders = React.useMemo(() => {
-        const result: typeof providers = [];
-        for (const provider of providers) {
+        const sourceProviders = isRemote ? remoteProviders : providers
+        const result: typeof sourceProviders = [];
+        for (const provider of sourceProviders) {
             const providerModels = Array.isArray(provider.models) ? provider.models : [];
             const visibleModels = providerModels.filter((model: ProviderModel) => {
                 const modelId = typeof model?.id === 'string' ? model.id : '';
@@ -549,7 +645,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
         }
         return result;
-    }, [providers, hiddenModels]);
+    }, [providers, remoteProviders, isRemote, hiddenModels]);
 
     const normalizeModelSearchValue = React.useCallback((value: string) => {
         const lower = value.toLowerCase().trim();
@@ -588,9 +684,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         ? models.find((model: ProviderModel) => model.id === currentModelId)
         : undefined;
     const currentMetadata = currentProviderId && currentModelId && currentModelForMetadata
-        ? mergeModelMetadataWithLiveModel(currentProviderId, currentModelForMetadata, getModelMetadata(currentProviderId, currentModelId))
+        ? mergeModelMetadataWithLiveModel(currentProviderId, currentModelForMetadata, getEffectiveModelMetadata(currentProviderId, currentModelId))
         : currentProviderId && currentModelId
-            ? getModelMetadata(currentProviderId, currentModelId)
+            ? getEffectiveModelMetadata(currentProviderId, currentModelId)
             : undefined;
     const localizeMetaLabel = React.useCallback((label: string) => {
         if (label === 'Tool calling') return t('chat.modelControls.capability.toolCalling');
@@ -618,7 +714,9 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
     // Compute from current model each render to avoid stale variants
     // in draft/session transitions.
-    const availableVariants = getCurrentModelVariants();
+    const availableVariants = isRemote
+        ? getEffectiveModelVariants(currentProviderId || '', currentModelId || '')
+        : getCurrentModelVariants();
     const hasVariants = availableVariants.length > 0;
 
     const costRows = [
@@ -684,7 +782,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 return 'model-missing';
             }
 
-            const provider = providers.find(p => p.id === providerId);
+            const provider = effectiveProviders.find(p => p.id === providerId);
             if (!provider) {
                 return 'provider-missing';
             }
@@ -701,8 +799,10 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 return 'applied';
             }
 
-            setProvider(providerId);
-            setModel(modelId);
+            if (!isRemote) {
+                setProvider(providerId);
+                setModel(modelId);
+            }
 
             if (currentSessionId) {
                 saveSessionModelSelection(currentSessionId, providerId, modelId);
@@ -713,15 +813,15 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
             return 'applied';
         },
-        [providers, currentProviderId, currentModelId, setProvider, setModel, currentSessionId, saveAgentModelForSession, saveSessionModelSelection],
+        [effectiveProviders, currentProviderId, currentModelId, setProvider, setModel, currentSessionId, saveAgentModelForSession, saveSessionModelSelection],
     );
 
     const getModelVariantOptions = React.useCallback((providerId: string, modelId: string) => {
-        const provider = providers.find((entry) => entry.id === providerId);
+        const provider = effectiveProviders.find((entry) => entry.id === providerId);
         const model = provider?.models.find((entry) => entry.id === modelId) as { variants?: Record<string, unknown> } | undefined;
         const variants = model?.variants;
         return variants ? Object.keys(variants) : [];
-    }, [providers]);
+    }, [effectiveProviders]);
 
     const resolveModelVariantSelection = React.useCallback((providerId: string, modelId: string) => {
         const variantOptions = getModelVariantOptions(providerId, modelId);
@@ -812,7 +912,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (!contextHydrated || providers.length === 0 || !hasRenderableCurrentSessionSnapshot || !latestLoadedUserChoice?.providerID || !latestLoadedUserChoice.modelID) {
+        if (!contextHydrated || effectiveProviders.length === 0 || !hasRenderableCurrentSessionSnapshot || !latestLoadedUserChoice?.providerID || !latestLoadedUserChoice.modelID) {
             return;
         }
 
@@ -864,7 +964,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         currentSessionId,
         currentAgentName,
         contextHydrated,
-        providers,
+        effectiveProviders,
         hasRenderableCurrentSessionSnapshot,
         latestLoadedUserChoice,
         setAgent,
@@ -881,7 +981,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (!contextHydrated || providers.length === 0 || agents.length === 0) {
+        if (!contextHydrated || effectiveProviders.length === 0 || agents.length === 0) {
             return;
         }
 
@@ -1014,7 +1114,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         tryApplyModelSelection,
         saveSessionAgentSelection,
         contextHydrated,
-        providers,
+        effectiveProviders,
         sync,
     ]);
 
@@ -1274,7 +1374,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     };
 
     const getProviderDisplayName = () => {
-        const provider = providers.find(p => p.id === currentProviderId);
+        const provider = effectiveProviders.find(p => p.id === currentProviderId);
         return provider?.name || currentProviderId;
     };
 
@@ -1561,7 +1661,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
 
         const normalizedQuery = mobileModelQuery.trim();
         const filteredFavorites = favoriteModelsList.filter(({ model, providerID }) => {
-            const provider = providers.find((entry) => entry.id === providerID);
+            const provider = effectiveProviders.find((entry) => entry.id === providerID);
             const providerName = provider?.name || providerID;
             const modelName = getModelDisplayName(model);
             return normalizedQuery.length === 0
@@ -1570,7 +1670,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         });
 
         const filteredRecents = recentModelsList.filter(({ model, providerID }) => {
-            const provider = providers.find((entry) => entry.id === providerID);
+            const provider = effectiveProviders.find((entry) => entry.id === providerID);
             const providerName = provider?.name || providerID;
             const modelName = getModelDisplayName(model);
             return normalizedQuery.length === 0
@@ -2165,7 +2265,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return false;
 
             const { providerID, modelID } = selectedItem;
-            const canonicalProvider = useConfigStore.getState().providers.find((provider) => provider.id === providerID);
+            const canonicalProvider = effectiveProviders.find((provider) => provider.id === providerID);
             const canonicalModel = canonicalProvider?.models.find((model) => model.id === modelID) as { variants?: Record<string, unknown> } | undefined;
             const variantKeys = canonicalModel?.variants ? Object.keys(canonicalModel.variants) : getModelVariantOptions(providerID, modelID);
             if (variantKeys.length === 0) return false;
@@ -2276,18 +2376,19 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return (
             <Tooltip delayDuration={600}>
                 {!isCompact ? (
-                    <DropdownMenu open={isReady && agentMenuOpen} onOpenChange={isReady ? handleModelMenuOpenChange : undefined}>
+                    <DropdownMenu open={isOpenCodeReady && agentMenuOpen} onOpenChange={isOpenCodeReady ? handleModelMenuOpenChange : undefined}>
                         <TooltipTrigger asChild>
                             <DropdownMenuTrigger asChild>
                                 <div
                                     className={cn(
-                                        'model-controls__model-trigger flex items-center gap-1.5 cursor-pointer hover:bg-transparent hover:opacity-70 min-w-0',
+                                        'model-controls__model-trigger flex items-center gap-1.5 min-w-0',
+                                        isControlDisabled ? 'opacity-50' : 'cursor-pointer hover:bg-transparent hover:opacity-70',
                                         buttonHeight
                                     )}
                                 >
-                                    {!isReady ? (
+                                    {isControlDisabled || !isOpenCodeReady ? (
                                         <>
-                                            <Icon name="loader-4" className={cn(controlIconSize, 'animate-spin text-muted-foreground flex-shrink-0')} />
+                                            <Icon name="loader-4" className={cn(controlIconSize, isSpinning ? 'animate-spin text-muted-foreground flex-shrink-0' : 'text-muted-foreground flex-shrink-0')} />
                                             <span className={cn(
                                                 'model-controls__model-label',
                                                 controlTextSize,
@@ -2307,7 +2408,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                     ) : (
                                         <Icon name="pencil-ai" className={cn(controlIconSize, 'text-muted-foreground')} />
                                     )}
-                                    {isReady && (
+                                    {isOpenCodeReady && (
                                         <span
                                             ref={modelLabelRef}
                                             key={`${currentProviderId}-${currentModelId}`}
@@ -2345,7 +2446,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                                 </button>
                             </div>
                             <ModelPickerList
-                                providers={providers as ModelPickerProvider[]}
+                                providers={visibleProviders as ModelPickerProvider[]}
                                 favoriteModels={favoriteModelsList}
                                 recentModels={recentModelsList}
                                 modelsMetadata={useConfigStore.getState().modelsMetadata}

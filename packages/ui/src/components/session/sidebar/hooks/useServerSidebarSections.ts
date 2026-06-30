@@ -23,8 +23,10 @@ export interface ServerSection {
   serverId: string;
   label: string;
   type: 'local' | 'ssh' | 'remote-url';
-  status: 'connecting' | 'connected' | 'disconnected' | 'error';
+  status: 'connecting' | 'connected' | 'disconnected' | 'error' | 'degraded';
   errorMessage?: string;
+  requiresUserAction?: boolean;
+  hidden?: boolean;
   isCollapsed: boolean;
   url: string;
   projectSections: ProjectSection[];
@@ -80,6 +82,8 @@ export function useServerSidebarSections(opts: {
       type: server.type,
       status: server.status,
       errorMessage: server.errorMessage,
+      requiresUserAction: server.requiresUserAction,
+      hidden: server.hidden,
       isCollapsed: collapsedServers.has(server.id),
       url: server.url,
       projectSections: serverProjectMap.get(server.id) ?? [],

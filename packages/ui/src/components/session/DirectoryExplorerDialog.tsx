@@ -9,6 +9,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useGitIdentitiesStore } from '@/stores/useGitIdentitiesStore';
@@ -22,6 +23,7 @@ import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { Icon } from "@/components/icon/Icon";
 import { opencodeClient } from '@/lib/opencode/client';
 import { useI18n } from '@/lib/i18n';
+import { useServerList } from '@/sync/server-context';
 
 interface DirectoryExplorerDialogProps {
   open: boolean;
@@ -142,6 +144,7 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
   const homeDirectory = useDirectoryStore((s) => s.homeDirectory);
   const projects = useProjectsStore((s) => s.projects);
   const addProject = useProjectsStore((s) => s.addProject);
+  const servers = useServerList();
   const gitIdentityProfiles = useGitIdentitiesStore((s) => s.profiles);
   const globalGitIdentity = useGitIdentitiesStore((s) => s.globalIdentity);
   const defaultGitIdentityId = useGitIdentitiesStore((s) => s.defaultGitIdentityId);
@@ -153,11 +156,16 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
   const inputRef = React.useRef<HTMLInputElement>(null);
   const addButtonRef = React.useRef<HTMLButtonElement>(null);
   const rowRefs = React.useRef(new Map<string, HTMLButtonElement>());
+  const abortControllerRef = React.useRef<AbortController | null>(null);
   const [dialogHomeDirectory, setDialogHomeDirectory] = React.useState('');
+  const [selectedServerId, setSelectedServerId] = React.useState<string>('local');
   const [query, setQuery] = React.useState('~/');
   const [entries, setEntries] = React.useState<BrowseEntry[]>([]);
   const [isLoading, setIsLoading] = React.useState(false);
   const [isBrowseDirectoryMissing, setIsBrowseDirectoryMissing] = React.useState(false);
+  const [remoteErrorMessage, setRemoteErrorMessage] = React.useState<string | null>(null);
+  const isRemote = selectedServerId !== 'local';
+  const selectedServer = servers.find((s) => s.id === selectedServerId);
   const [highlightedIndex, setHighlightedIndex] = React.useState(0);
   const [isConfirming, setIsConfirming] = React.useState(false);
   const [isOpeningFinder, setIsOpeningFinder] = React.useState(false);
@@ -171,12 +179,14 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
 
   const addedProjectPaths = React.useMemo(() => new Set(
     projects
+      .filter((p) => (p.serverId || 'local') === selectedServerId)
       .map((project) => normalizeDirectoryPath(project.path))
       .filter((path): path is string => Boolean(path))
-  ), [projects]);
+  ), [projects, selectedServerId]);
 
   React.useEffect(() => {
     if (!open) return;
+    setSelectedServerId('local');
     setQuery('~/');
     setEntries([]);
     setHighlightedIndex(0);
@@ -186,13 +196,18 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
     setCloneRemoteUrl('');
     setSelectedGitIdentityId(null);
     setShowHidden(false);
+    setRemoteErrorMessage(null);
     requestAnimationFrame(() => focusPathInput(inputRef.current));
 
     let cancelled = false;
     const resolveHome = async () => {
-      const resolved = await resolveFreshFilesystemHome();
+      const resolved = isRemote
+        ? await opencodeClient.getFilesystemHome(selectedServerId).catch(() => null)
+        : await resolveFreshFilesystemHome();
       if (cancelled) return;
       setDialogHomeDirectory(resolved || homeDirectory || '');
+      setQuery('~/');
+      setEntries([]);
       requestAnimationFrame(() => focusPathInput(inputRef.current));
     };
     void resolveHome();
@@ -200,6 +215,25 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
       cancelled = true;
     };
   }, [homeDirectory, open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    if (abortControllerRef.current) abortControllerRef.current.abort();
+    let cancelled = false;
+    const resolveHome = async () => {
+      const resolved = isRemote
+        ? await opencodeClient.getFilesystemHome(selectedServerId).catch(() => null)
+        : await resolveFreshFilesystemHome();
+      if (cancelled) return;
+      setDialogHomeDirectory(resolved || homeDirectory || '');
+      setQuery('~/');
+      setEntries([]);
+      setRemoteErrorMessage(null);
+      requestAnimationFrame(() => focusPathInput(inputRef.current));
+    };
+    void resolveHome();
+    return () => { cancelled = true; };
+  }, [selectedServerId]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -254,12 +288,22 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
     }
 
     let cancelled = false;
+    const controller = new AbortController();
+    abortControllerRef.current?.abort();
+    abortControllerRef.current = controller;
     setIsLoading(true);
     setIsBrowseDirectoryMissing(false);
-    opencodeClient.listLocalDirectory(browseDirectoryAbsolutePath)
+    setRemoteErrorMessage(null);
+
+    const promise = isRemote
+      ? opencodeClient.listLocalDirectory(browseDirectoryAbsolutePath, { serverId: selectedServerId, signal: controller.signal })
+      : opencodeClient.listLocalDirectory(browseDirectoryAbsolutePath, { signal: controller.signal });
+
+    promise
       .then((result) => {
-        if (cancelled) return;
+        if (cancelled || controller.signal.aborted) return;
         setIsBrowseDirectoryMissing(false);
+        setRemoteErrorMessage(null);
         const nextEntries = result
           .filter((entry) => entry.isDirectory)
           .map((entry) => ({
@@ -269,20 +313,32 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
           .sort((left, right) => left.name.localeCompare(right.name));
         setEntries(nextEntries);
       })
-      .catch(() => {
-        if (!cancelled) {
-          setEntries([]);
+      .catch((err) => {
+        if (cancelled || controller.signal.aborted) return;
+        setEntries([]);
+        if (err?.name === 'AbortError') return;
+        if (isRemote) {
+          const message = err?.message || String(err);
+          if (message.includes('timed out') || message.includes('Timeout')) {
+            setRemoteErrorMessage(t('directoryExplorerDialog.remote.timeout'));
+          } else if (message.includes('disconnected') || message.includes('ECONNREFUSED')) {
+            setRemoteErrorMessage(t('directoryExplorerDialog.remote.disconnected'));
+          } else {
+            setRemoteErrorMessage(t('directoryExplorerDialog.remote.error', { server: selectedServer?.label || selectedServerId }));
+          }
+        } else {
           setIsBrowseDirectoryMissing(true);
         }
       })
       .finally(() => {
-        if (!cancelled) setIsLoading(false);
+        if (!cancelled && !controller.signal.aborted) setIsLoading(false);
       });
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [browseDirectoryAbsolutePath, open]);
+  }, [browseDirectoryAbsolutePath, open, isRemote, selectedServerId, selectedServer, t]);
 
   const filteredEntries = React.useMemo(() => {
     const lowerFilter = browseFilterQuery.toLowerCase();
@@ -332,7 +388,8 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
       || (!hasTrailingPathSeparator(query) && browseFilterQuery.trim().length > 0 && exactEntry === null)
     )
   );
-  const canAddProject = !isConfirming && !isOpeningFinder && !isAlreadyAdded && Boolean(targetPath);
+  const serverDisconnected = isRemote && selectedServer && (selectedServer.status === 'disconnected' || selectedServer.status === 'error');
+  const canAddProject = !isConfirming && !isOpeningFinder && !isAlreadyAdded && Boolean(targetPath) && !serverDisconnected;
   const canSubmitClone = canAddProject && cloneRemoteUrl.trim().length > 0;
   const highlightedRow = rows[highlightedIndex] ?? null;
   const hasHighlightedBrowseItem = Boolean(
@@ -391,7 +448,7 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
     event.stopPropagation();
     const normalized = normalizeDirectoryPath(path);
     if (normalized && addedProjectPaths.has(normalized)) return;
-    const added = addProject(path);
+    const added = addProject(path, { serverId: isRemote ? selectedServerId : undefined });
     if (!added) {
       toast.error(t('directoryExplorerDialog.toast.failedToAddProject'), {
         description: t('directoryExplorerDialog.toast.selectValidDirectoryPath'),
@@ -423,7 +480,7 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
       } else if (shouldCreateSelection) {
         await opencodeClient.createDirectory(target);
       }
-      const added = addProject(selectedTarget);
+      const added = addProject(selectedTarget, { serverId: isRemote ? selectedServerId : undefined });
       if (!added) {
         toast.error(t('directoryExplorerDialog.toast.failedToAddProject'), {
           description: t('directoryExplorerDialog.toast.selectValidDirectoryPath'),
@@ -531,6 +588,39 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
 
   const inputSection = (
     <div className="px-2.5 py-1.5">
+      {servers.length > 0 ? (
+        <div className="mb-1.5">
+          <Select value={selectedServerId} onValueChange={(val) => {
+            setSelectedServerId(val);
+            if (abortControllerRef.current) abortControllerRef.current.abort();
+          }}>
+            <SelectTrigger className="w-full" size="sm">
+              <SelectValue placeholder={t('directoryExplorerDialog.server.placeholder')} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="local">{t('server.sidebar.localLabel')}</SelectItem>
+              {servers.map((s) => {
+                const isConnected = s.status === 'connected';
+                return (
+                  <SelectItem key={s.id} value={s.id} disabled={!isConnected}>
+                    <span className="flex items-center gap-2">
+                      <span className={cn('h-2 w-2 rounded-full', isConnected ? 'bg-status-success' : 'bg-muted-foreground/40')} />
+                      {s.label} ({s.type === 'ssh' ? 'SSH' : t('server.sidebar.type.remote')})
+                      {!isConnected ? ` — ${t('directoryExplorerDialog.server.disconnected')}` : null}
+                    </span>
+                  </SelectItem>
+                );
+              })}
+            </SelectContent>
+          </Select>
+        </div>
+      ) : null}
+      {isRemote && selectedServer ? (
+        <div className="mb-1 flex items-center gap-1.5 rounded-md bg-[var(--interactive-hover)]/30 px-2 py-0.5 typography-micro text-muted-foreground">
+          <span className={cn('h-2 w-2 rounded-full', selectedServer?.status === 'connected' ? 'bg-status-success' : 'bg-muted-foreground/40')} />
+          {t('directoryExplorerDialog.remote.listing', { server: selectedServer.label })}
+        </div>
+      ) : null}
       {isCloneMode ? (
         <div className="mb-1.5 flex items-center gap-1.5">
           <Input
@@ -592,9 +682,35 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
         <div className="px-2 pb-1 pt-0.5 typography-meta font-medium uppercase tracking-wide text-muted-foreground/80">
           {t('directoryExplorerDialog.browse.directories')}
         </div>
-        {isLoading ? (
+        {isLoading && isRemote ? (
+          <div className="flex flex-col items-center gap-2 py-10">
+            <Icon name="loader-4" className="h-5 w-5 animate-spin text-muted-foreground" />
+            <span className="typography-ui-label text-muted-foreground">
+              {t('directoryExplorerDialog.remote.listing', { server: selectedServer?.label || selectedServerId })}
+            </span>
+          </div>
+        ) : isLoading ? (
           <div className="py-10 text-center typography-ui-label text-muted-foreground">
             {t('directoryExplorerDialog.browse.loading')}
+          </div>
+        ) : remoteErrorMessage ? (
+          <div className="flex flex-col items-center gap-2 py-10">
+            <Icon name="error-warning" className="h-5 w-5 text-status-error" />
+            <span className="typography-ui-label text-status-error">{remoteErrorMessage}</span>
+            <div className="flex gap-2">
+              <Button variant="outline" size="xs" onClick={() => {
+                setSelectedServerId('local');
+                setRemoteErrorMessage(null);
+              }}>
+                {t('directoryExplorerDialog.remote.returnToLocal')}
+              </Button>
+              <Button variant="outline" size="xs" onClick={() => {
+                setRemoteErrorMessage(null);
+                setQuery(browseDirectoryDisplayPath);
+              }}>
+                {t('directoryExplorerDialog.remote.retry')}
+              </Button>
+            </div>
           </div>
         ) : rows.length === 0 ? (
           <div className="py-10 text-center typography-ui-label text-muted-foreground">
@@ -688,14 +804,16 @@ export const DirectoryExplorerDialog: React.FC<DirectoryExplorerDialogProps> = (
     <>
       {!isMobile ? footerHints : null}
       <div className={cn('flex w-full flex-row justify-end gap-2 sm:w-auto', isMobile && 'justify-stretch')}>
-        {isDesktop ? (
+        {isDesktop && !isRemote ? (
           <Button variant="ghost" size="xs" onClick={handleOpenInFinder} disabled={isConfirming || isOpeningFinder || isCloneMode}>
             {isOpeningFinder ? t('directoryExplorerDialog.actions.openingFinder') : t('directoryExplorerDialog.actions.openInFinder')}
           </Button>
         ) : null}
-        <Button variant="ghost" size="xs" onClick={() => setIsCloneMode((value) => !value)} disabled={isConfirming || isOpeningFinder} className={cn(isMobile && 'flex-1')}>
-          {isCloneMode ? t('directoryExplorerDialog.actions.addLocalProject') : t('directoryExplorerDialog.actions.cloneRepository')}
-        </Button>
+        {!isRemote ? (
+          <Button variant="ghost" size="xs" onClick={() => setIsCloneMode((value) => !value)} disabled={isConfirming || isOpeningFinder} className={cn(isMobile && 'flex-1')}>
+            {isCloneMode ? t('directoryExplorerDialog.actions.addLocalProject') : t('directoryExplorerDialog.actions.cloneRepository')}
+          </Button>
+        ) : null}
         {isMobile ? (
           <Button size="xs" onClick={() => void finalizeSelection(targetPath)} disabled={isCloneMode ? !canSubmitClone : !canAddProject} className="flex-1">
             {submitActionLabel}

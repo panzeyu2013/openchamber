@@ -44,7 +44,11 @@ export const createOpenCodeAuthStateRuntime = (dependencies) => {
     return normalized;
   };
 
-  const getOpenCodeAuthHeaders = () => {
+  const getOpenCodeAuthHeaders = (serverId) => {
+    if (typeof serverId === 'string' && serverId.length > 0 && serverId !== 'local') {
+      return {};
+    }
+
     const password = normalizeOpenCodePassword(getAuthPassword() || process.env.OPENCODE_SERVER_PASSWORD || '');
 
     if (!password) {

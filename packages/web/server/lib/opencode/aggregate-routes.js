@@ -33,6 +33,10 @@ function isPrivateIp(ipStr) {
     const lower = ipStr.toLowerCase()
     if (lower === '::1') return true
     if (lower === '::ffff:127.0.0.1') return true
+    if (lower.startsWith('::ffff:')) {
+      const v4Addr = lower.slice(7)
+      return isPrivateIp(v4Addr)
+    }
     if (lower.startsWith('fc') || lower.startsWith('fd')) return true
     if (/^fe[89ab]/.test(lower)) return true
     return false
@@ -110,6 +114,7 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
       }
 
       serverManager.removeServer(serverId);
+      proxyBreakers.delete(serverId);
 
       res.json({ ok: true });
     } catch (err) {
@@ -133,7 +138,9 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
   router.get('/api/servers/all/sessions', async (req, res) => {
     try {
       const archived = req.query.archived === 'true';
-      const result = await serverManager.getGlobalSessions({ archived });
+      const serverIdsRaw = typeof req.query.serverIds === 'string' ? req.query.serverIds : '';
+      const serverIds = serverIdsRaw ? new Set(serverIdsRaw.split(',').map((s) => s.trim()).filter(Boolean)) : undefined;
+      const result = await serverManager.getGlobalSessions({ archived, serverIds });
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: err?.message || 'Failed to aggregate sessions' });
@@ -304,21 +311,43 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
     }
 
     if (typeof getOpenCodeAuthHeaders === 'function') {
-      const authHeaders = getOpenCodeAuthHeaders()
+      const authHeaders = getOpenCodeAuthHeaders(serverId)
       if (authHeaders && typeof authHeaders === 'object') {
         Object.assign(headers, authHeaders)
       }
     }
 
+    const MAX_REQUEST_BYTES = 10 * 1024 * 1024
+
+    const isLongOperation = req.method === 'POST' && /^\/api\/servers\/[^/]+\/proxy\/session\/[^/]+\/message$/.test(req.path)
+
+    const isTransportError = (status) => {
+      if (!status) return true
+      return status >= 500 || status === 408
+    }
+
     // Use req.body if body-parser already consumed the stream; otherwise read raw.
     if (req.readableEnded) {
-      const body = req.body !== undefined && Object.keys(req.body).length > 0
+      const rawBody = req.body !== undefined && Object.keys(req.body).length > 0
         ? Buffer.from(JSON.stringify(req.body))
         : undefined
-      void forwardRequest(body)
+      if (rawBody && rawBody.length > MAX_REQUEST_BYTES) {
+        return res.status(413).json({ error: 'Request body too large' })
+      }
+      void forwardRequest(rawBody)
     } else {
       const bodyChunks = []
-      req.on('data', (chunk) => bodyChunks.push(chunk))
+      req.on('data', (chunk) => {
+        const currentLength = bodyChunks.reduce((sum, c) => sum + c.length, 0)
+        if (currentLength + chunk.length > MAX_REQUEST_BYTES) {
+          req.destroy()
+          if (!res.headersSent) {
+            res.status(413).json({ error: 'Request body too large' })
+          }
+          return
+        }
+        bodyChunks.push(chunk)
+      })
       req.on('end', () => {
         const body = bodyChunks.length > 0
           ? Buffer.concat(bodyChunks)
@@ -348,7 +377,7 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
           method: req.method,
           headers,
           body,
-          signal: AbortSignal.timeout(30_000),
+          signal: AbortSignal.timeout(isLongOperation ? 300_000 : 30_000),
         })
 
         let pumpSucceeded = false
@@ -399,11 +428,19 @@ export function registerAggregateRoutes(router, serverManager, sseFanIn, getOpen
           pumpSucceeded = true
         }
         if (pumpSucceeded) {
-          getProxyBreaker(serverId).onSuccess()
+          if (upstreamRes.status === 401 || upstreamRes.status === 403) {
+            serverManager.updateStatus(serverId, 'error', upstreamRes.status === 401 ? 'Authentication expired' : 'Forbidden')
+          } else if (upstreamRes.status < 400) {
+            getProxyBreaker(serverId).onSuccess()
+          }
         }
       } catch (err) {
         const breaker = getProxyBreaker(serverId)
-        breaker.onFailure()
+        if (!isTransportError(err?.status) && err?.status !== undefined) {
+          // Non-transport errors (e.g. auth) - don't trip the breaker
+        } else {
+          breaker.onFailure()
+        }
         if (breaker.circuitOpen) {
           console.warn(`[aggregate-routes] Circuit breaker opened for proxy to '${serverId}' after ${breaker.consecutiveFailures} consecutive failures`)
         }

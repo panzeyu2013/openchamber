@@ -1739,7 +1739,7 @@ class OpencodeService {
     return await response.json();
   }
 
-  async listLocalDirectory(directoryPath: string | null | undefined, options?: { respectGitignore?: boolean; serverId?: string }): Promise<FilesystemEntry[]> {
+  async listLocalDirectory(directoryPath: string | null | undefined, options?: { respectGitignore?: boolean; serverId?: string; signal?: AbortSignal }): Promise<FilesystemEntry[]> {
     const normalizedDirectoryPath = typeof directoryPath === 'string' ? normalizeFsPath(directoryPath.trim()) : '';
     const cacheKey = `${normalizedDirectoryPath}|${options?.respectGitignore ? '1' : '0'}|${options?.serverId ?? ''}`;
     const now = Date.now();
@@ -1754,28 +1754,32 @@ class OpencodeService {
     }
 
     const task = (async () => {
-    const desktopFiles = getDesktopFilesApi();
-    if (desktopFiles) {
-      try {
-        const result = await desktopFiles.listDirectory(directoryPath || '', options);
-        if (!result || !Array.isArray(result.entries)) {
-          return [];
+    const serverId = options?.serverId
+    const isRemote = !!serverId && serverId !== 'local'
+    if (!isRemote) {
+      const desktopFiles = getDesktopFilesApi();
+      if (desktopFiles) {
+        try {
+          const result = await desktopFiles.listDirectory(directoryPath || '', options);
+          if (!result || !Array.isArray(result.entries)) {
+            return [];
+          }
+          const entries = result.entries.map<FilesystemEntry>((entry) => ({
+            name: entry.name,
+            path: normalizeFsPath(entry.path),
+            isDirectory: !!entry.isDirectory,
+            isFile: !entry.isDirectory,
+            isSymbolicLink: false,
+          }));
+          this.listDirectoryCache.set(cacheKey, {
+            entries,
+            expiresAt: Date.now() + FS_LIST_CACHE_TTL_MS,
+          });
+          return entries;
+        } catch (error) {
+          console.error('Failed to list directory contents:', error);
+          throw error;
         }
-        const entries = result.entries.map<FilesystemEntry>((entry) => ({
-          name: entry.name,
-          path: normalizeFsPath(entry.path),
-          isDirectory: !!entry.isDirectory,
-          isFile: !entry.isDirectory,
-          isSymbolicLink: false,
-        }));
-        this.listDirectoryCache.set(cacheKey, {
-          entries,
-          expiresAt: Date.now() + FS_LIST_CACHE_TTL_MS,
-        });
-        return entries;
-      } catch (error) {
-        console.error('Failed to list directory contents:', error);
-        throw error;
       }
     }
 
@@ -1788,7 +1792,10 @@ class OpencodeService {
         params.set('respectGitignore', 'true');
       }
       const query = params.toString();
-      const response = await runtimeFetch(`${this.baseUrl}/fs/list${query ? `?${query}` : ''}`);
+      const fetchBase = isRemote
+        ? `/api/servers/${serverId}/proxy/fs/list`
+        : `${this.baseUrl}/fs/list`
+      const response = await runtimeFetch(`${fetchBase}${query ? `?${query}` : ''}`, options?.signal ? { signal: options.signal } : undefined);
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         const message = typeof error.error === 'string' ? error.error : 'Failed to list directory';
@@ -1867,11 +1874,37 @@ class OpencodeService {
     }
   }
 
-  async getFilesystemHome(): Promise<string | null> {
-    // The injected desktop home describes the LOCAL machine. It is only a
-    // valid answer while the active runtime is the local one — after an
-    // in-place switch to a remote host the home must come from that host's
-    // /api/fs/home, not from the local Electron global.
+  async getFilesystemHome(serverId?: string): Promise<string | null> {
+    const isRemote = !!serverId && serverId !== 'local'
+    if (isRemote) {
+      try {
+        const response = await runtimeFetch(`/api/servers/${serverId}/proxy/fs/home`, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json'
+          }
+        });
+
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          const message =
+            typeof error.error === 'string' && error.error.length > 0
+              ? error.error
+              : 'Failed to resolve home directory';
+          throw new Error(message);
+        }
+
+        const payload = await response.json();
+        if (payload && typeof payload.home === 'string' && payload.home.length > 0) {
+          return payload.home;
+        }
+        return null;
+      } catch (error) {
+        console.warn('Failed to resolve filesystem home directory:', error);
+        return null;
+      }
+    }
+
     const runtimeKey = getRuntimeKey();
     if (!runtimeKey || runtimeKey === 'local') {
       const desktopHome = await getDesktopHomeDirectory();

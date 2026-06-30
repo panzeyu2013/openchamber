@@ -66,8 +66,12 @@ export class MultiServerManager {
       circuitBreaker: new CircuitBreaker(),
       errorMessage: null,
       lastConnectedAt: null,
+      apiVersion: null,
     };
     this.servers.set(config.id, entry);
+    if (config.type !== 'local' && config.url) {
+      this.probeVersion(config.id).catch(() => {});
+    }
     return entry;
   }
 
@@ -114,7 +118,11 @@ export class MultiServerManager {
   }
 
   async getGlobalSessions(opts = {}) {
-    const entriesSnap = [...this.servers.values()].filter((s) => !s.circuitBreaker.circuitOpen || Date.now() > s.circuitBreaker.nextRetryAt);
+    const requestedIds = opts.serverIds instanceof Set ? opts.serverIds : null;
+    const entriesSnap = [...this.servers.values()].filter((s) => {
+      if (requestedIds && !requestedIds.has(s.id)) return false;
+      return !s.circuitBreaker.circuitOpen || Date.now() > s.circuitBreaker.nextRetryAt;
+    });
     for (const s of entriesSnap) {
       if (s.circuitBreaker.circuitOpen && Date.now() > s.circuitBreaker.nextRetryAt) {
         s.circuitBreaker.circuitOpen = false;
@@ -128,11 +136,21 @@ export class MultiServerManager {
         if (!server.client || typeof server.client.session?.list !== 'function') {
           throw new Error('No session client available');
         }
-        const sessions = await server.client.session.list({
-          archived: opts.archived,
-        });
+        const PAGE_SIZE = 500;
+        const all = [];
+        let offset = 0;
+        while (true) {
+          const page = await server.client.session.list({
+            archived: opts.archived,
+            limit: PAGE_SIZE,
+            offset,
+          });
+          all.push(...page);
+          if (!page || page.length < PAGE_SIZE) break;
+          offset += PAGE_SIZE;
+        }
         server.circuitBreaker.onSuccess();
-        return sessions.map((s) => ({ ...s, serverId: server.id }));
+        return all.map((s) => ({ ...s, serverId: server.id }));
       }),
     );
 
@@ -163,11 +181,40 @@ export class MultiServerManager {
     }
   }
 
-  updateStatus(serverId, status, errorMessage = null) {
+  async probeVersion(serverId) {
+    const entry = this.servers.get(serverId);
+    if (!entry || !entry.url) return null;
+    try {
+      const versionUrl = new URL('/api/version', entry.url.replace(/\/$/, ''));
+      const response = await fetch(versionUrl.toString(), {
+        signal: AbortSignal.timeout(10_000),
+        headers: { Accept: 'application/json' },
+      });
+      if (!response.ok) {
+        entry.apiVersion = null;
+        return null;
+      }
+      const payload = await response.json().catch(() => null);
+      const version = payload?.version || payload?.serverVersion || null;
+      entry.apiVersion = version;
+      return version;
+    } catch (err) {
+      console.warn(`[MultiServerManager] probeVersion failed for '${serverId}':`, err?.message || err);
+      entry.apiVersion = null;
+      return null;
+    }
+  }
+
+  updateStatus(serverId, status, errorMessage = null, extra = {}) {
     const entry = this.servers.get(serverId);
     if (!entry) return;
     entry.status = status;
     entry.errorMessage = errorMessage;
+    if (typeof extra.requiresUserAction === 'boolean') {
+      entry.requiresUserAction = extra.requiresUserAction;
+    } else if (status === 'connected' || status === 'degraded') {
+      entry.requiresUserAction = false;
+    }
     if (status === 'connected') {
       entry.lastConnectedAt = Date.now();
       entry.circuitBreaker.onSuccess();

@@ -16,6 +16,7 @@ import { ElectronSshManager } from './ssh-manager.mjs';
 import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
+import { assertAllowedCommand } from './shared/exec-whitelist.mjs';
 import { mintOutsideFileGrant } from '@openchamber/web/server/lib/fs/routes.js';
 
 const execFileAsync = promisify(execFile);
@@ -420,13 +421,26 @@ const sshManager = new ElectronSshManager({
         detail: detail.detail || null,
       });
       const sm = state.serverHandle?.getServerManager?.();
+      const sf = state.serverHandle?.getSseFanIn?.();
       if (sm) {
         if (detail.phase === 'ready') {
           sm.updateStatus(detail.id, 'connected');
+          sf?.dispatchSynthetic?.(detail.id, 'server.status', { status: 'connected' });
+          sf?.subscribeServer?.(detail.id);
+        } else if (detail.phase === 'degraded') {
+          sm.updateStatus(detail.id, 'degraded', detail.detail || 'SSH reconnecting', { requiresUserAction: false });
+          sf?.unsubscribeServer?.(detail.id);
+          sf?.dispatchSynthetic?.(detail.id, 'server.status', { status: 'degraded', errorMessage: detail.detail || 'SSH reconnecting' });
         } else if (detail.phase === 'idle') {
           sm.updateStatus(detail.id, 'disconnected');
+          sf?.unsubscribeServer?.(detail.id);
+          sf?.dispatchSynthetic?.(detail.id, 'server.status', { status: 'disconnected' });
         } else if (detail.phase === 'error') {
-          sm.updateStatus(detail.id, 'error', detail.detail || 'SSH error');
+          sm.updateStatus(detail.id, 'error', detail.detail || 'SSH error', { requiresUserAction: !!detail.requiresUserAction });
+          if (detail.requiresUserAction) {
+            sf?.unsubscribeServer?.(detail.id);
+          }
+          sf?.dispatchSynthetic?.(detail.id, 'server.status', { status: 'error', errorMessage: detail.detail || 'SSH error' });
         }
       }
     }
@@ -504,16 +518,19 @@ const isPrivateHostUrl = async (url) => {
     if (ipVersion === 4) {
       const ipNum = hostname.split('.').reduce((acc, octet) => (acc << 8) | (parseInt(octet, 10) & 0xff), 0) >>> 0;
       const maskForBits = (bits) => (~0) << (32 - bits);
+      if ((ipNum & maskForBits(8)) === (0x00000000 >>> 0)) return true;
       if ((ipNum & maskForBits(8)) === (0x7f000000 >>> 0)) return true;
       if ((ipNum & maskForBits(8)) === (0x0a000000 >>> 0)) return true;
       if ((ipNum & maskForBits(12)) === (0xac100000 >>> 0)) return true;
       if ((ipNum & maskForBits(16)) === (0xc0a80000 >>> 0)) return true;
       if ((ipNum & maskForBits(16)) === (0xa9fe0000 >>> 0)) return true;
+      if ((ipNum & maskForBits(10)) === (0x64400000 >>> 0)) return true;
       return false;
     }
     if (ipVersion === 6) {
       const lower = hostname.toLowerCase();
       if (lower === '::1') return true;
+      if (lower.startsWith('::ffff:')) return isPrivateHostUrl(`http://${lower.slice(7)}`);
       if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
       if (/^fe[89ab]/.test(lower)) return true;
       return false;
@@ -527,14 +544,17 @@ const isPrivateHostUrl = async (url) => {
           if (resolvedVersion === 4) {
             const ipNum = resolvedAddr.split('.').reduce((acc, octet) => (acc << 8) | (parseInt(octet, 10) & 0xff), 0) >>> 0;
             const maskForBits = (bits) => (~0) << (32 - bits);
+            if ((ipNum & maskForBits(8)) === (0x00000000 >>> 0)) return true;
             if ((ipNum & maskForBits(8)) === (0x7f000000 >>> 0)) return true;
             if ((ipNum & maskForBits(8)) === (0x0a000000 >>> 0)) return true;
             if ((ipNum & maskForBits(12)) === (0xac100000 >>> 0)) return true;
             if ((ipNum & maskForBits(16)) === (0xc0a80000 >>> 0)) return true;
             if ((ipNum & maskForBits(16)) === (0xa9fe0000 >>> 0)) return true;
+            if ((ipNum & maskForBits(10)) === (0x64400000 >>> 0)) return true;
           } else if (resolvedVersion === 6) {
             const lower = resolvedAddr.toLowerCase();
             if (lower === '::1') return true;
+            if (lower.startsWith('::ffff:')) return isPrivateHostUrl(`http://${lower.slice(7)}`);
             if (lower.startsWith('fc') || lower.startsWith('fd')) return true;
             if (/^fe[89ab]/.test(lower)) return true;
           }
@@ -4254,6 +4274,13 @@ const handleInvoke = async (browserWindow, command, args = {}, senderOrigin = ''
     case 'desktop_ssh_logs_clear':
       sshManager.clearLogsForInstance(String(args.id || '').trim());
       return null;
+
+    case 'desktop_ssh_exec': {
+      const { serverId, command, args: execArgs = [], cwd = '', timeout } = args;
+      const error = assertAllowedCommand(command, execArgs, cwd);
+      if (error) return { error };
+      return await sshManager.exec(serverId, command, execArgs, { cwd, timeout });
+    }
 
     case 'desktop_server_list': {
       const sm = state.serverHandle?.getServerManager?.();

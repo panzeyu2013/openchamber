@@ -1,11 +1,11 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveGlobalSessionDirectory, resolveGlobalSessionServerId } from '@/stores/useGlobalSessionsStore';
 import { dedupeSessionsById, isSessionRelatedToProject, normalizePath } from '../utils';
 
 type WorktreeMeta = { path: string };
 
-type NormalizedProject = { id: string; normalizedPath: string };
+type NormalizedProject = { id: string; normalizedPath: string; serverId?: string };
 
 type Args = {
   isVSCode: boolean;
@@ -32,54 +32,52 @@ export const useProjectSessionLists = (args: Args) => {
     normalizedProjects,
   } = args;
 
-  // Precompute the set of directories the sidebar will ever ask about:
-  // every project's normalized path plus the path of each registered
-  // worktree. Walking this set is O(P + W) per Sidebar render and lets
-  // us skip the bulk of `sessions` (whose directory is not associated
-  // with a known project) when building `sessionsByDirectory`.
   const allowedDirectories = React.useMemo(() => {
-    const set = new Set<string>();
+    const map = new Map<string, Set<string>>();
     normalizedProjects.forEach((project) => {
       if (project.normalizedPath) {
-        set.add(project.normalizedPath);
+        const sid = project.serverId || 'local';
+        const dirs = map.get(sid) ?? new Set<string>();
+        dirs.add(project.normalizedPath);
+        map.set(sid, dirs);
       }
     });
     if (!isVSCode) {
-      for (const worktrees of availableWorktreesByProject.values()) {
+      for (const [projectPath, worktrees] of availableWorktreesByProject.entries()) {
+        const project = normalizedProjects.find((p) => p.normalizedPath === projectPath);
+        const sid = project?.serverId || 'local';
+        const dirs = map.get(sid) ?? new Set<string>();
         for (const worktree of worktrees) {
           const normalized = normalizePath(worktree.path);
-          if (normalized) set.add(normalized);
+          if (normalized) dirs.add(normalized);
         }
+        if (dirs.size > 0) map.set(sid, dirs);
       }
     }
-    return set;
+    return map;
   }, [normalizedProjects, availableWorktreesByProject, isVSCode]);
 
   const sessionsByDirectory = React.useMemo(() => {
-    const next = new Map<string, Session[]>();
+    const next = new Map<string, Map<string, Session[]>>();
     sessions.forEach((session) => {
       const directory = resolveGlobalSessionDirectory(session);
-      if (!directory) {
-        return;
-      }
-      // Skip sessions whose directory doesn't belong to any known
-      // project or worktree. Without this filter the Map grows with
-      // every session the server has ever seen, even ones for
-      // long-removed worktrees; the sidebar's downstream filters
-      // would then drop them anyway.
-      if (!allowedDirectories.has(directory)) {
-        return;
-      }
+      if (!directory) return;
+      const serverId = resolveGlobalSessionServerId(session);
+      const allowedForServer = allowedDirectories.get(serverId);
+      if (!allowedForServer || !allowedForServer.has(directory)) return;
 
-      const collection = next.get(directory) ?? [];
+      const serverMap = next.get(serverId) ?? new Map<string, Session[]>();
+      const collection = serverMap.get(directory) ?? [];
       collection.push(session);
-      next.set(directory, collection);
+      serverMap.set(directory, collection);
+      next.set(serverId, serverMap);
     });
     return next;
   }, [sessions, allowedDirectories]);
 
   const getSessionsForProject = React.useCallback(
-    (project: { normalizedPath: string }) => {
+    (project: { normalizedPath: string; serverId?: string | null }) => {
+      const effectiveServerId = project.serverId || 'local';
       const worktreesForProject = isVSCode ? [] : (availableWorktreesByProject.get(project.normalizedPath) ?? []);
       const directories = [
         project.normalizedPath,
@@ -90,13 +88,12 @@ export const useProjectSessionLists = (args: Args) => {
 
       const seen = new Set<string>();
       const collected: Session[] = [];
+      const serverDirMap = sessionsByDirectory.get(effectiveServerId);
 
       directories.forEach((directory) => {
-        const sessionsForDirectory = sessionsByDirectory.get(directory) ?? [];
+        const sessionsForDirectory = serverDirMap?.get(directory) ?? [];
         sessionsForDirectory.forEach((session) => {
-          if (seen.has(session.id)) {
-            return;
-          }
+          if (seen.has(session.id)) return;
           seen.add(session.id);
           collected.push(session);
         });
@@ -108,27 +105,25 @@ export const useProjectSessionLists = (args: Args) => {
   );
 
   const getArchivedSessionsForProject = React.useCallback(
-    (project: { normalizedPath: string }) => {
+    (project: { normalizedPath: string; serverId?: string | null }) => {
+      const effectiveServerId = project.serverId || 'local';
+
       if (isVSCode) {
         const archived = archivedSessions.filter((session) => {
+          const sid = resolveGlobalSessionServerId(session);
+          if (sid !== effectiveServerId) return false;
           const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
           const projectWorktree = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
-
-          if (sessionDirectory) {
-            return sessionDirectory === project.normalizedPath;
-          }
-
+          if (sessionDirectory) return sessionDirectory === project.normalizedPath;
           return projectWorktree === project.normalizedPath;
         });
 
         const unassignedLive = sessions.filter((session) => {
-          if (session.time?.archived) {
-            return false;
-          }
+          const sid = resolveGlobalSessionServerId(session);
+          if (sid !== effectiveServerId) return false;
+          if (session.time?.archived) return false;
           const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
-          if (sessionDirectory) {
-            return false;
-          }
+          if (sessionDirectory) return false;
           const projectWorktree = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
           return projectWorktree === project.normalizedPath;
         });
@@ -144,23 +139,20 @@ export const useProjectSessionLists = (args: Args) => {
           .filter((value): value is string => Boolean(value)),
       ]);
 
-      const collect = (input: Session[]): Session[] => input.filter((session) =>
-        isSessionRelatedToProject(session, project.normalizedPath, validDirectories),
-      );
+      const collect = (input: Session[]): Session[] => input.filter((session) => {
+        if (resolveGlobalSessionServerId(session) !== effectiveServerId) return false;
+        return isSessionRelatedToProject(session, project.normalizedPath, validDirectories);
+      });
 
       const archived = collect(archivedSessions);
       const unassignedLive = sessions.filter((session) => {
-        if (session.time?.archived) {
-          return false;
-        }
+        const sid = resolveGlobalSessionServerId(session);
+        if (sid !== effectiveServerId) return false;
+        if (session.time?.archived) return false;
         const sessionDirectory = normalizePath((session as Session & { directory?: string | null }).directory ?? null);
-        if (sessionDirectory) {
-          return false;
-        }
+        if (sessionDirectory) return false;
         const projectWorktree = normalizePath((session as Session & { project?: { worktree?: string | null } | null }).project?.worktree ?? null);
-        if (!projectWorktree) {
-          return false;
-        }
+        if (!projectWorktree) return false;
         return projectWorktree === project.normalizedPath || projectWorktree.startsWith(`${project.normalizedPath}/`);
       });
 

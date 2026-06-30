@@ -4,6 +4,7 @@ import { useStore } from "zustand"
 import { toast } from "@/components/ui"
 import { useDirectoryStore, setServerExistsValidator } from "@/stores/useDirectoryStore"
 import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { useSessionPinnedStore } from "@/stores/useSessionPinnedStore"
 import { getSyncChildStores, cleanRoutingIndex } from "./sync-refs"
 import { getSafeStorage } from "@/stores/utils/safeStorage"
 import { runtimeFetch } from "@/lib/runtime-fetch"
@@ -13,8 +14,9 @@ export interface ServerInfo {
   id: string
   label: string
   type: "local" | "ssh" | "remote-url"
-  status: "connecting" | "connected" | "disconnected" | "error"
+  status: "connecting" | "connected" | "disconnected" | "error" | "degraded"
   errorMessage?: string
+  requiresUserAction?: boolean
   url: string
 }
 
@@ -40,6 +42,7 @@ export const useServerStore = create<ServerState>()((set) => ({
       const existing = state.servers.find((s) => s.id === server.id)
       if (existing) {
         if (existing.status === server.status && existing.errorMessage === server.errorMessage
+            && existing.requiresUserAction === server.requiresUserAction
             && existing.label === server.label && existing.type === server.type && existing.url === server.url) {
           return state
         }
@@ -190,6 +193,7 @@ export function useServerActions() {
         try { cleanRoutingIndex() } catch { /* routing index may not be initialized */ }
         opencodeClient.clearServerClientCache(id)
         useGlobalSessionsStore.getState().removeServerEntries(id)
+        try { useSessionPinnedStore.getState().removeAllForServer(id) } catch { /* pinned store may not be initialized */ }
         const { currentServerId, setDirectory, currentDirectory } = useDirectoryStore.getState()
         if (currentServerId === id) {
           toast.info(`Switched to local server (disconnected "${id}")`)

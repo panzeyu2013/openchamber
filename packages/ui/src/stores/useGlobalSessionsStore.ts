@@ -22,7 +22,8 @@ type GlobalSessionsState = {
   reviewTransferBySessionId: Map<string, ReviewTransferDirection>;
   hasLoaded: boolean;
   status: GlobalSessionsStatus;
-  loadSessions: (fallbackActive?: Session[]) => Promise<LoadResult>;
+  loadSessions: (fallbackActive?: Session[], opts?: { serverIds?: Set<string> }) => Promise<LoadResult>;
+  refreshGlobalSessionsForServer: (serverId: string) => Promise<LoadResult>;
   refreshSessionsForDirectories: (directories: Iterable<string>, fallbackActive?: Session[]) => Promise<LoadResult>;
   applySnapshot: (activeSessions: GlobalSessionEntry[], archivedSessions: GlobalSessionEntry[], status?: GlobalSessionsStatus) => void;
   upsertSession: (session: GlobalSessionEntry | Session) => void;
@@ -32,6 +33,7 @@ type GlobalSessionsState = {
 };
 
 let inflightLoad: Promise<LoadResult> | null = null;
+let inflightLoadKey: string | null = null;
 
 const PAGE_SIZE = 500;
 
@@ -413,13 +415,15 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
     set((state) => applySnapshot(state, activeSessions, archivedSessions, status));
   },
 
-  loadSessions: async (fallbackActive) => {
-    if (inflightLoad) {
+  loadSessions: async (fallbackActive, opts?: { serverIds?: Set<string> }) => {
+    const requestKey = opts?.serverIds ? Array.from(opts.serverIds).sort().join(',') : '*';
+    if (inflightLoad && inflightLoadKey === requestKey) {
       return inflightLoad;
     }
 
     set((state) => (state.status === 'loading' ? state : { status: 'loading' }));
 
+    inflightLoadKey = requestKey;
     inflightLoad = (async () => {
       const current = get();
       const FETCH_TIMEOUT_MS = 30000;
@@ -428,9 +432,15 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
+        const serverIdsParam = opts?.serverIds && opts.serverIds.size > 0
+          ? `?serverIds=${Array.from(opts.serverIds).join(',')}`
+          : ''
+        const activeUrl = `/api/servers/all/sessions${serverIdsParam}`
+        const archivedUrl = `/api/servers/all/sessions${serverIdsParam ? `${serverIdsParam}&archived=true` : '?archived=true'}`
+
         const [activeResult, archivedResult] = await Promise.allSettled([
-          runtimeFetch('/api/servers/all/sessions', { signal: controller.signal }),
-          runtimeFetch('/api/servers/all/sessions?archived=true', { signal: controller.signal }),
+          runtimeFetch(activeUrl, { signal: controller.signal }),
+          runtimeFetch(archivedUrl, { signal: controller.signal }),
         ]);
 
         clearTimeout(timeoutId);
@@ -473,10 +483,15 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
         return { activeSessions: fallbackSnapshot, archivedSessions: current.archivedSessions };
       } finally {
         inflightLoad = null;
+        inflightLoadKey = null;
       }
     })();
 
     return inflightLoad;
+  },
+
+  refreshGlobalSessionsForServer: async (serverId) => {
+    return get().loadSessions(undefined, { serverIds: new Set([serverId]) });
   },
 
   refreshSessionsForDirectories: async (directories, fallbackActive) => {
@@ -645,11 +660,12 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
       const nextActiveSessions = state.activeSessions.filter((s) => s.serverId !== serverId);
       const nextArchivedSessions = state.archivedSessions.filter((s) => s.serverId !== serverId);
       if (nextActiveSessions.length + nextArchivedSessions.length === prevCount) return state;
-      return {
-        activeSessions: nextActiveSessions,
-        archivedSessions: nextArchivedSessions,
-        sessionsByDirectory: buildSessionsByDirectory(nextActiveSessions),
-      };
+          return {
+            activeSessions: nextActiveSessions,
+            archivedSessions: nextArchivedSessions,
+            sessionsByDirectory: buildSessionsByDirectory(nextActiveSessions),
+            reviewTransferBySessionId: buildReviewTransferMap(nextActiveSessions),
+          };
     });
   },
 }));

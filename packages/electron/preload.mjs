@@ -193,4 +193,5 @@ contextBridge.exposeInMainWorld('__OPENCHAMBER_MULTI_SERVER__', {
     };
     return addListener('openchamber:server-status', handler);
   },
+  desktopSshExec: (params) => ipcRenderer.invoke('openchamber:invoke', 'desktop_ssh_exec', params),
 });

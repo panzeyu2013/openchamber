@@ -1084,8 +1084,6 @@ export class ElectronSshManager {
       } catch {
       }
     }
-
-    this.clearRetryAttempt(id);
   }
 
   async connectBlocking(instance) {
@@ -1304,6 +1302,7 @@ export class ElectronSshManager {
       throw new Error('SSH instance id is required');
     }
     await this.disconnectInternal(trimmed);
+    this.clearRetryAttempt(trimmed);
   }
 
   async statusesWithDefaults(id) {
@@ -1313,6 +1312,43 @@ export class ElectronSshManager {
     return this.readInstances().instances
       .map((instance) => this.statusSnapshotForInstance(instance.id))
       .sort((left, right) => left.id.localeCompare(right.id));
+  }
+
+  async exec(serverId, command, args = [], options = {}) {
+    const id = String(serverId || '').trim();
+    if (!id) {
+      return { error: 'SSH instance id is required' };
+    }
+
+    const session = this.sessions.get(id);
+    if (!session) {
+      return { error: 'SSH instance is not connected' };
+    }
+
+    const status = this.statuses.get(id);
+    if (!status || status.phase !== 'ready') {
+      return { error: 'SSH instance is not ready' };
+    }
+
+    const cwd = typeof options.cwd === 'string' ? options.cwd.trim() : '';
+    const timeoutSec = Number.isFinite(options.timeout) && options.timeout > 0 ? options.timeout : 30;
+
+    const remoteScript = cwd
+      ? `cd ${shellQuote(cwd)} && ${command} ${args.map((a) => shellQuote(a)).join(' ')}`
+      : `${command} ${args.map((a) => shellQuote(a)).join(' ')}`;
+
+    const sshArgs = buildSshArgs(session.parsed, [
+      '-o', 'ControlMaster=no',
+      '-o', `ControlPath=${session.controlPath}`,
+      '-o', `ConnectTimeout=${timeoutSec}`,
+      '-T',
+    ], `sh -lc ${shellQuote(remoteScript)}`);
+
+    const { code, stdout, stderr } = await runOutput('ssh', sshArgs, timeoutSec);
+    const outputLimit = 1024 * 1024;
+
+    const truncate = (s) => s.length > outputLimit ? s.slice(0, outputLimit) : s;
+    return { stdout: truncate(stdout), stderr: truncate(stderr), exitCode: code };
   }
 
   async shutdownAll() {
