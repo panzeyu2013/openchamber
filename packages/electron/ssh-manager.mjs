@@ -1049,7 +1049,7 @@ export class ElectronSshManager {
     return { remotePort, startedByUs };
   }
 
-  async disconnectInternal(id, reportIdle) {
+  async disconnectInternal(id) {
     const timer = this.monitorTimers.get(id);
     if (timer) {
       clearTimeout(timer);
@@ -1058,15 +1058,20 @@ export class ElectronSshManager {
 
     const session = this.sessions.get(id);
     this.sessions.delete(id);
+    this.statuses.delete(id);
 
     if (session) {
-      if (session.startedByUs && session.instance.remoteOpenchamber.mode === 'managed' && !session.instance.remoteOpenchamber.keepRunning) {
-        await this.stopRemoteServerBestEffort(session.parsed, session.controlPath, session.remotePort);
+      if (session.startedByUs && session.instance.remoteOpenchamber?.mode === 'managed' && !session.instance.remoteOpenchamber.keepRunning) {
+        try {
+          await this.stopRemoteServerBestEffort(session.parsed, session.controlPath, session.remotePort);
+        } catch {
+          // best-effort cleanup
+        }
       }
       await stopControlMasterBestEffort(session.parsed, session.controlPath);
       for (const child of [session.mainForward, session.master]) {
         try {
-          child.kill('SIGTERM');
+          process.platform === 'win32' ? child.kill() : child.kill('SIGTERM');
         } catch {
         }
       }
@@ -1081,9 +1086,6 @@ export class ElectronSshManager {
     }
 
     this.clearRetryAttempt(id);
-    if (reportIdle) {
-      this.setStatus(id, 'idle', null, null, null, null, false, 0, false);
-    }
   }
 
   async connectBlocking(instance) {
@@ -1239,7 +1241,7 @@ export class ElectronSshManager {
       }
 
       this.appendLogWithLevel(id, 'WARN', droppedReason);
-      await this.disconnectInternal(id, false);
+      await this.disconnectInternal(id);
       const attempt = this.nextRetryAttempt(id);
       if (attempt > DEFAULT_RECONNECT_MAX_ATTEMPTS) {
         this.setStatus(id, 'error', `${droppedReason}. Retry limit reached`, null, null, null, false, attempt, true);
@@ -1278,17 +1280,20 @@ export class ElectronSshManager {
     const connectAttempt = this.nextConnectAttempt(trimmed);
     this.appendAttemptSeparator(trimmed, connectAttempt, retryAttempt);
     this.appendLog(trimmed, 'Starting SSH connection');
-    await this.disconnectInternal(trimmed, false);
 
-    const task = this.connectBlocking(this.sanitizeInstance(instance))
-      .catch(async (error) => {
-        this.setStatus(trimmed, 'error', error instanceof Error ? error.message : String(error), null, null, null, false, 0, true);
-        await this.disconnectInternal(trimmed, false);
-        throw error;
-      })
-      .finally(() => {
-        this.connecting.delete(trimmed);
-      });
+    const task = (async () => {
+      await this.disconnectInternal(trimmed);
+      return this.connectBlocking(this.sanitizeInstance(instance))
+        .catch(async (error) => {
+          this.setStatus(trimmed, 'error', error instanceof Error ? error.message : String(error), null, null, null, false, 0, true);
+          await this.disconnectInternal(trimmed);
+          throw error;
+        })
+        .finally(() => {
+          this.connecting.delete(trimmed);
+        });
+    })();
+
     this.connecting.set(trimmed, task);
     return task;
   }
@@ -1298,7 +1303,7 @@ export class ElectronSshManager {
     if (!trimmed || trimmed === LOCAL_HOST_ID) {
       throw new Error('SSH instance id is required');
     }
-    await this.disconnectInternal(trimmed, true);
+    await this.disconnectInternal(trimmed);
   }
 
   async statusesWithDefaults(id) {
@@ -1313,7 +1318,7 @@ export class ElectronSshManager {
   async shutdownAll() {
     const ids = [...new Set([...this.sessions.keys(), ...this.connecting.keys(), ...this.monitorTimers.keys()])];
     for (const id of ids) {
-      await this.disconnectInternal(id, false);
+      await this.disconnectInternal(id);
     }
   }
 }
