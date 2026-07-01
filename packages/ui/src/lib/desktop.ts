@@ -4,7 +4,6 @@ import type { DraftStarterRef } from '@/lib/draftStarters';
 import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
-import { useServerStore } from '@/sync/server-context';
 
 type ManagedRemoteTunnelPreset = {
   id: string;
@@ -376,13 +375,22 @@ export const isDesktopLoopbackOrigin = (): boolean => {
   return Boolean(currentUrl && isLoopbackHost(currentUrl.hostname));
 };
 
+let _serverStoreLazy: { getState: () => { servers: Array<{ type: string; status: string }> } } | null = null;
+
 const isAnySshServerConnected = (): boolean => {
   try {
-    const { servers } = useServerStore.getState();
+    const store = _serverStoreLazy;
+    if (!store) return false;
+    const { servers } = store.getState();
     return servers.some((s) => s.type === 'ssh' && s.status === 'connected');
   } catch {
     return false;
   }
+};
+
+// Init the lazy server store reference — must be called after module init
+export const _initServerStoreLazy = (store: { getState: () => { servers: Array<{ type: string; status: string }> } }) => {
+  _serverStoreLazy = store;
 };
 
 export const isOpenInAppAvailable = (): boolean => {

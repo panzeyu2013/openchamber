@@ -9,6 +9,7 @@ import { getSyncChildStores, cleanRoutingIndex } from "./sync-refs"
 import { getSafeStorage } from "@/stores/utils/safeStorage"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { opencodeClient } from "@/lib/opencode/client"
+import { _initServerStoreLazy } from "@/lib/desktop"
 
 export interface ServerInfo {
   id: string
@@ -237,3 +238,7 @@ export function useInitServerExistsValidator() {
     }
   }, [])
 }
+
+// Initialize the lazy server store reference in desktop.ts
+// to break the circular dependency: desktop ↔ server-context ↔ useDirectoryStore ↔ desktop
+_initServerStoreLazy(useServerStore);
