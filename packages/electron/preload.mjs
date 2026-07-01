@@ -18,6 +18,7 @@ const runtimeHeadersRaw = readArgValue('--openchamber-runtime-headers');
 const homeDirectory = readArgValue('--openchamber-home');
 const macosMajorRaw = readArgValue('--openchamber-macos-major');
 const macosMajor = Number.parseInt(macosMajorRaw, 10);
+const uiProtocol = readArgValue('--openchamber-ui-protocol') || 'openchamber-ui';
 const macVibrancySupported = process.platform === 'darwin';
 // Effective state for this window (main process resolves the saved preference
 // and passes it in). Defaults on when supported unless explicitly '0'.
@@ -42,7 +43,7 @@ const currentOrigin = (() => {
   }
 })();
 const isLocalPage = currentOrigin !== 'null'
-  && (currentOrigin === 'openchamber-ui://app'
+  && (currentOrigin === `${uiProtocol}://app`
   || (localOrigin && currentOrigin === localOrigin));
 
 // Remote pages need __OPENCHAMBER_LOCAL_ORIGIN__ so the HostSwitcher knows
