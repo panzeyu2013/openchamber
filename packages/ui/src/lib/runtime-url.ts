@@ -1,4 +1,9 @@
 import { getLocalRuntimeUrlAuthTokenSync, getRuntimeExtraHeadersSync, getRuntimeUrlAuthTokenSync } from '@/lib/runtime-auth';
+import {
+  normalizeRuntimeBaseUrl,
+  readWindowRuntimeOriginContext,
+  sanitizeRuntimeApiBaseUrl,
+} from '@/lib/runtime-origin';
 
 type QueryValue = string | number | boolean | null | undefined;
 
@@ -28,21 +33,16 @@ const normalizePath = (path: string): string => {
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
 };
 
-const normalizeBaseUrl = (value: string | null | undefined): string => {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/\/+$/, '');
+const readInjectedLocalOrigin = (): string => {
+  if (typeof window === 'undefined') return '';
+  const injected = (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__;
+  return normalizeRuntimeBaseUrl(injected);
 };
 
 const readInjectedApiBaseUrl = (): string => {
   if (typeof window === 'undefined') return '';
   const injected = (window as typeof window & { __OPENCHAMBER_API_BASE_URL__?: string }).__OPENCHAMBER_API_BASE_URL__;
-  return normalizeBaseUrl(injected);
-};
-
-const readInjectedLocalOrigin = (): string => {
-  if (typeof window === 'undefined') return '';
-  const injected = (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__;
-  return normalizeBaseUrl(injected);
+  return sanitizeRuntimeApiBaseUrl(injected);
 };
 
 const hasRuntimeExtraHeaders = (): boolean => Object.keys(getRuntimeExtraHeadersSync()).length > 0;
@@ -51,9 +51,27 @@ const currentHref = (config: RuntimeUrlConfig): string => {
   const configured = config.currentHref?.();
   if (configured) return configured;
   if (typeof window !== 'undefined') {
-    return window.location.href || window.location.origin;
+    return window.location?.href || window.location?.origin || '';
   }
   return '';
+};
+
+const readConfiguredCurrentOrigin = (config: RuntimeUrlConfig): string => {
+  const href = currentHref(config);
+  if (!href) return '';
+  try {
+    return new URL(href).origin;
+  } catch {
+    return '';
+  }
+};
+
+const sanitizeConfiguredApiBaseUrl = (value: string | null | undefined, config: RuntimeUrlConfig): string => {
+  const windowContext = readWindowRuntimeOriginContext();
+  return sanitizeRuntimeApiBaseUrl(value, {
+    ...windowContext,
+    currentOrigin: windowContext.currentOrigin || readConfiguredCurrentOrigin(config),
+  });
 };
 
 const appendQuery = (url: URL, query?: RuntimeUrlQuery): void => {
@@ -138,11 +156,11 @@ const toRealtimeProxyUrl = (kind: 'sse' | 'ws', targetUrl: string, config: Runti
 };
 
 export const createRuntimeUrlResolver = (config: RuntimeUrlConfig = {}): RuntimeUrlResolver => {
-  const configuredApiBaseUrl = normalizeBaseUrl(config.apiBaseUrl);
-  const configuredRealtimeBaseUrl = normalizeBaseUrl(config.realtimeBaseUrl);
+  const configuredApiBaseUrl = config.apiBaseUrl;
+  const configuredRealtimeBaseUrl = config.realtimeBaseUrl;
 
-  const apiBaseUrl = (): string => configuredApiBaseUrl || readInjectedApiBaseUrl();
-  const realtimeBaseUrl = (): string => configuredRealtimeBaseUrl || apiBaseUrl();
+  const apiBaseUrl = (): string => sanitizeConfiguredApiBaseUrl(configuredApiBaseUrl, config) || readInjectedApiBaseUrl();
+  const realtimeBaseUrl = (): string => sanitizeConfiguredApiBaseUrl(configuredRealtimeBaseUrl, config) || apiBaseUrl();
 
   const http = (path: string, query?: RuntimeUrlQuery): string => buildHttpUrl(apiBaseUrl(), path, query);
   const realtime = (path: string, query?: RuntimeUrlQuery): string => buildHttpUrl(realtimeBaseUrl(), path, query);

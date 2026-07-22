@@ -616,6 +616,7 @@ export interface ProjectEntry {
   addedAt?: number;
   lastOpenedAt?: number;
   sidebarCollapsed?: boolean;
+  serverId?: string;
 }
 
 export interface SettingsPayload {

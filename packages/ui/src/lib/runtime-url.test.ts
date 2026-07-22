@@ -136,6 +136,62 @@ describe('createRuntimeUrlResolver', () => {
     });
   });
 
+  test('ignores stale injected loopback API base from another remote page', () => {
+    withWindow({
+      location: { origin: 'http://127.0.0.1:65003', href: 'http://127.0.0.1:65003/index' },
+      __OPENCHAMBER_API_BASE_URL__: 'http://127.0.0.1:58003',
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+    }, () => {
+      const urls = createRuntimeUrlResolver({});
+
+      expect(urls.auth('/auth/url-token')).toBe('/auth/url-token');
+      expect(urls.api('/api/fs/home')).toBe('/api/fs/home');
+      expect(urls.websocket('/api/global/event/ws')).toBe('ws://127.0.0.1:65003/api/global/event/ws');
+    });
+  });
+
+  test('ignores stale configured loopback API base from another remote page', () => {
+    withWindow({
+      location: { origin: 'http://127.0.0.1:49932', href: 'http://127.0.0.1:49932/index' },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+    }, () => {
+      const urls = createRuntimeUrlResolver({
+        apiBaseUrl: 'http://127.0.0.1:65500',
+        realtimeBaseUrl: 'http://127.0.0.1:65500',
+      });
+
+      expect(urls.auth('/auth/url-token')).toBe('/auth/url-token');
+      expect(urls.api('/api/fs/list', { path: '/root/daily' })).toBe('/api/fs/list?path=%2Froot%2Fdaily');
+      expect(urls.websocket('/api/global/event/ws')).toBe('ws://127.0.0.1:49932/api/global/event/ws');
+    });
+  });
+
+  test('re-sanitizes configured loopback API base when the current page origin changes', () => {
+    withWindow({
+      location: { origin: 'http://127.0.0.1:65500', href: 'http://127.0.0.1:65500/index' },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+    }, () => {
+      const urls = createRuntimeUrlResolver({
+        apiBaseUrl: 'http://127.0.0.1:65500',
+        realtimeBaseUrl: 'http://127.0.0.1:65500',
+      });
+
+      expect(urls.api('/api/experimental/session', { archived: true })).toBe(
+        'http://127.0.0.1:65500/api/experimental/session?archived=true',
+      );
+
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        value: { origin: 'http://127.0.0.1:49932', href: 'http://127.0.0.1:49932/index' },
+      });
+
+      expect(urls.api('/api/experimental/session', { archived: true })).toBe(
+        '/api/experimental/session?archived=true',
+      );
+      expect(urls.websocket('/api/global/event/ws')).toBe('ws://127.0.0.1:49932/api/global/event/ws');
+    });
+  });
+
   test('allows runtime-wide resolver configuration', () => {
     const previous = getRuntimeUrlResolver();
     try {

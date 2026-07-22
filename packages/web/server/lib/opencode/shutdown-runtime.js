@@ -58,7 +58,8 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     if (terminalRuntime) {
       try {
         await terminalRuntime.shutdown();
-      } catch {
+      } catch (err) {
+        console.warn('Error shutting down terminal runtime:', err?.message || err);
       } finally {
         setTerminalRuntime(null);
       }
@@ -68,7 +69,8 @@ export const createGracefulShutdownRuntime = (dependencies) => {
     if (messageStreamRuntime) {
       try {
         await messageStreamRuntime.close();
-      } catch {
+      } catch (err) {
+        console.warn('Error closing message stream runtime:', err?.message || err);
       } finally {
         setMessageStreamRuntime(null);
       }
@@ -143,7 +145,9 @@ export const createGracefulShutdownRuntime = (dependencies) => {
 
   const gracefulShutdown = (options = {}) => {
     if (shutdownPromise) return shutdownPromise;
-    shutdownPromise = runShutdown(options);
+    shutdownPromise = runShutdown(options).finally(() => {
+      shutdownPromise = null;
+    });
     return shutdownPromise;
   };
 

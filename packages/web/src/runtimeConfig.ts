@@ -1,17 +1,42 @@
 import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@openchamber/ui/lib/runtime-auth';
 import { installRuntimeFetchBridge } from '@openchamber/ui/lib/runtime-fetch';
+import { sameRuntimeOrigin, sanitizeRuntimeApiBaseUrl } from '@openchamber/ui/lib/runtime-origin';
 import { initializeRuntimeEndpoint } from '@openchamber/ui/lib/runtime-switch';
 import { restoreDesktopRelayRuntime } from '@openchamber/ui/lib/desktopRelayRestore';
 import { configureRuntimeUrlResolver } from '@openchamber/ui/lib/runtime-url';
 import { createWebAPIs } from './api';
 
-const sameOrigin = (left: string, right: string): boolean => {
-  if (!left || !right) return false;
-  try {
-    return new URL(left).origin === new URL(right).origin;
-  } catch {
-    return false;
+const sanitizeRuntimeKeyPart = (value: string | null): string => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return /^[a-zA-Z0-9._:-]+$/.test(trimmed) ? trimmed : '';
+};
+
+const readRuntimeKeyFromUrl = (): string | null => {
+  const params = new URLSearchParams(window.location.search || '');
+  const explicit = sanitizeRuntimeKeyPart(params.get('oc_runtime_key'));
+  if (explicit) return explicit;
+  const desktopHostId = sanitizeRuntimeKeyPart(params.get('oc_desktop_host_id'));
+  if (desktopHostId) return `host:${desktopHostId}`;
+  const injectedDesktopHostId = sanitizeRuntimeKeyPart(
+    (window as typeof window & { __OPENCHAMBER_DESKTOP_HOST_ID__?: string }).__OPENCHAMBER_DESKTOP_HOST_ID__ || null,
+  );
+  return injectedDesktopHostId ? `host:${injectedDesktopHostId}` : null;
+};
+
+const removeRuntimeKeyParamsFromUrl = (): void => {
+  if (typeof window.history?.replaceState !== 'function') return;
+  const params = new URLSearchParams(window.location.search || '');
+  let changed = false;
+  for (const key of ['oc_runtime_key', 'oc_desktop_host_id']) {
+    if (params.has(key)) {
+      params.delete(key);
+      changed = true;
+    }
   }
+  if (!changed) return;
+  const nextSearch = params.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash || ''}`;
+  window.history.replaceState(window.history.state, '', nextUrl);
 };
 
 declare global {
@@ -20,6 +45,7 @@ declare global {
     __OPENCHAMBER_CLIENT_TOKEN__?: string;
     __OPENCHAMBER_RUNTIME_HEADERS__?: Record<string, string>;
     __OPENCHAMBER_LOCAL_ORIGIN__?: string;
+    __OPENCHAMBER_DESKTOP_HOST_ID__?: string;
   }
 }
 
@@ -29,7 +55,7 @@ let desktopRelayRestoreReady: Promise<void> = Promise.resolve();
 export const getDesktopRelayRestoreReady = (): Promise<void> => desktopRelayRestoreReady;
 
 export const createConfiguredWebAPIs = () => {
-  const apiBaseUrl = typeof window.__OPENCHAMBER_API_BASE_URL__ === 'string'
+  const injectedApiBaseUrl = typeof window.__OPENCHAMBER_API_BASE_URL__ === 'string'
     ? window.__OPENCHAMBER_API_BASE_URL__.trim()
     : '';
   const clientToken = typeof window.__OPENCHAMBER_CLIENT_TOKEN__ === 'string'
@@ -38,6 +64,15 @@ export const createConfiguredWebAPIs = () => {
   const localOrigin = typeof window.__OPENCHAMBER_LOCAL_ORIGIN__ === 'string'
     ? window.__OPENCHAMBER_LOCAL_ORIGIN__.trim()
     : '';
+  const apiBaseUrl = sanitizeRuntimeApiBaseUrl(injectedApiBaseUrl, {
+    currentOrigin: window.location?.origin || '',
+    localOrigin,
+  });
+  if (injectedApiBaseUrl && !apiBaseUrl) {
+    window.__OPENCHAMBER_API_BASE_URL__ = '';
+  }
+  const runtimeKey = readRuntimeKeyFromUrl();
+  removeRuntimeKeyParamsFromUrl();
 
   const urls = configureRuntimeUrlResolver({
     apiBaseUrl: apiBaseUrl || undefined,
@@ -45,12 +80,12 @@ export const createConfiguredWebAPIs = () => {
   });
   initializeRuntimeEndpoint({
     apiBaseUrl,
-    runtimeKey: sameOrigin(apiBaseUrl, localOrigin) ? 'local' : null,
+    runtimeKey: runtimeKey || (sameRuntimeOrigin(apiBaseUrl, localOrigin) ? 'local' : null),
   });
   setRuntimeBearerToken(clientToken || null);
   setRuntimeExtraHeaders(window.__OPENCHAMBER_RUNTIME_HEADERS__ || null);
   void refreshRuntimeUrlAuthToken(apiBaseUrl || undefined).catch(() => {});
-  if (localOrigin && !sameOrigin(apiBaseUrl, localOrigin) && Object.keys(getRuntimeExtraHeadersSync()).length > 0) {
+  if (localOrigin && !sameRuntimeOrigin(apiBaseUrl, localOrigin) && Object.keys(getRuntimeExtraHeadersSync()).length > 0) {
     void refreshLocalRuntimeUrlAuthToken(localOrigin).catch(() => {});
   }
   installRuntimeFetchBridge();

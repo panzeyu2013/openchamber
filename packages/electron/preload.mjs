@@ -18,10 +18,26 @@ const runtimeHeadersRaw = readArgValue('--openchamber-runtime-headers');
 const homeDirectory = readArgValue('--openchamber-home');
 const macosMajorRaw = readArgValue('--openchamber-macos-major');
 const macosMajor = Number.parseInt(macosMajorRaw, 10);
+const uiProtocol = readArgValue('--openchamber-ui-protocol') || 'openchamber-ui';
 const macVibrancySupported = process.platform === 'darwin';
 // Effective state for this window (main process resolves the saved preference
 // and passes it in). Defaults on when supported unless explicitly '0'.
 const hasMacVibrancy = macVibrancySupported && readArgValue('--openchamber-mac-vibrancy') !== '0';
+
+const sanitizeDesktopHostId = (value) => {
+  const id = typeof value === 'string' ? value.trim() : '';
+  return /^[a-zA-Z0-9._:-]+$/.test(id) ? id : '';
+};
+
+const readDesktopHostId = () => {
+  try {
+    return sanitizeDesktopHostId(ipcRenderer.sendSync('openchamber:get-desktop-host-id'));
+  } catch {
+    return '';
+  }
+};
+
+const desktopHostId = readDesktopHostId() || sanitizeDesktopHostId(readArgValue('--openchamber-desktop-host-id'));
 
 // Preload re-executes on every cross-origin navigation (we run with
 // sandbox:false, per-document). Two separate concerns to balance:
@@ -42,8 +58,37 @@ const currentOrigin = (() => {
   }
 })();
 const isLocalPage = currentOrigin !== 'null'
-  && (currentOrigin === 'openchamber-ui://app'
+  && (currentOrigin === `${uiProtocol}://app`
   || (localOrigin && currentOrigin === localOrigin));
+
+const sameOrigin = (left, right) => {
+  if (!left || !right) return false;
+  try {
+    return new URL(left).origin === new URL(right).origin;
+  } catch {
+    return false;
+  }
+};
+
+const isLoopbackOrigin = (value) => {
+  try {
+    const hostname = new URL(value).hostname.toLowerCase();
+    return hostname === 'localhost'
+      || hostname === '::1'
+      || hostname === '[::1]'
+      || hostname.startsWith('127.');
+  } catch {
+    return false;
+  }
+};
+
+const shouldExposeApiBaseUrl = () => {
+  if (!apiBaseUrl) return false;
+  if (isLocalPage) return true;
+  if (isLoopbackOrigin(apiBaseUrl) && !sameOrigin(apiBaseUrl, localOrigin)) return false;
+  if (sameOrigin(currentOrigin, apiBaseUrl)) return true;
+  return !(isLoopbackOrigin(currentOrigin) && isLoopbackOrigin(apiBaseUrl));
+};
 
 // Remote pages need __OPENCHAMBER_LOCAL_ORIGIN__ so the HostSwitcher knows
 // the URL of the Local entry (isDesktopLocalOriginActive() falls back to
@@ -54,8 +99,12 @@ if (localOrigin) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_LOCAL_ORIGIN__', localOrigin);
 }
 
-if (apiBaseUrl) {
+if (shouldExposeApiBaseUrl()) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_API_BASE_URL__', apiBaseUrl);
+}
+
+if (desktopHostId) {
+  contextBridge.exposeInMainWorld('__OPENCHAMBER_DESKTOP_HOST_ID__', desktopHostId);
 }
 
 if (clientToken && isLocalPage) {

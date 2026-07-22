@@ -8,6 +8,7 @@ import { setActionRefs, setOptimisticRefs } from './session-actions';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 
 /**
  * Unit tests for session worktree routing through the authoritative store.
@@ -226,6 +227,7 @@ describe('routeMessage directory scoping', () => {
     expect(calls[0].sessionId).toBe('session-a');
     expect(calls[0].directory).toBe('/session/project');
   });
+
 });
 
 describe('runtime worktree topology', () => {
@@ -345,13 +347,24 @@ describe('routeMessage skill invocation', () => {
 
     // Minimal optimistic + connection machinery so routeMessage can dispatch.
     const childStore = {
-      getState: () => ({ session_status: {} }),
+      getState: () => ({
+        session: [],
+        message: {},
+        part: {},
+        session_status: {},
+        permission: {},
+        question: {},
+      }),
       setState: () => {},
     };
     const childStores = {
       children: new Map(),
       ensureChild: () => childStore,
       getChild: () => childStore,
+      getChildByServer: () => childStore,
+      getOrCreateChildStore: () => childStore,
+      getAllEntries: () => [{ directory: '/skills/project', store: childStore }],
+      getAllStores: () => [childStore],
     };
     setActionRefs(opencodeClient, childStores, () => '/skills/project');
     setOptimisticRefs(() => {}, () => {});

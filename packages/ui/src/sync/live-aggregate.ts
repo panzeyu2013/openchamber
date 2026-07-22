@@ -15,6 +15,10 @@ const getSessionUpdatedAt = (session: Session): number => {
   return typeof createdAt === 'number' && Number.isFinite(createdAt) ? createdAt : 0
 }
 
+const getSessionKey = (session: Session): string => {
+  return session.id
+}
+
 const getSessionSignature = (session: Session): string => {
   const directory = (session as Session & { directory?: string | null }).directory ?? ''
   const parentID = (session as Session & { parentID?: string | null }).parentID ?? ''
@@ -143,9 +147,9 @@ export function aggregateLiveSessions(states: Iterable<LiveStateSlice>): Session
       if (!session?.id) {
         continue
       }
-      const current = sessionsById.get(session.id)
+      const current = sessionsById.get(getSessionKey(session))
       if (!current || getSessionUpdatedAt(session) >= getSessionUpdatedAt(current)) {
-        sessionsById.set(session.id, session)
+        sessionsById.set(getSessionKey(session), session)
       }
     }
   }
@@ -155,7 +159,30 @@ export function aggregateLiveSessions(states: Iterable<LiveStateSlice>): Session
   })
 }
 
+let _statusCacheResult: Record<string, SessionStatus> | null = null
+let _statusCacheTimestamp = 0
+let _statusCacheFingerprint = ''
+
+function computeFingerprint(states: Iterable<LiveStateSlice>): string {
+  const parts: string[] = []
+  for (const state of states) {
+    for (const sessionId of Object.keys(state.session_status ?? {})) {
+      const s = state.session_status[sessionId]
+      const attempt = (s as { attempt?: number } | undefined)?.attempt
+      const type = s ? s.type || '' : ''
+      parts.push(`${sessionId}:${type}:${attempt ?? ''}`)
+    }
+  }
+  return parts.sort().join('|')
+}
+
 export function aggregateLiveSessionStatuses(states: Iterable<LiveStateSlice>): Record<string, SessionStatus> {
+  const now = Date.now()
+  const fingerprint = computeFingerprint(states)
+  if (_statusCacheResult && now - _statusCacheTimestamp < 50 && fingerprint === _statusCacheFingerprint) {
+    return _statusCacheResult
+  }
+
   const candidates = new Map<string, StatusCandidate>()
 
   for (const state of states) {
@@ -178,11 +205,15 @@ export function aggregateLiveSessionStatuses(states: Iterable<LiveStateSlice>): 
     }
   }
 
+  _statusCacheTimestamp = now
+  _statusCacheFingerprint = fingerprint
+
   const statuses: Record<string, SessionStatus> = {}
   for (const [sessionId, candidate] of candidates) {
     statuses[sessionId] = candidate.status
   }
 
+  _statusCacheResult = statuses
   return statuses
 }
 

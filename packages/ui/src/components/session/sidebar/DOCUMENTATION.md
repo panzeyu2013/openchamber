@@ -28,6 +28,10 @@
 
 - `SidebarHeader.tsx`: Top header UI for add-project, session search, and display mode.
 - `SidebarActivitySections.tsx`: Global top section renderer; currently used for the `recent` section only.
+- `FleetSidebarSection.tsx`: Compact read-only projection of inactive saved
+  desktop hosts. It reads Fleet summaries/live state only; opening a row first
+  switches the one Active Runtime and then delegates selection to the normal
+  session UI store.
 - `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
 - `SidebarProjectsList.tsx`: Main scrollable tree renderer for projects, root sessions, worktrees/groups, and empty/search states.
 - `SessionGroupSection.tsx`: Renders a single worktree/archived group, collapse/expand, folder subtree, group-level controls, and explicit loading/error/retry state for empty groups.

@@ -150,6 +150,10 @@ export type GlobalEventResult = {
 } | {
   type: "project"
   project: Project
+} | {
+  type: "server.status"
+  status: "connecting" | "connected" | "disconnected" | "error"
+  errorMessage?: string
 } | null
 
 export type SessionMaterializationReason =
@@ -188,6 +192,14 @@ export function reduceGlobalEvent(event: Event): GlobalEventResult {
   }
   if (event.type === "project.updated") {
     return { type: "project", project: event.properties as Project }
+  }
+  if ((event as { type: string }).type === "server.status") {
+    const e = event as { status?: string; errorMessage?: string }
+    const status = e.status
+    if (status === "connecting" || status === "connected" || status === "disconnected" || status === "error") {
+      return { type: "server.status", status, errorMessage: e.errorMessage }
+    }
+    return null
   }
   return null
 }

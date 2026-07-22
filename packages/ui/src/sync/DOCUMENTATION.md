@@ -22,6 +22,31 @@ There are **two distinct session data scopes** in the UI:
 
 These two scopes are intentionally different, but they are no longer equal peers for live UI truth.
 
+### Fleet observation (multiple saved desktop hosts)
+
+`packages/ui/src/fleet/` is deliberately outside both scopes. It is a small,
+in-memory observer for saved desktop hosts, not a second copy of the sync
+system:
+
+- `fleet-store.ts` owns the known host descriptors and chooses exactly one
+  **Active Runtime** through `runtime-switch.ts`.
+- `fleet-summary-store.ts` retains only summary rows (session ID, title,
+  directory, update time) under the composite `serverId\0sessionId` key.
+- `fleet-live-store.ts` retains only activity plus pending
+  permission/question booleans. A narrow per-inactive-host SSE subscription
+  updates those values. Session create/update/delete events trigger a targeted
+  summary reconciliation; no messages, parts, or permission payloads enter
+  Fleet. When that server becomes Active Runtime, its transient Fleet index is
+  cleared before the normal runtime bootstrap takes authority.
+- Switching/opening a Fleet session first changes Active Runtime, then uses the
+  normal `session-ui-store` selection path. Active Runtime bootstrap remains
+  the sole authority for full session data.
+
+Fleet summary refreshes are failure-distinct: a failed request marks the prior
+snapshot stale rather than replacing it with an empty list. Credentials remain
+owned by the existing desktop host configuration and are never persisted by a
+Fleet store.
+
 ### Why both exist
 
 The directory-scoped sync stores are **not** a complete global view.

@@ -46,6 +46,30 @@ describe('buildRuntimeFetchUrl', () => {
       clearRuntimeAuthCredentialProvider();
     }
   });
+
+  test('rewrites stale loopback API URLs from another SSH tunnel origin', () => {
+    const previous = getRuntimeUrlResolver();
+    const originalWindow = globalThis.window;
+    try {
+      configureRuntimeUrlResolver({});
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value: {
+          location: { origin: 'http://127.0.0.1:49932', href: 'http://127.0.0.1:49932/index' },
+          __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+        },
+      });
+
+      expect(buildRuntimeFetchUrl('http://127.0.0.1:65500/api/experimental/session?archived=true&limit=500')).toBe(
+        '/api/experimental/session?archived=true&limit=500',
+      );
+      expect(buildRuntimeFetchUrl('http://127.0.0.1:65500/auth/session')).toBe('/auth/session');
+      expect(buildRuntimeFetchUrl('https://external.example/api/config/settings')).toBe('https://external.example/api/config/settings');
+    } finally {
+      setRuntimeUrlResolver(previous);
+      Object.defineProperty(globalThis, 'window', { configurable: true, value: originalWindow });
+    }
+  });
 });
 
 describe('runtimeFetch transport contract', () => {

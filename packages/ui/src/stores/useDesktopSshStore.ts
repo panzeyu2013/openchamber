@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { isDesktopLocalOriginActive } from '@/lib/desktop';
 import {
   createDesktopSshInstance,
   desktopSshConnect,
@@ -54,6 +55,7 @@ export const useDesktopSshStore = create<DesktopSshState>((set, get) => ({
 
   load: async () => {
     if (get().isLoading) return;
+    if (!isDesktopLocalOriginActive()) return;
     set({ isLoading: true, error: null });
     try {
       const [config, statuses] = await Promise.all([desktopSshInstancesGet(), desktopSshStatus()]);

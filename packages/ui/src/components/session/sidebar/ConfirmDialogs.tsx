@@ -11,6 +11,7 @@ export type DeleteSessionConfirmState = {
   // executed list matches the count shown to the user even if childrenMap
   // changes while the dialog is open.
   descendantIds: string[];
+  descendantSessions?: Session[];
   archivedBucket: boolean;
 } | null;
 

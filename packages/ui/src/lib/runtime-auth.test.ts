@@ -13,6 +13,23 @@ import {
 } from './runtime-auth';
 
 describe('runtime auth headers', () => {
+  const withWindow = async <T>(value: unknown, callback: () => T | Promise<T>): Promise<T> => {
+    const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    try {
+      Object.defineProperty(globalThis, 'window', {
+        configurable: true,
+        value,
+      });
+      return await callback();
+    } finally {
+      if (previousWindow) {
+        Object.defineProperty(globalThis, 'window', previousWindow);
+      } else {
+        Reflect.deleteProperty(globalThis, 'window');
+      }
+    }
+  };
+
   test('does not add authorization by default', async () => {
     clearRuntimeAuthCredentialProvider();
     const headers = await buildRuntimeAuthHeaders({ Accept: 'application/json' });
@@ -114,6 +131,34 @@ describe('runtime auth headers', () => {
       globalThis.fetch = previousFetch;
       clearRuntimeUrlAuthToken();
       setRuntimeExtraHeaders(null);
+      clearRuntimeAuthCredentialProvider();
+    }
+  });
+
+  test('ignores stale explicit loopback API base when minting URL auth tokens', async () => {
+    const previousFetch = globalThis.fetch;
+    let seenUrl = '';
+    try {
+      clearRuntimeUrlAuthToken();
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        seenUrl = String(input);
+        return new Response(JSON.stringify({ token: 'url-token', expiresAt: Date.now() + 60_000 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }) as typeof fetch;
+
+      const token = await withWindow({
+        location: { origin: 'http://127.0.0.1:49932', href: 'http://127.0.0.1:49932/index' },
+        __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+        __OPENCHAMBER_API_BASE_URL__: 'http://127.0.0.1:65500',
+      }, () => refreshRuntimeUrlAuthToken('http://127.0.0.1:65500'));
+
+      expect(token).toBe('url-token');
+      expect(seenUrl).toBe('/auth/url-token');
+    } finally {
+      globalThis.fetch = previousFetch;
+      clearRuntimeUrlAuthToken();
       clearRuntimeAuthCredentialProvider();
     }
   });

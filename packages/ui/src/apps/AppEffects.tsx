@@ -8,6 +8,10 @@ import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
+import { loadDesktopFleetServers } from '@/fleet/desktop-registry';
+import { useFleetStore } from '@/fleet/fleet-store';
+import { FleetSummaryBridge } from '@/fleet/FleetSummaryBridge';
+import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
 
@@ -62,6 +66,27 @@ const MiniChatPresenceBridge: React.FC = () => {
   return null;
 };
 
+const FleetRegistryBridge: React.FC = () => {
+  React.useEffect(() => {
+    let cancelled = false;
+    void loadDesktopFleetServers().then((servers) => {
+      if (cancelled) return;
+      const fleet = useFleetStore.getState();
+      for (const server of servers) fleet.upsertServer(server);
+      fleet.syncActiveServer();
+    }).catch(() => {
+      // Non-desktop runtimes have no host registry. The local runtime remains
+      // the sole active server until a runtime owns an explicit registry.
+    });
+    const unsubscribe = subscribeRuntimeEndpointChanged(() => useFleetStore.getState().syncActiveServer());
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+  return null;
+};
+
 export function SyncRuntimeEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
@@ -82,6 +107,8 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
     <>
       <SyncRuntimeEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
       <MiniChatPresenceBridge />
+      <FleetRegistryBridge />
+      <FleetSummaryBridge />
     </>
   );
 }

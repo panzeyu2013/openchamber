@@ -3,7 +3,7 @@ import type { Session } from '@opencode-ai/sdk/v2';
 
 const upsertedSessions: Session[] = [];
 const registeredDirectories: Array<{ sessionID: string; directory: string }> = [];
-const ensureChildCalls: Array<{ directory: string; bootstrap?: boolean }> = [];
+const getOrCreateChildStoreCalls: Array<{ serverId: string; directory: string; bootstrap?: boolean }> = [];
 const worktreeMetadataCalls: Array<{ sessionId: string; path: string }> = [];
 const worktreeCreateCalls: Array<{ project: { id?: string; path: string }; args: Record<string, unknown>; options: unknown }> = [];
 const worktreeBootstrapWaitCalls: string[] = [];
@@ -131,8 +131,8 @@ mock.module('@/sync/sync-refs', () => ({
     registeredDirectories.push({ sessionID, directory });
   },
   getSyncChildStores: () => ({
-    ensureChild: (directory: string, options?: { bootstrap?: boolean }) => {
-      ensureChildCalls.push({ directory, bootstrap: options?.bootstrap });
+    getOrCreateChildStore: (serverId: string, directory: string, options?: { bootstrap?: boolean }) => {
+      getOrCreateChildStoreCalls.push({ serverId, directory, bootstrap: options?.bootstrap });
       return {
         setState: (updater: typeof childState | ((state: typeof childState) => Partial<typeof childState> | typeof childState)) => {
           const patch = typeof updater === 'function' ? updater(childState) : updater;
@@ -151,7 +151,7 @@ describe('useMultiRunStore', () => {
   beforeEach(() => {
     upsertedSessions.length = 0;
     registeredDirectories.length = 0;
-    ensureChildCalls.length = 0;
+    getOrCreateChildStoreCalls.length = 0;
     worktreeMetadataCalls.length = 0;
     worktreeCreateCalls.length = 0;
     worktreeBootstrapWaitCalls.length = 0;
@@ -178,7 +178,7 @@ describe('useMultiRunStore', () => {
     expect(result?.sessionIds).toEqual(['ses_multirun']);
     expect(upsertedSessions.map((session) => session.id)).toEqual(['ses_multirun']);
     expect(registeredDirectories).toEqual([{ sessionID: 'ses_multirun', directory: '/repo' }]);
-    expect(ensureChildCalls).toEqual([{ directory: '/repo', bootstrap: false }]);
+    expect(getOrCreateChildStoreCalls).toEqual([{ serverId: 'local', directory: '/repo', bootstrap: false }]);
     expect(childState.session.map((session) => session.id)).toEqual(['ses_multirun']);
   });
 

@@ -39,6 +39,7 @@ import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
 import { SessionGroupSection } from './sidebar/SessionGroupSection';
 import { SidebarHeader } from './sidebar/SidebarHeader';
+import { FleetSidebarSection } from './sidebar/FleetSidebarSection';
 import { SidebarActivitySections } from './sidebar/SidebarActivitySections';
 import { SidebarFooter } from './sidebar/SidebarFooter';
 import { SidebarProjectsList } from './sidebar/SidebarProjectsList';
@@ -1620,16 +1621,21 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
 
   const topContent = React.useMemo(
-    () => (!isVSCode && showRecentSection && !hasSessionSearchQuery) ? (
-      <SidebarActivitySections
-        sections={activitySections}
-        renderSessionNode={renderSessionNode}
-        editingId={editingId}
-        openSidebarMenuKey={openSidebarMenuKey}
-        expansionState={recentExpandedParents}
-        variant="section"
-      />
-    ) : null,
+    () => (
+      <>
+        <FleetSidebarSection />
+        {!isVSCode && showRecentSection && !hasSessionSearchQuery ? (
+          <SidebarActivitySections
+            sections={activitySections}
+            renderSessionNode={renderSessionNode}
+            editingId={editingId}
+            openSidebarMenuKey={openSidebarMenuKey}
+            expansionState={recentExpandedParents}
+            variant="section"
+          />
+        ) : null}
+      </>
+    ),
     [activitySections, editingId, hasSessionSearchQuery, isVSCode, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection],
   );
   const isInlineEditing = Boolean(renamingFolderId || editingId || editingProjectDialogId);

@@ -1,6 +1,7 @@
 import { getActiveRelayTunnel } from './relay/runtime-tunnel';
 import { TUNNEL_PARSE_BASE } from './relay/tunnel-payloads';
 import { buildRuntimeAuthHeaders } from './runtime-auth';
+import { readWindowRuntimeOriginContext, shouldIgnoreRuntimeApiBaseUrl } from './runtime-origin';
 import { getRuntimeUrlResolver, type RuntimeUrlQuery } from './runtime-url';
 
 export interface RuntimeFetchOptions extends RequestInit {
@@ -30,6 +31,11 @@ const isCurrentWindowUrl = (url: URL): boolean => {
 
 const isAbsoluteUrl = (value: string): boolean => /^[a-z][a-z\d+.-]*:\/\//i.test(value);
 
+const isStaleLoopbackRuntimeUrl = (url: URL): boolean => (
+  shouldResolveApiPath(url.pathname)
+  && shouldIgnoreRuntimeApiBaseUrl(url.origin, readWindowRuntimeOriginContext())
+);
+
 const appendRuntimeQuery = (url: URL, query?: RuntimeUrlQuery): void => {
   if (!query) return;
   const entries = query instanceof URLSearchParams ? Array.from(query.entries()) : Object.entries(query);
@@ -56,7 +62,7 @@ const shouldResolveFetchInput = (input: string): boolean => {
   if (!/^[a-z][a-z\d+.-]*:\/\//i.test(input)) return false;
   try {
     const url = new URL(input);
-    return isCurrentWindowUrl(url) && shouldResolveApiPath(url.pathname);
+    return (isCurrentWindowUrl(url) || isStaleLoopbackRuntimeUrl(url)) && shouldResolveApiPath(url.pathname);
   } catch {
     return false;
   }
@@ -65,9 +71,12 @@ const shouldResolveFetchInput = (input: string): boolean => {
 const buildRuntimeFetchUrlFromAbsolute = (input: string, query?: RuntimeUrlQuery): string => {
   try {
     const url = new URL(input);
-    if (!isCurrentWindowUrl(url)) return input;
+    if (!isCurrentWindowUrl(url) && !isStaleLoopbackRuntimeUrl(url)) return input;
     const rewritten = buildRuntimeFetchUrl(`${url.pathname}${url.search}`, query);
     if (!isAbsoluteUrl(rewritten) && (url.protocol === 'http:' || url.protocol === 'https:')) {
+      if (isStaleLoopbackRuntimeUrl(url)) {
+        return rewritten;
+      }
       appendRuntimeQuery(url, query);
       return url.toString();
     }

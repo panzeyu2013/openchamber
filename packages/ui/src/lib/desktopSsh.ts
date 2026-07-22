@@ -97,6 +97,10 @@ export type DesktopSshImportCandidate = {
   sshCommand: string;
 };
 
+type DesktopSshInstanceSummary = {
+  id: string;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> => {
   return typeof value === 'object' && value !== null;
 };
@@ -319,6 +323,12 @@ const parseImportCandidate = (value: unknown): DesktopSshImportCandidate | null 
   };
 };
 
+const parseInstanceSummary = (value: unknown): DesktopSshInstanceSummary | null => {
+  if (!isRecord(value)) return null;
+  const id = readString(value, 'id');
+  return id ? { id } : null;
+};
+
 export const createDesktopSshInstance = (id: string, sshCommand: string): DesktopSshInstance => {
   return {
     id,
@@ -360,6 +370,16 @@ export const desktopSshInstancesGet = async (): Promise<DesktopSshInstancesConfi
     .filter((item): item is DesktopSshInstance => Boolean(item));
 
   return { instances };
+};
+
+export const desktopSshInstanceSummariesGet = async (): Promise<DesktopSshInstanceSummary[]> => {
+  const invoke = getInvoke();
+  if (!invoke) return [];
+  const raw = await invoke('desktop_ssh_instance_summaries_get');
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => parseInstanceSummary(item))
+    .filter((item): item is DesktopSshInstanceSummary => Boolean(item));
 };
 
 export const desktopSshInstancesSet = async (config: DesktopSshInstancesConfig): Promise<void> => {

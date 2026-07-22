@@ -8,6 +8,27 @@ import {
 } from './runtime-switch';
 import { clearRuntimeUrlAuthToken, setRuntimeExtraHeaders } from './runtime-auth';
 
+const withWindow = async <T>(value: unknown, callback: () => T | Promise<T>): Promise<T> => {
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+  try {
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value,
+    });
+    return await callback();
+  } finally {
+    if (previousWindow) {
+      Object.defineProperty(globalThis, 'window', previousWindow);
+    } else {
+      Reflect.deleteProperty(globalThis, 'window');
+    }
+  }
+};
+
+const importFreshRuntimeSwitch = async () => (
+  import(`./runtime-switch?test=${Date.now()}-${Math.random()}`)
+);
+
 describe('runtime endpoint switching', () => {
   test('notifies listeners before and after mutating the active endpoint', () => {
     const previousWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
@@ -110,5 +131,99 @@ describe('runtime endpoint switching', () => {
         Reflect.deleteProperty(globalThis, 'window');
       }
     }
+  });
+
+  test('ignores stale injected loopback API base and keys same-origin SSH pages by current origin', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:60782',
+        href: 'http://127.0.0.1:60782/index',
+        protocol: 'http:',
+      },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+      __OPENCHAMBER_API_BASE_URL__: 'http://127.0.0.1:60788',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('url:http://127.0.0.1:60782');
+    });
+  });
+
+  test('preserves explicit same-origin SSH host identity when API base is relative', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:60782',
+        href: 'http://127.0.0.1:60782/index?oc_desktop_host_id=ssh-1',
+        protocol: 'http:',
+      },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+      __OPENCHAMBER_API_BASE_URL__: '',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      runtimeSwitch.initializeRuntimeEndpoint({ apiBaseUrl: '', runtimeKey: 'host:ssh-1' });
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('host:ssh-1');
+    });
+  });
+
+  test('infers the runtime key when switching to relative same-origin transport', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:60782',
+        href: 'http://127.0.0.1:60782/index',
+        protocol: 'http:',
+      },
+      dispatchEvent: () => true,
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      runtimeSwitch.switchRuntimeEndpoint({ apiBaseUrl: '' });
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('url:http://127.0.0.1:60782');
+    });
+  });
+
+  test('uses injected desktop SSH host identity after the URL query is removed', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:60782',
+        href: 'http://127.0.0.1:60782/index',
+        protocol: 'http:',
+      },
+      dispatchEvent: () => true,
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+      __OPENCHAMBER_DESKTOP_HOST_ID__: 'ssh-1',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      runtimeSwitch.switchRuntimeEndpoint({ apiBaseUrl: '' });
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('host:ssh-1');
+    });
+  });
+
+  test('drops stale explicit loopback API base and runtime key on remote page', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:49932',
+        href: 'http://127.0.0.1:49932/index',
+        protocol: 'http:',
+      },
+      dispatchEvent: () => true,
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+      __OPENCHAMBER_API_BASE_URL__: 'http://127.0.0.1:65500',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      runtimeSwitch.switchRuntimeEndpoint({
+        apiBaseUrl: 'http://127.0.0.1:65500',
+        runtimeKey: 'url:http://127.0.0.1:65500',
+      });
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('url:http://127.0.0.1:49932');
+    });
   });
 });
