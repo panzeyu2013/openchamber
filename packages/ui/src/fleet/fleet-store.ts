@@ -7,6 +7,7 @@ type FleetState = {
   servers: Map<string, FleetServer>;
   activeServerId: string;
   upsertServer: (server: FleetServer) => void;
+  replaceServers: (servers: FleetServer[]) => void;
   removeServer: (serverId: string) => void;
   updateServerStatus: (serverId: string, status: FleetServerStatus, errorMessage?: string) => void;
   activateServer: (serverId: string) => boolean;
@@ -42,6 +43,16 @@ export const useFleetStore = create<FleetState>()((set, get) => ({
     const servers = new Map(state.servers);
     servers.set(server.id, server);
     return { servers };
+  }),
+  replaceServers: (servers) => set((state) => {
+    const next = new Map(servers.map((server) => [server.id, server]));
+    if (state.servers.size === next.size && [...state.servers.entries()].every(([id, server]) => {
+      const nextServer = next.get(id);
+      return nextServer ? sameServer(nextServer, server) : false;
+    })) {
+      return state;
+    }
+    return { servers: next, activeServerId: next.has(state.activeServerId) ? state.activeServerId : 'local' };
   }),
   removeServer: (serverId) => set((state) => {
     if (serverId === 'local' || !state.servers.has(serverId)) return state;

@@ -1,6 +1,6 @@
 import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@openchamber/ui/lib/runtime-auth';
 import { installRuntimeFetchBridge } from '@openchamber/ui/lib/runtime-fetch';
-import { sameRuntimeOrigin, sanitizeRuntimeApiBaseUrl } from '@openchamber/ui/lib/runtime-origin';
+import { sameRuntimeOrigin, sanitizeRuntimeApiBaseUrl, readInjectedDesktopHostId, sanitizeRuntimeKeyPart } from '@openchamber/ui/lib/runtime-origin';
 import { initializeRuntimeEndpoint, switchRuntimeEndpoint } from '@openchamber/ui/lib/runtime-switch';
 import { restoreDesktopRelayRuntime } from '@openchamber/ui/lib/desktopRelayRestore';
 import { configureRuntimeUrlResolver } from '@openchamber/ui/lib/runtime-url';
@@ -8,20 +8,13 @@ import type { EmbeddedSessionRuntimeBootstrap } from '@openchamber/ui/components
 import { opencodeClient } from '@openchamber/ui/lib/opencode/client';
 import { createWebAPIs } from './api';
 
-const sanitizeRuntimeKeyPart = (value: string | null): string => {
-  const trimmed = typeof value === 'string' ? value.trim() : '';
-  return /^[a-zA-Z0-9._:-]+$/.test(trimmed) ? trimmed : '';
-};
-
 const readRuntimeKeyFromUrl = (): string | null => {
   const params = new URLSearchParams(window.location.search || '');
   const explicit = sanitizeRuntimeKeyPart(params.get('oc_runtime_key'));
   if (explicit) return explicit;
   const desktopHostId = sanitizeRuntimeKeyPart(params.get('oc_desktop_host_id'));
   if (desktopHostId) return `host:${desktopHostId}`;
-  const injectedDesktopHostId = sanitizeRuntimeKeyPart(
-    (window as typeof window & { __OPENCHAMBER_DESKTOP_HOST_ID__?: string }).__OPENCHAMBER_DESKTOP_HOST_ID__ || null,
-  );
+  const injectedDesktopHostId = readInjectedDesktopHostId();
   return injectedDesktopHostId ? `host:${injectedDesktopHostId}` : null;
 };
 

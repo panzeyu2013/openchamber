@@ -8,9 +8,15 @@ const originalFetch = globalThis.fetch;
 
 describe('buildRuntimeFetchUrl', () => {
   test('preserves same-origin paths by default', () => {
-    expect(buildRuntimeFetchUrl('/api/config/settings')).toBe('/api/config/settings');
-    expect(buildRuntimeFetchUrl('/auth/session')).toBe('/auth/session');
-    expect(buildRuntimeFetchUrl('/health')).toBe('/health');
+    const previous = getRuntimeUrlResolver();
+    try {
+      configureRuntimeUrlResolver({});
+      expect(buildRuntimeFetchUrl('/api/config/settings')).toBe('/api/config/settings');
+      expect(buildRuntimeFetchUrl('/auth/session')).toBe('/auth/session');
+      expect(buildRuntimeFetchUrl('/health')).toBe('/health');
+    } finally {
+      setRuntimeUrlResolver(previous);
+    }
   });
 
   test('resolves API/auth/health through configured runtime URL resolver', () => {

@@ -1,6 +1,12 @@
 import { refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
 import { configureRuntimeUrlResolver } from '@/lib/runtime-url';
 import {
+  readInjectedDesktopHostId,
+  readWindowRuntimeOriginContext,
+  sanitizeRuntimeApiBaseUrl,
+  sameRuntimeOrigin,
+} from '@/lib/runtime-origin';
+import {
   activateRelayTunnel,
   deactivateRelayTunnel,
   getActiveRelayTunnel,
@@ -54,25 +60,43 @@ const normalizeRuntimeUrlKey = (value: string): string => {
   }
 };
 
-const readInjectedApiBaseUrl = (): string => {
-  if (typeof window === 'undefined') return '';
-  const injected = (window as typeof window & { __OPENCHAMBER_API_BASE_URL__?: string }).__OPENCHAMBER_API_BASE_URL__;
-  return typeof injected === 'string' ? injected.trim() : '';
-};
-
 const readInjectedLocalOrigin = (): string => {
   if (typeof window === 'undefined') return '';
   const injected = (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__;
   return typeof injected === 'string' ? injected.trim() : '';
 };
 
-const sameOrigin = (left: string, right: string): boolean => {
-  if (!left || !right) return false;
-  try {
-    return new URL(left).origin === new URL(right).origin;
-  } catch {
-    return false;
+const getCurrentOrigin = (): string => {
+  if (typeof window === 'undefined') return '';
+  return window.location?.origin || '';
+};
+
+// The injected API base URL is only trustworthy when it belongs to the current
+// page: a stale loopback URL from another SSH tunnel (or an old local server)
+// must never become the active runtime. Sanitized lazily and cached against
+// the raw globals it derives from, mirroring the getRuntimeKey cache.
+let cachedInjectedApiBaseUrl = '';
+let cachedInjectedRawApiBaseUrl: string | undefined;
+let cachedInjectedRawLocalOrigin: string | undefined;
+let cachedInjectedCurrentOrigin = '';
+
+const readInjectedApiBaseUrl = (): string => {
+  if (typeof window === 'undefined') return '';
+  const raw = (window as typeof window & { __OPENCHAMBER_API_BASE_URL__?: string }).__OPENCHAMBER_API_BASE_URL__;
+  const rawLocalOrigin = (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__;
+  const currentOrigin = getCurrentOrigin();
+  if (
+    cachedInjectedRawApiBaseUrl === raw
+    && cachedInjectedRawLocalOrigin === rawLocalOrigin
+    && cachedInjectedCurrentOrigin === currentOrigin
+  ) {
+    return cachedInjectedApiBaseUrl;
   }
+  cachedInjectedRawApiBaseUrl = raw;
+  cachedInjectedRawLocalOrigin = rawLocalOrigin;
+  cachedInjectedCurrentOrigin = currentOrigin;
+  cachedInjectedApiBaseUrl = sanitizeRuntimeApiBaseUrl(raw, { currentOrigin, localOrigin: rawLocalOrigin });
+  return cachedInjectedApiBaseUrl;
 };
 
 export const getRuntimeApiBaseUrl = (): string => activeApiBaseUrl || readInjectedApiBaseUrl();
@@ -91,6 +115,8 @@ let cachedRuntimeKey = '';
 let cachedActiveApiBaseUrl: string | null = null;
 let cachedRawApiBaseUrl: string | undefined;
 let cachedRawLocalOrigin: string | undefined;
+let cachedRawDesktopHostId = '';
+let cachedCurrentOrigin = '';
 
 const readRawRuntimeGlobal = (key: '__OPENCHAMBER_API_BASE_URL__' | '__OPENCHAMBER_LOCAL_ORIGIN__'): string | undefined => {
   if (typeof window === 'undefined') return undefined;
@@ -106,21 +132,31 @@ export const getRuntimeKey = (): string => {
 
   const rawApiBaseUrl = readRawRuntimeGlobal('__OPENCHAMBER_API_BASE_URL__');
   const rawLocalOrigin = readRawRuntimeGlobal('__OPENCHAMBER_LOCAL_ORIGIN__');
+  const rawDesktopHostId = readInjectedDesktopHostId();
+  const currentOrigin = getCurrentOrigin();
   if (
     cachedActiveApiBaseUrl === activeApiBaseUrl
     && cachedRawApiBaseUrl === rawApiBaseUrl
     && cachedRawLocalOrigin === rawLocalOrigin
+    && cachedRawDesktopHostId === rawDesktopHostId
+    && cachedCurrentOrigin === currentOrigin
   ) {
     return cachedRuntimeKey;
   }
 
   const apiBaseUrl = getRuntimeApiBaseUrl();
-  cachedRuntimeKey = sameOrigin(apiBaseUrl, readInjectedLocalOrigin())
-    ? 'local'
-    : normalizeRuntimeUrlKey(apiBaseUrl);
+  cachedRuntimeKey = apiBaseUrl
+    ? (sameRuntimeOrigin(apiBaseUrl, readInjectedLocalOrigin())
+      ? 'local'
+      : normalizeRuntimeUrlKey(apiBaseUrl))
+    : (rawDesktopHostId
+      ? `host:${rawDesktopHostId}`
+      : `url:${currentOrigin || 'default'}`);
   cachedActiveApiBaseUrl = activeApiBaseUrl;
   cachedRawApiBaseUrl = rawApiBaseUrl;
   cachedRawLocalOrigin = rawLocalOrigin;
+  cachedRawDesktopHostId = rawDesktopHostId;
+  cachedCurrentOrigin = currentOrigin;
   return cachedRuntimeKey;
 };
 
@@ -129,20 +165,34 @@ export const initializeRuntimeEndpoint = (options: { apiBaseUrl?: string | null;
     return;
   }
 
-  const apiBaseUrl = options.apiBaseUrl?.trim() || readInjectedApiBaseUrl();
-  if (!apiBaseUrl) {
+  const context = readWindowRuntimeOriginContext();
+  const apiBaseUrl = sanitizeRuntimeApiBaseUrl(options.apiBaseUrl, context) || readInjectedApiBaseUrl();
+  const explicitKey = options.runtimeKey?.trim();
+  if (!apiBaseUrl && !explicitKey) {
     return;
   }
 
-  activeApiBaseUrl = apiBaseUrl;
-  activeRuntimeKey = options.runtimeKey?.trim() || (sameOrigin(apiBaseUrl, readInjectedLocalOrigin()) ? 'local' : normalizeRuntimeUrlKey(apiBaseUrl));
+  if (apiBaseUrl) {
+    activeApiBaseUrl = apiBaseUrl;
+  }
+  activeRuntimeKey = explicitKey || (sameRuntimeOrigin(apiBaseUrl, context.localOrigin)
+    ? 'local'
+    : normalizeRuntimeUrlKey(apiBaseUrl));
 };
 
 export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken?: string | null; runtimeKey?: string | null; requestHeaders?: Record<string, string> | null; relay?: RelayRuntimeDescriptor | null }): void => {
-  const apiBaseUrl = options.apiBaseUrl.trim();
+  const context = readWindowRuntimeOriginContext();
+  // A stale loopback target (another SSH tunnel or an old local server) is
+  // dropped outright: the page's own origin is the only trustworthy endpoint,
+  // and any explicit key tied to the stale base goes with it.
+  const apiBaseUrl = sanitizeRuntimeApiBaseUrl(options.apiBaseUrl, context);
   const previousApiBaseUrl = getRuntimeApiBaseUrl();
   const previousRuntimeKey = getRuntimeKey();
-  const runtimeKey = options.runtimeKey?.trim() || normalizeRuntimeUrlKey(apiBaseUrl);
+  const runtimeKey = apiBaseUrl
+    ? (options.runtimeKey?.trim() || normalizeRuntimeUrlKey(apiBaseUrl))
+    : (readInjectedDesktopHostId()
+      ? `host:${readInjectedDesktopHostId()}`
+      : `url:${context.currentOrigin || 'default'}`);
   const detail = { apiBaseUrl, previousApiBaseUrl, runtimeKey, previousRuntimeKey };
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent<RuntimeEndpointChangedDetail>(RUNTIME_ENDPOINT_WILL_CHANGE_EVENT, { detail }));
@@ -170,7 +220,7 @@ export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken
   } else {
     deactivateRelayTunnel();
   }
-  void refreshRuntimeUrlAuthToken(apiBaseUrl).catch(() => {});
+  void refreshRuntimeUrlAuthToken(apiBaseUrl || undefined).catch(() => {});
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent<RuntimeEndpointChangedDetail>(RUNTIME_ENDPOINT_CHANGED_EVENT, {
       detail,

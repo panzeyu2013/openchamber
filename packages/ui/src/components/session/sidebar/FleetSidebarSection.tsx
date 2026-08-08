@@ -5,8 +5,9 @@ import { useShallow } from 'zustand/react/shallow';
 import { useFleetStore } from '@/fleet/fleet-store';
 import { useFleetSummaryStore } from '@/fleet/fleet-summary-store';
 import { useFleetLiveStore } from '@/fleet/fleet-live-store';
-import { fleetSessionKey, type FleetSessionActivity } from '@/fleet/types';
+import { fleetSessionKey, type FleetSessionActivity, type FleetServer } from '@/fleet/types';
 import { openFleetSession } from '@/fleet/fleet-navigation';
+import { connectFleetSshServer } from '@/fleet/desktop-registry';
 
 const activityIcon: Record<FleetSessionActivity, 'loader-4' | 'error-warning' | 'time'> = {
   busy: 'loader-4',
@@ -35,6 +36,16 @@ export const FleetSidebarSection: React.FC = () => {
 
   if (observedServers.length === 0) return null;
 
+  const onServerClick = (server: FleetServer) => {
+    // Saved SSH instances have no endpoint while disconnected; clicking one
+    // establishes the tunnel first and activates it once it is up.
+    if (server.kind === 'ssh' && server.status !== 'connected') {
+      void connectFleetSshServer(server.id);
+      return;
+    }
+    useFleetStore.getState().activateServer(server.id);
+  };
+
   return (
     <section className="border-b border-border/60 px-2.5 py-2" aria-label={t('sessions.fleet.title')}>
       <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('sessions.fleet.title')}</p>
@@ -47,7 +58,7 @@ export const FleetSidebarSection: React.FC = () => {
             <div key={server.id} className="rounded-md border border-border/50 bg-muted/20 px-1 py-1">
               <button
                 type="button"
-                onClick={() => useFleetStore.getState().activateServer(server.id)}
+                onClick={() => onServerClick(server)}
                 className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left text-xs hover:bg-interactive-hover"
                 aria-label={t('sessions.fleet.openServer', { label: server.label })}
               >

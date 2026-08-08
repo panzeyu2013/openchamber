@@ -1,4 +1,5 @@
 import { getActiveRelayTunnel } from '@/lib/relay/runtime-tunnel';
+import { readWindowRuntimeOriginContext, sanitizeRuntimeApiBaseUrl } from '@/lib/runtime-origin';
 
 type RuntimeAuthCredential =
   | { type: 'bearer'; token: string }
@@ -61,9 +62,12 @@ const buildAuthUrl = (apiBaseUrl: string | null | undefined, path: string): stri
   const base = typeof apiBaseUrl === 'string' && apiBaseUrl.trim()
     ? apiBaseUrl.trim()
     : readInjectedApiBaseUrl();
-  if (!base) return path;
+  // A stale loopback base (another SSH tunnel or an old local server) must not
+  // receive the mint: the page's own origin serves the auth route instead.
+  const sanitized = sanitizeRuntimeApiBaseUrl(base, readWindowRuntimeOriginContext());
+  if (!sanitized) return path;
   try {
-    return new URL(path, `${base.replace(/\/+$/, '')}/`).toString();
+    return new URL(path, `${sanitized.replace(/\/+$/, '')}/`).toString();
   } catch {
     return path;
   }

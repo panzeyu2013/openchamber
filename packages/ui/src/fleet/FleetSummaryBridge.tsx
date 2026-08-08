@@ -26,7 +26,7 @@ export const FleetSummaryBridge: React.FC = () => {
     const reconcileObservers = () => {
       const { activeServerId, servers } = useFleetStore.getState();
       const eligible = new Set([...servers.values()]
-        .filter((server) => server.id !== activeServerId && server.id !== 'local')
+        .filter((server) => server.id !== activeServerId && server.id !== 'local' && Boolean(server.descriptor.apiBaseUrl))
         .map((server) => server.id));
       for (const [serverId, stop] of observers) {
         if (eligible.has(serverId)) continue;
@@ -84,19 +84,30 @@ export const FleetSummaryBridge: React.FC = () => {
       refreshing = true;
       reconcileObservers();
       const { activeServerId, servers } = useFleetStore.getState();
-      const inactive = [...servers.values()].filter((server) => server.id !== activeServerId && (!onlyServerId || server.id === onlyServerId));
+      const inactive = [...servers.values()].filter((server) => (
+        server.id !== activeServerId
+        && Boolean(server.descriptor.apiBaseUrl)
+        && (!onlyServerId || server.id === onlyServerId)
+      ));
       await Promise.all(inactive.map(async (server) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8_000);
         try {
-          useFleetStore.getState().updateServerStatus(server.id, 'connecting');
+          // Only transition into connecting when the row is not already
+          // connected, so a healthy 5s poll never flashes the status.
+          const current = useFleetStore.getState().servers.get(server.id);
+          if (current?.status !== 'connected' && current?.status !== 'connecting') {
+            useFleetStore.getState().updateServerStatus(server.id, 'connecting');
+          }
           const result = await transport.fetchServerSummary(server.id, server.descriptor, controller.signal);
           if (stopped) return;
           useFleetSummaryStore.getState().replaceServerSummary(server.id, result.sessions);
           const now = Date.now();
+          const liveById = useFleetLiveStore.getState().sessions;
+          const seenSessionIds = new Set(result.sessions.map((session) => session.sessionId));
           for (const session of result.sessions) {
             const status = result.status[session.sessionId] as { type?: unknown } | undefined;
-            const previous = useFleetLiveStore.getState().sessions.get(`${server.id}\u0000${session.sessionId}`);
+            const previous = liveById.get(`${server.id}\u0000${session.sessionId}`);
             useFleetLiveStore.getState().applySessionState({
               serverId: server.id,
               sessionId: session.sessionId,
@@ -109,13 +120,25 @@ export const FleetSummaryBridge: React.FC = () => {
               updatedAt: now,
             });
           }
-          useFleetStore.getState().updateServerStatus(server.id, 'connected');
+          // Sessions that fell out of the authoritative summary (deleted
+          // remotely without an SSE event, or pushed past the summary limit)
+          // must not linger in the live store.
+          for (const state of liveById.values()) {
+            if (state.serverId === server.id && !seenSessionIds.has(state.sessionId)) {
+              useFleetLiveStore.getState().removeSession(server.id, state.sessionId);
+            }
+          }
+          if (server.kind !== 'ssh') {
+            useFleetStore.getState().updateServerStatus(server.id, 'connected');
+          }
         } catch (error) {
-          if (!stopped && !controller.signal.aborted) {
+          if (!stopped) {
             const message = toErrorMessage(error);
             useFleetSummaryStore.getState().markServerFailed(server.id, message);
             useFleetLiveStore.getState().markServerStale(server.id);
-            useFleetStore.getState().updateServerStatus(server.id, 'degraded', message);
+            if (server.kind !== 'ssh') {
+              useFleetStore.getState().updateServerStatus(server.id, 'degraded', message);
+            }
           }
         } finally {
           clearTimeout(timeout);
@@ -123,9 +146,8 @@ export const FleetSummaryBridge: React.FC = () => {
       }));
       refreshing = false;
       if (pendingServerRefreshes.size > 0) {
-        const [serverId] = pendingServerRefreshes;
-        pendingServerRefreshes.delete(serverId);
-        void refresh(serverId);
+        pendingServerRefreshes.clear();
+        void refresh();
         return;
       }
       schedule();

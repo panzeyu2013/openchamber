@@ -45,6 +45,17 @@ export const readWindowRuntimeOriginContext = (): RuntimeOriginContext => {
   };
 };
 
+export const sanitizeRuntimeKeyPart = (value: string | null | undefined): string => {
+  const trimmed = typeof value === 'string' ? value.trim() : '';
+  return /^[a-zA-Z0-9._:-]+$/.test(trimmed) ? trimmed : '';
+};
+
+export const readInjectedDesktopHostId = (): string => {
+  if (typeof window === 'undefined') return '';
+  const injected = (window as typeof window & { __OPENCHAMBER_DESKTOP_HOST_ID__?: string }).__OPENCHAMBER_DESKTOP_HOST_ID__;
+  return sanitizeRuntimeKeyPart(injected);
+};
+
 export const shouldIgnoreRuntimeApiBaseUrl = (
   apiBaseUrl: string | null | undefined,
   context: RuntimeOriginContext = readWindowRuntimeOriginContext(),

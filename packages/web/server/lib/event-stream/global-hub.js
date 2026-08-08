@@ -93,14 +93,6 @@ export function createGlobalMessageStreamHub({
           }
         }
 
-        if (
-          normalized.payload
-          && typeof normalized.payload === 'object'
-          && !normalized.payload.serverId
-        ) {
-          normalized.payload = { serverId: 'local', ...normalized.payload }
-        }
-
         for (const subscriber of Array.from(eventSubscribers)) {
           notifySubscriber('event', subscriber, normalized);
         }
@@ -133,19 +125,6 @@ export function createGlobalMessageStreamHub({
     buildUrlFailed = false;
   };
 
-  const feedEvent = ({ payload, directory }) => {
-    if (payload && typeof payload === 'object' && !payload.serverId) {
-      payload = { ...payload, serverId: 'local' };
-    }
-    const envelope = typeof directory === 'string' && directory.length > 0
-      ? { directory }
-      : {};
-    const normalized = normalizeEvent({ envelope, payload });
-    for (const subscriber of Array.from(eventSubscribers)) {
-      notifySubscriber('event', subscriber, normalized);
-    }
-  };
-
   return {
     start,
     stop,
@@ -175,6 +154,5 @@ export function createGlobalMessageStreamHub({
       const index = replay.findIndex((entry) => entry.eventId === eventId);
       return index === -1 ? [] : replay.slice(index + 1);
     },
-    feedEvent,
   };
 }

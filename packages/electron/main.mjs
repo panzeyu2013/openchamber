@@ -666,10 +666,15 @@ const buildRendererRuntimeConfig = (uiUrl, runtimeConfig = {}) => {
   // Relay-capable hosts have no injectable HTTP base: the renderer reads this
   // host id, probes the direct leg, and falls back to the E2EE tunnel itself.
   const relayHostId = typeof runtimeConfig.relayHostId === 'string' ? runtimeConfig.relayHostId : '';
+  // The host this window was opened for (saved desktop host or SSH instance).
+  // Navigated windows re-resolve it by URL on demand; windows created for a
+  // host receive it here so the preload can expose it even on pages where the
+  // URL alone cannot identify the host (e.g. the packaged local UI).
+  const desktopHostId = typeof runtimeConfig.desktopHostId === 'string' ? runtimeConfig.desktopHostId : '';
   if (shouldUseSameOriginDevProxy(uiUrl, apiBaseUrl)) {
-    return { apiBaseUrl: '', clientToken: '', requestHeaders: {}, relayHostId };
+    return { apiBaseUrl: '', clientToken: '', requestHeaders: {}, relayHostId, desktopHostId };
   }
-  return { apiBaseUrl, clientToken, requestHeaders, relayHostId };
+  return { apiBaseUrl, clientToken, requestHeaders, relayHostId, desktopHostId };
 };
 
 const readDesktopLocalClientToken = () => {
@@ -2383,6 +2388,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
         `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
         `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
         `--openchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
+        `--openchamber-desktop-host-id=${rendererRuntimeConfig.desktopHostId || ''}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: false,
@@ -4330,6 +4336,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
             apiBaseUrl: normalizeHostUrl(apiUrl),
             clientToken: sanitizeClientTokenForStorage(host.clientToken),
             requestHeaders: sanitizeRuntimeRequestHeaders(host.requestHeaders),
+            desktopHostId: host.id,
           };
         }
       }
@@ -4353,6 +4360,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
           clientToken: host.clientToken || '',
           requestHeaders: sanitizeRuntimeRequestHeaders(host.requestHeaders || {}),
           relayHostId: host.id,
+          desktopHostId: host.id,
         });
         return null;
       }
@@ -4363,6 +4371,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         apiBaseUrl: targetUrl,
         clientToken: host.clientToken || '',
         requestHeaders: sanitizeRuntimeRequestHeaders(host.requestHeaders || {}),
+        desktopHostId: host.id,
       });
       return null;
     }
@@ -4373,11 +4382,15 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         throw new Error('Invalid URL');
       }
       const config = readDesktopHostsConfig();
+      const matchingHost = config.hosts.find((host) => {
+        const candidate = normalizeHostUrl(host.apiUrl || host.url);
+        return candidate && sameOrigin(candidate, targetUrl);
+      });
       const providedToken = typeof args.clientToken === 'string' ? args.clientToken : '';
       const clientToken = sanitizeClientTokenForStorage(providedToken) || resolveStoredClientTokenForUrl(targetUrl, config);
       const requestHeaders = sanitizeRuntimeRequestHeaders(args.requestHeaders || config.hosts.find((host) => normalizeHostUrl(host.apiUrl || host.url) === targetUrl)?.requestHeaders || {});
       let windowUrl = targetUrl;
-      const runtimeConfig = { apiBaseUrl: targetUrl, clientToken, requestHeaders };
+      const runtimeConfig = { apiBaseUrl: targetUrl, clientToken, requestHeaders, desktopHostId: matchingHost?.id || '' };
       if (shouldUsePackagedUi()) {
         windowUrl = buildPackagedUiUrl('/index.html');
       }
@@ -4827,6 +4840,49 @@ const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_capture_page_rect',
   'desktop_tray_update',
 ]);
+
+// Resolve which saved host (desktop host or SSH instance) the current page
+// belongs to, so the renderer can derive a stable runtime key for navigated
+// host windows. Matching is origin-based against live SSH tunnel URLs first,
+// then against every saved host URL. Non-host pages (e.g. the local UI)
+// resolve to an empty id, which the preload treats as "no host identity".
+const resolveDesktopHostIdForUrl = (targetUrl) => {
+  if (!targetUrl) return '';
+  let origin = '';
+  try {
+    origin = new URL(targetUrl).origin;
+  } catch {
+    return '';
+  }
+  try {
+    for (const status of sshManager.statusesWithDefaults()) {
+      if (status?.phase === 'ready' && status.localUrl) {
+        try {
+          if (new URL(status.localUrl).origin === origin) return status.id;
+        } catch {
+          // Ignore malformed tunnel URLs.
+        }
+      }
+    }
+  } catch {
+    // SSH manager may not be available yet.
+  }
+  for (const host of readDesktopHostsConfig().hosts || []) {
+    for (const candidate of [host?.apiUrl, host?.url]) {
+      if (typeof candidate !== 'string' || !candidate) continue;
+      try {
+        if (new URL(candidate).origin === origin) return host?.id || '';
+      } catch {
+        // Ignore malformed host URLs.
+      }
+    }
+  }
+  return '';
+};
+
+ipcMain.on('openchamber:get-desktop-host-id', (event) => {
+  event.returnValue = resolveDesktopHostIdForUrl(event.sender?.getURL?.());
+});
 
 ipcMain.handle('openchamber:invoke', async (event, command, args) => {
   if (!isLocalSender(event.sender) && !COMMANDS_SAFE_FOR_REMOTE.has(command)) {

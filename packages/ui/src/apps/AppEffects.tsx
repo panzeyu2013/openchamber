@@ -9,8 +9,11 @@ import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { loadDesktopFleetServers } from '@/fleet/desktop-registry';
+import { useFleetLiveStore } from '@/fleet/fleet-live-store';
 import { useFleetStore } from '@/fleet/fleet-store';
+import { useFleetSummaryStore } from '@/fleet/fleet-summary-store';
 import { FleetSummaryBridge } from '@/fleet/FleetSummaryBridge';
+import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
@@ -69,19 +72,56 @@ const MiniChatPresenceBridge: React.FC = () => {
 const FleetRegistryBridge: React.FC = () => {
   React.useEffect(() => {
     let cancelled = false;
-    void loadDesktopFleetServers().then((servers) => {
-      if (cancelled) return;
-      const fleet = useFleetStore.getState();
-      for (const server of servers) fleet.upsertServer(server);
-      fleet.syncActiveServer();
-    }).catch(() => {
-      // Non-desktop runtimes have no host registry. The local runtime remains
-      // the sole active server until a runtime owns an explicit registry.
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const refresh = () => {
+      void loadDesktopFleetServers().then((servers) => {
+        if (cancelled) return;
+        const fleet = useFleetStore.getState();
+        const previous = fleet.servers;
+        const nextIds = new Set(servers.map((server) => server.id));
+        for (const [id] of previous) {
+          if (!nextIds.has(id)) {
+            useFleetSummaryStore.getState().removeServer(id);
+            useFleetLiveStore.getState().removeServer(id);
+          }
+        }
+        // Non-SSH rows carry poll-derived status (connected/degraded) owned by
+        // FleetSummaryBridge; re-registration must not reset them to
+        // disconnected every time an SSH status event re-runs this refresh.
+        const merged = servers.map((server) => {
+          const existing = previous.get(server.id);
+          if (!existing || server.kind === 'ssh' || server.kind === 'local') return server;
+          return {
+            ...server,
+            status: existing.status,
+            errorMessage: existing.errorMessage,
+            lastSuccessAt: existing.lastSuccessAt,
+          };
+        });
+        fleet.replaceServers(merged);
+        fleet.syncActiveServer();
+      }).catch(() => {
+        // Non-desktop runtimes have no host registry. The local runtime remains
+        // the sole active server until a runtime owns an explicit registry.
+      });
+    };
+
+    void useDesktopSshStore.getState().load().catch(() => undefined);
+    refresh();
+    const unsubscribeSsh = useDesktopSshStore.subscribe(() => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        refresh();
+      }, 150);
     });
-    const unsubscribe = subscribeRuntimeEndpointChanged(() => useFleetStore.getState().syncActiveServer());
+    const unsubscribeRuntime = subscribeRuntimeEndpointChanged(() => useFleetStore.getState().syncActiveServer());
     return () => {
       cancelled = true;
-      unsubscribe();
+      if (refreshTimer) clearTimeout(refreshTimer);
+      unsubscribeSsh();
+      unsubscribeRuntime();
     };
   }, []);
   return null;
