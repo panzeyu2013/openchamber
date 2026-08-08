@@ -10,6 +10,7 @@ import { useI18n } from '@/lib/i18n';
 import { useUIStore } from '@/stores/useUIStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useMobileAutocompleteMaxHeight } from './useMobileAutocompleteMaxHeight';
+import { commandMatchesSearch, mergeCommandAutocompleteItems } from './commandAutocompleteItems';
 
 type CommandSource = 'openchamber' | 'opencode' | 'skill';
 
@@ -18,6 +19,7 @@ export interface CommandInfo {
   name: string;
   source: CommandSource;
   description?: string;
+  searchAliases?: string[];
   agent?: string;
   model?: string;
   isBuiltIn?: boolean;
@@ -171,6 +173,10 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             : []
           ),
           ...(canStartSessionCommand
+            ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
+            : []
+          ),
+          ...(canStartSessionCommand
             ? [{ id: 'openchamber:catch-up', name: 'catch-up', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.catchUpDescription'), isOpenChamber: true }]
             : []
           ),
@@ -187,14 +193,11 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
             : []
           ),
         ];
-        const allCommands = [...builtInCommands, ...customCommands, ...skillCommands];
+        const allCommands = mergeCommandAutocompleteItems(builtInCommands, customCommands, skillCommands);
 
         const allowInitCommand = !hasMessagesInCurrentSession;
         const filtered = (searchQuery
-          ? allCommands.filter(cmd =>
-              fuzzyMatch(cmd.name, searchQuery) ||
-              (cmd.description && fuzzyMatch(cmd.description, searchQuery))
-            )
+          ? allCommands.filter(cmd => commandMatchesSearch(cmd, searchQuery))
           : allCommands).filter(cmd => allowInitCommand || cmd.name !== 'init');
 
         filtered.sort((a, b) => {
@@ -241,6 +244,10 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
           ),
           ...(canStartSessionCommand
             ? [{ id: 'openchamber:craft-goal', name: 'craft-goal', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.craftGoalDescription'), isOpenChamber: true }]
+            : []
+          ),
+          ...(canStartSessionCommand
+            ? [{ id: 'openchamber:schedule-task', name: 'schedule-task', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.scheduleTaskDescription'), isOpenChamber: true }]
             : []
           ),
           ...(canStartSessionCommand

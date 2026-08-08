@@ -23,6 +23,7 @@ const macVibrancySupported = process.platform === 'darwin';
 // Effective state for this window (main process resolves the saved preference
 // and passes it in). Defaults on when supported unless explicitly '0'.
 const hasMacVibrancy = macVibrancySupported && readArgValue('--openchamber-mac-vibrancy') !== '0';
+const trayEnabled = process.platform !== 'darwin' || readArgValue('--openchamber-tray-enabled') !== '0';
 
 const sanitizeDesktopHostId = (value) => {
   const id = typeof value === 'string' ? value.trim() : '';
@@ -144,8 +145,10 @@ if (Number.isFinite(macosMajor) && macosMajor > 0) {
 
 contextBridge.exposeInMainWorld('__OPENCHAMBER_ELECTRON__', {
   runtime: 'electron',
+  arch: process.arch,
   macVibrancy: hasMacVibrancy,
   macVibrancySupported,
+  trayEnabled,
 });
 
 contextBridge.exposeInMainWorld('__OPENCHAMBER_PLATFORM__', process.platform);

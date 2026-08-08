@@ -9,11 +9,12 @@ import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOpt
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import type { TerminalShell } from '@/lib/api/types';
+import { useFilesViewTabsStore } from './useFilesViewTabsStore';
+import { isWindowsArm64 } from '@/lib/platform';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
 export type PendingDiffScope = 'working' | 'staged' | 'turn';
-export type RightSidebarTab = 'git' | 'files' | 'context';
-export type ContextPanelMode = 'diff' | 'file' | 'context' | 'plan' | 'chat' | 'preview' | 'browser';
+export type ContextPanelMode = 'diff' | 'walkthrough' | 'file' | 'context' | 'plan' | 'chat' | 'preview' | 'browser' | 'git' | 'pr' | 'notes' | 'terminal';
 export type MermaidRenderingMode = 'svg' | 'ascii';
 export type UserMessageRenderingMode = 'markdown' | 'plain';
 export type ChatRenderMode = 'sorted' | 'live';
@@ -21,7 +22,8 @@ export type ActivityRenderMode = 'collapsed' | 'summary';
 export type SessionRetentionAction = 'archive' | 'delete';
 export type TimeFormatPreference = 'auto' | '12h' | '24h';
 export type WeekStartPreference = 'auto' | 'sunday' | 'monday';
-export type DesktopWindowControlsPosition = 'auto' | 'left' | 'right';
+export type DesktopWindowControlsPosition = 'left' | 'right';
+export type DesktopWindowControlsStyle = 'classic' | 'traffic-lights';
 export type FileEditorKeymap = 'default' | 'vim';
 
 function normalizeFileEditorKeymap(value: unknown): FileEditorKeymap {
@@ -57,7 +59,9 @@ type ContextPanelDirectoryState = {
   expanded: boolean;
   tabs: ContextPanelTab[];
   activeTabId: string | null;
-  width: number;
+  // Manual per-surface widths (px), populated only by user resize; surfaces
+  // without an entry fall back to their registry defaultWidthFraction.
+  widthByMode: Partial<Record<ContextPanelMode, number>>;
   touchedAt: number;
 };
 
@@ -118,14 +122,15 @@ const CONTEXT_PANEL_MAX_WIDTH = 1400;
 const CONTEXT_PANEL_MAX_TABS = 12;
 const CONTEXT_PANEL_MAX_LABEL_LENGTH = 120;
 const LEFT_SIDEBAR_MIN_WIDTH = 280;
-export const RIGHT_SIDEBAR_MIN_WIDTH = 360;
-export const RIGHT_SIDEBAR_MAX_WIDTH = 860;
 const activeMainTabByRuntime = new Map<string, MainTab>();
 
 const runtimeMemoryKey = (value?: string | null): string => {
   const key = (value ?? getRuntimeKey()).trim();
   return key || 'default';
 };
+
+// Shared with rail/panel consumers so contextPanelByDirectory lookups agree on keys.
+export const normalizeContextPanelDirectoryKey = (value: string): string => normalizeDirectoryPath(value);
 
 const normalizeDirectoryPath = (value: string): string => {
   if (!value) return '';
@@ -283,7 +288,7 @@ const sanitizeContextPanelTabs = (tabs: unknown): ContextPanelTab[] => {
       touchedAt?: unknown;
     };
 
-    if (candidate.mode !== 'diff' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'preview' && candidate.mode !== 'browser') {
+    if (candidate.mode !== 'diff' && candidate.mode !== 'walkthrough' && candidate.mode !== 'file' && candidate.mode !== 'context' && candidate.mode !== 'plan' && candidate.mode !== 'chat' && candidate.mode !== 'preview' && candidate.mode !== 'browser' && candidate.mode !== 'git' && candidate.mode !== 'pr' && candidate.mode !== 'notes' && candidate.mode !== 'terminal') {
       continue;
     }
 
@@ -347,7 +352,7 @@ const touchContextPanelState = (prev?: ContextPanelDirectoryState): ContextPanel
     expanded: false,
     tabs: [],
     activeTabId: null,
-    width: CONTEXT_PANEL_DEFAULT_WIDTH,
+    widthByMode: {},
     touchedAt: Date.now(),
   };
 };
@@ -357,10 +362,15 @@ const upsertContextPanelTab = (
   descriptor: ContextPanelTabDescriptor,
 ): ContextPanelDirectoryState => {
   const nextTab = createContextPanelTab(descriptor);
-  const existingIndex = current.tabs.findIndex((tab) => tab.id === nextTab.id);
+  // A real file tab replaces the empty editor placeholder ('file' with no
+  // target) that the rail can open before any file is picked.
+  const baseTabs = nextTab.mode === 'file' && nextTab.targetPath
+    ? current.tabs.filter((tab) => !(tab.mode === 'file' && !tab.targetPath))
+    : current.tabs;
+  const existingIndex = baseTabs.findIndex((tab) => tab.id === nextTab.id);
   const tabs = existingIndex === -1
-    ? [...current.tabs, nextTab]
-    : current.tabs.map((tab, index) => (index === existingIndex
+    ? [...baseTabs, nextTab]
+    : baseTabs.map((tab, index) => (index === existingIndex
       ? {
           ...tab,
           mode: nextTab.mode,
@@ -391,16 +401,32 @@ const closeContextPanelTab = (
   current: ContextPanelDirectoryState,
   tabID: string,
 ): ContextPanelDirectoryState => {
+  const closedTab = current.tabs.find((tab) => tab.id === tabID) ?? null;
   const nextTabs = current.tabs.filter((tab) => tab.id !== tabID);
-  const nextActiveTabId = current.activeTabId === tabID
-    ? (nextTabs[nextTabs.length - 1]?.id ?? null)
-    : resolveActiveContextPanelTabID(nextTabs, current.activeTabId);
+
+  if (current.activeTabId !== tabID) {
+    return {
+      ...current,
+      tabs: nextTabs,
+      activeTabId: resolveActiveContextPanelTabID(nextTabs, current.activeTabId),
+      isOpen: nextTabs.length > 0 ? current.isOpen : false,
+      touchedAt: Date.now(),
+    };
+  }
+
+  // Closing the active tab stays inside the active surface: activate the most
+  // recent remaining tab of the same mode, and when it was the last one just
+  // close the panel instead of jumping to another surface.
+  const sameModeTabs = closedTab ? nextTabs.filter((tab) => tab.mode === closedTab.mode) : [];
+  const nextSameModeTab = sameModeTabs.length > 0
+    ? sameModeTabs.reduce((best, tab) => (tab.touchedAt >= best.touchedAt ? tab : best))
+    : null;
 
   return {
     ...current,
     tabs: nextTabs,
-    activeTabId: nextActiveTabId,
-    isOpen: nextTabs.length > 0 ? current.isOpen : false,
+    activeTabId: nextSameModeTab?.id ?? resolveActiveContextPanelTabID(nextTabs, null),
+    isOpen: nextSameModeTab ? current.isOpen : false,
     touchedAt: Date.now(),
   };
 };
@@ -467,7 +493,7 @@ const sanitizeContextPanelByDirectory = (
       expanded?: unknown;
       tabs?: unknown;
       activeTabId?: unknown;
-      width?: unknown;
+      widthByMode?: unknown;
       touchedAt?: unknown;
       mode?: unknown;
       targetPath?: unknown;
@@ -491,12 +517,27 @@ const sanitizeContextPanelByDirectory = (
     const resolvedActiveTabId = resolveActiveContextPanelTabID(tabs, activeTabId);
     const clampedTabs = clampContextPanelTabs(tabs, CONTEXT_PANEL_MAX_TABS, resolvedActiveTabId);
 
+    // Legacy single `width` values are intentionally dropped: widths are now
+    // per-surface, seeded from registry defaults until the user resizes.
+    const widthByMode: Partial<Record<ContextPanelMode, number>> = {};
+    if (candidate.widthByMode && typeof candidate.widthByMode === 'object') {
+      for (const [mode, value] of Object.entries(candidate.widthByMode as Record<string, unknown>)) {
+        if (
+          (mode === 'diff' || mode === 'file' || mode === 'context' || mode === 'plan' || mode === 'chat' || mode === 'preview' || mode === 'browser' || mode === 'git' || mode === 'pr' || mode === 'notes' || mode === 'terminal')
+          && typeof value === 'number'
+          && Number.isFinite(value)
+        ) {
+          widthByMode[mode] = clampContextPanelWidth(value);
+        }
+      }
+    }
+
     next[directory] = {
       isOpen: candidate.isOpen === true,
       expanded: candidate.expanded === true,
       tabs: clampedTabs,
       activeTabId: resolveActiveContextPanelTabID(clampedTabs, resolvedActiveTabId),
-      width: clampContextPanelWidth(typeof candidate.width === 'number' ? candidate.width : CONTEXT_PANEL_DEFAULT_WIDTH),
+      widthByMode,
       touchedAt: typeof candidate.touchedAt === 'number' && Number.isFinite(candidate.touchedAt)
         ? candidate.touchedAt
         : Date.now(),
@@ -531,15 +572,10 @@ interface UIStore {
   isSidebarOpen: boolean;
   sidebarWidth: number;
   hasManuallyResizedLeftSidebar: boolean;
-  isRightSidebarOpen: boolean;
-  rightSidebarWidth: number;
-  hasManuallyResizedRightSidebar: boolean;
-  rightSidebarTab: RightSidebarTab;
   contextPanelByDirectory: Record<string, ContextPanelDirectoryState>;
-  isBottomTerminalOpen: boolean;
-  isBottomTerminalExpanded: boolean;
-  bottomTerminalHeight: number;
-  hasManuallyResizedBottomTerminal: boolean;
+  contextRailOrder: string[];
+  contextEditorTreeVisible: boolean;
+  contextEditorTreeWidth: number;
   notesPanelHeight: number;
   todoPanelHeight: number;
   isSessionSwitcherOpen: boolean;
@@ -561,6 +597,8 @@ interface UIStore {
   openCodeStatusText: string;
   isSessionCreateDialogOpen: boolean;
   isScheduledTasksDialogOpen: boolean;
+  isArchivePageOpen: boolean;
+  worktreesPageProjectId: string | null;
   isSettingsDialogOpen: boolean;
   isNewWorktreeDialogOpen: boolean;
   isModelSelectorOpen: boolean;
@@ -583,7 +621,11 @@ interface UIStore {
   chatRenderMode: ChatRenderMode;
   activityRenderMode: ActivityRenderMode;
   showDeletionDialog: boolean;
+  /** When true, confirm before applying deferred OpenCode restart from Settings. */
+  showOpenCodeRestartConfirm: boolean;
   autoDeleteEnabled: boolean;
+  /** Global file-editor autosave. Default true for backward compatibility. */
+  autoSaveEnabled: boolean;
   autoDeleteAfterDays: number;
   sessionRetentionAction: SessionRetentionAction;
   autoDeleteLastRunAt: number | null;
@@ -591,6 +633,7 @@ interface UIStore {
   fontSize: number;
   // Global draft welcome starters; null = unset (use the default built-in set).
   globalDraftStarters: DraftStarterRef[] | null;
+  draftStartersVisible: boolean;
   terminalFontSize: number;
   terminalShell: TerminalShell;
   terminalLoginShells: TerminalShell[];
@@ -613,6 +656,8 @@ interface UIStore {
   diffLayoutPreference: 'dynamic' | 'inline' | 'side-by-side';
   diffFileLayout: Record<string, 'inline' | 'side-by-side'>;
   diffWrapLines: boolean;
+  /** Width of the walkthrough table of contents, in pixels. */
+  walkthroughTocWidth: number;
   gitChangesViewMode: 'flat' | 'tree';
   isTimelineDialogOpen: boolean;
   isPromptNavigatorPanelOpen: boolean;
@@ -645,6 +690,7 @@ interface UIStore {
   showTerminalQuickKeysOnDesktop: boolean;
   persistChatDraft: boolean;
   showOpenCodeUpdateNotifications: boolean;
+  agentControlToolEnabled: boolean;
   inputSpellcheckEnabled: boolean;
   wideChatLayoutEnabled: boolean;
   codeBlockLineWrap: boolean;
@@ -655,6 +701,7 @@ interface UIStore {
   timeFormatPreference: TimeFormatPreference;
   weekStartPreference: WeekStartPreference;
   desktopWindowControlsPosition: DesktopWindowControlsPosition;
+  desktopWindowControlsStyle: DesktopWindowControlsStyle;
   mermaidRenderingMode: MermaidRenderingMode;
   userMessageRenderingMode: UserMessageRenderingMode;
   collapsibleUserMessages: boolean;
@@ -663,9 +710,6 @@ interface UIStore {
   expandedEditorToolbar: boolean;
   showSplitAssistantMessageActions: boolean;
   allowPromptingSubagentSessions: boolean;
-  isMobileSessionStatusBarCollapsed: boolean;
-  mobileSessionPanelOpen: boolean;
-  mobileSessionFilterProjectId: string | null;
   isExpandedInput: boolean;
   reportUsage: boolean;
   shortcutOverrides: Record<string, ShortcutCombo>;
@@ -675,10 +719,10 @@ interface UIStore {
   toggleSidebar: () => void;
   setSidebarOpen: (open: boolean) => void;
   setSidebarWidth: (width: number) => void;
-  toggleRightSidebar: () => void;
-  setRightSidebarOpen: (open: boolean) => void;
-  setRightSidebarWidth: (width: number) => void;
-  setRightSidebarTab: (tab: RightSidebarTab) => void;
+  setContextRailOrder: (order: string[]) => void;
+  toggleContextEditorTree: () => void;
+  setContextEditorTreeWidth: (width: number) => void;
+  openContextSurface: (directory: string, mode: ContextPanelMode) => void;
   openContextPanelTab: (directory: string, tab: ContextPanelTabDescriptor) => void;
   openContextDiff: (directory: string, filePath: string, staged?: boolean, scope?: PendingDiffScope | null) => void;
   openContextFile: (directory: string, filePath: string) => void;
@@ -693,11 +737,7 @@ interface UIStore {
   closeContextPanelTab: (directory: string, tabID: string) => void;
   closeContextPanel: (directory: string) => void;
   toggleContextPanelExpanded: (directory: string) => void;
-  setContextPanelWidth: (directory: string, width: number) => void;
-  toggleBottomTerminal: () => void;
-  setBottomTerminalOpen: (open: boolean) => void;
-  setBottomTerminalExpanded: (expanded: boolean) => void;
-  setBottomTerminalHeight: (height: number) => void;
+  setContextPanelWidth: (directory: string, mode: ContextPanelMode, width: number) => void;
   setNotesPanelHeight: (height: number) => void;
   setTodoPanelHeight: (height: number) => void;
   setSessionSwitcherOpen: (open: boolean) => void;
@@ -724,6 +764,10 @@ interface UIStore {
   setOpenCodeStatusText: (text: string) => void;
   setSessionCreateDialogOpen: (open: boolean) => void;
   setScheduledTasksDialogOpen: (open: boolean) => void;
+  setArchivePageOpen: (open: boolean) => void;
+  setWorktreesPageProjectId: (projectId: string | null) => void;
+  /** Close every full-page surface (Scheduled, Archive, Worktrees, Multi-run). */
+  closeMainSurfaces: () => void;
   setSettingsDialogOpen: (open: boolean) => void;
   setNewWorktreeDialogOpen: (open: boolean) => void;
   setModelSelectorOpen: (open: boolean) => void;
@@ -743,13 +787,16 @@ interface UIStore {
   setChatRenderMode: (value: ChatRenderMode) => void;
   setActivityRenderMode: (value: ActivityRenderMode) => void;
   setShowDeletionDialog: (value: boolean) => void;
+  setShowOpenCodeRestartConfirm: (value: boolean) => void;
   setAutoDeleteEnabled: (value: boolean) => void;
+  setAutoSaveEnabled: (value: boolean) => void;
   setAutoDeleteAfterDays: (days: number) => void;
   setSessionRetentionAction: (value: SessionRetentionAction) => void;
   setAutoDeleteLastRunAt: (timestamp: number | null) => void;
   setMessageLimit: (value: number) => void;
   setFontSize: (size: number) => void;
   setGlobalDraftStarters: (refs: DraftStarterRef[]) => void;
+  setDraftStartersVisible: (value: boolean) => void;
   setTerminalFontSize: (size: number) => void;
   setTerminalShell: (shell: TerminalShell) => void;
   setTerminalLoginShells: (shells: TerminalShell[]) => void;
@@ -762,7 +809,6 @@ interface UIStore {
   setMobileKeyboardMode: (mode: MobileKeyboardMode) => void;
   applyTypography: () => void;
   applyPadding: () => void;
-  updateProportionalSidebarWidths: () => void;
   toggleFavoriteModel: (providerID: string, modelID: string) => void;
   reorderFavoriteModel: (
     activeProviderID: string,
@@ -784,6 +830,7 @@ interface UIStore {
   setDiffLayoutPreference: (mode: 'dynamic' | 'inline' | 'side-by-side') => void;
   setDiffFileLayout: (filePath: string, mode: 'inline' | 'side-by-side') => void;
   setDiffWrapLines: (wrap: boolean) => void;
+  setWalkthroughTocWidth: (width: number) => void;
   setGitChangesViewMode: (mode: 'flat' | 'tree') => void;
   setMultiRunLauncherOpen: (open: boolean) => void;
   setTimelineDialogOpen: (open: boolean) => void;
@@ -798,13 +845,16 @@ interface UIStore {
   setNotifyOnCompletion: (value: boolean) => void;
   setNotifyOnError: (value: boolean) => void;
   setNotifyOnQuestion: (value: boolean) => void;
-  setNotificationTemplates: (templates: UIStore['notificationTemplates']) => void;
+  setNotificationTemplates: (
+    templates: UIStore['notificationTemplates'] | ((current: UIStore['notificationTemplates']) => UIStore['notificationTemplates']),
+  ) => void;
   setSummarizeLastMessage: (value: boolean) => void;
   setSummaryThreshold: (value: number) => void;
   setSummaryLength: (value: number) => void;
   setMaxLastMessageLength: (value: number) => void;
   setPersistChatDraft: (value: boolean) => void;
   setShowOpenCodeUpdateNotifications: (value: boolean) => void;
+  setAgentControlToolEnabled: (value: boolean) => void;
   setInputSpellcheckEnabled: (value: boolean) => void;
   setWideChatLayoutEnabled: (value: boolean) => void;
   setCodeBlockLineWrap: (value: boolean) => void;
@@ -815,6 +865,7 @@ interface UIStore {
   setTimeFormatPreference: (value: TimeFormatPreference) => void;
   setWeekStartPreference: (value: WeekStartPreference) => void;
   setDesktopWindowControlsPosition: (value: DesktopWindowControlsPosition) => void;
+  setDesktopWindowControlsStyle: (value: DesktopWindowControlsStyle) => void;
   setMermaidRenderingMode: (value: MermaidRenderingMode) => void;
   setUserMessageRenderingMode: (value: UserMessageRenderingMode) => void;
   setCollapsibleUserMessages: (value: boolean) => void;
@@ -823,9 +874,6 @@ interface UIStore {
   setExpandedEditorToolbar: (value: boolean) => void;
   setShowSplitAssistantMessageActions: (value: boolean) => void;
   setAllowPromptingSubagentSessions: (value: boolean) => void;
-  setIsMobileSessionStatusBarCollapsed: (value: boolean) => void;
-  setMobileSessionPanelOpen: (value: boolean) => void;
-  setMobileSessionFilterProjectId: (value: string | null) => void;
   viewPagerPage: 'left' | 'center' | 'right';
   setViewPagerPage: (page: 'left' | 'center' | 'right') => void;
   toggleExpandedInput: () => void;
@@ -851,15 +899,10 @@ export const useUIStore = create<UIStore>()(
         isSidebarOpen: true,
         sidebarWidth: LEFT_SIDEBAR_MIN_WIDTH,
         hasManuallyResizedLeftSidebar: false,
-        isRightSidebarOpen: false,
-        rightSidebarWidth: RIGHT_SIDEBAR_MIN_WIDTH,
-        hasManuallyResizedRightSidebar: false,
-        rightSidebarTab: 'git',
         contextPanelByDirectory: {},
-        isBottomTerminalOpen: false,
-        isBottomTerminalExpanded: false,
-        bottomTerminalHeight: 300,
-        hasManuallyResizedBottomTerminal: false,
+        contextRailOrder: [],
+        contextEditorTreeVisible: true,
+        contextEditorTreeWidth: 240,
         notesPanelHeight: 112,
         todoPanelHeight: 259,
         isSessionSwitcherOpen: false,
@@ -881,6 +924,8 @@ export const useUIStore = create<UIStore>()(
         openCodeStatusText: '',
         isSessionCreateDialogOpen: false,
         isScheduledTasksDialogOpen: false,
+        isArchivePageOpen: false,
+        worktreesPageProjectId: null,
         isSettingsDialogOpen: false,
         isNewWorktreeDialogOpen: false,
         isModelSelectorOpen: false,
@@ -901,7 +946,9 @@ export const useUIStore = create<UIStore>()(
         chatRenderMode: 'live',
         activityRenderMode: 'summary',
         showDeletionDialog: true,
+        showOpenCodeRestartConfirm: true,
         autoDeleteEnabled: false,
+        autoSaveEnabled: true,
         autoDeleteAfterDays: 30,
         sessionRetentionAction: 'archive',
         autoDeleteLastRunAt: null,
@@ -928,6 +975,7 @@ export const useUIStore = create<UIStore>()(
         diffLayoutPreference: 'inline',
         diffFileLayout: {},
         diffWrapLines: false,
+        walkthroughTocWidth: 224,
         gitChangesViewMode: 'flat',
         isTimelineDialogOpen: false,
         isPromptNavigatorPanelOpen: false,
@@ -956,7 +1004,8 @@ export const useUIStore = create<UIStore>()(
 
         showTerminalQuickKeysOnDesktop: false,
         persistChatDraft: true,
-        showOpenCodeUpdateNotifications: true,
+        showOpenCodeUpdateNotifications: !isWindowsArm64(),
+        agentControlToolEnabled: true,
         inputSpellcheckEnabled: false,
         wideChatLayoutEnabled: false,
         codeBlockLineWrap: true,
@@ -966,7 +1015,8 @@ export const useUIStore = create<UIStore>()(
         showExpandedEditTools: false,
         timeFormatPreference: 'auto',
         weekStartPreference: 'auto',
-        desktopWindowControlsPosition: 'auto',
+        desktopWindowControlsPosition: 'right',
+        desktopWindowControlsStyle: 'classic',
         mermaidRenderingMode: 'svg',
         userMessageRenderingMode: 'markdown',
         collapsibleUserMessages: true,
@@ -975,9 +1025,7 @@ export const useUIStore = create<UIStore>()(
         expandedEditorToolbar: false,
         showSplitAssistantMessageActions: false,
         allowPromptingSubagentSessions: false,
-        isMobileSessionStatusBarCollapsed: false,
-        mobileSessionPanelOpen: false,
-        mobileSessionFilterProjectId: null,
+        draftStartersVisible: true,
         isExpandedInput: false,
         reportUsage: true,
         shortcutOverrides: {},
@@ -1030,45 +1078,60 @@ export const useUIStore = create<UIStore>()(
           set({ sidebarWidth: width, hasManuallyResizedLeftSidebar: true });
         },
 
-        toggleRightSidebar: () => {
-          set((state) => {
-            const newOpen = !state.isRightSidebarOpen;
-
-            if (newOpen && !state.hasManuallyResizedRightSidebar) {
-              return {
-                isRightSidebarOpen: newOpen,
-                rightSidebarWidth: RIGHT_SIDEBAR_MIN_WIDTH,
-              };
-            }
-            return { isRightSidebarOpen: newOpen };
-          });
+        setContextRailOrder: (order) => {
+          const sanitized = Array.isArray(order)
+            ? order.filter((id, index) => typeof id === 'string' && id.trim() !== '' && order.indexOf(id) === index)
+            : [];
+          set({ contextRailOrder: sanitized });
         },
 
-        setRightSidebarOpen: (open) => {
-          set((state) => {
-            if (state.isRightSidebarOpen === open) {
-              return state;
-            }
-            const shouldResetWidth = open
-              && !state.hasManuallyResizedRightSidebar
-              && state.rightSidebarWidth !== RIGHT_SIDEBAR_MIN_WIDTH;
-            return {
-              isRightSidebarOpen: open,
-              rightSidebarWidth: shouldResetWidth ? RIGHT_SIDEBAR_MIN_WIDTH : state.rightSidebarWidth,
-            };
-          });
+        toggleContextEditorTree: () => {
+          set((state) => ({ contextEditorTreeVisible: !state.contextEditorTreeVisible }));
         },
 
-        setRightSidebarWidth: (width) => {
-          const clamped = Math.min(
-            RIGHT_SIDEBAR_MAX_WIDTH,
-            Math.max(RIGHT_SIDEBAR_MIN_WIDTH, width)
-          );
-          set({ rightSidebarWidth: clamped, hasManuallyResizedRightSidebar: true });
+        setContextEditorTreeWidth: (width) => {
+          if (!Number.isFinite(width)) {
+            return;
+          }
+          set({ contextEditorTreeWidth: Math.min(480, Math.max(200, Math.round(width))) });
         },
 
-        setRightSidebarTab: (tab) => {
-          set({ rightSidebarTab: tab });
+        // Rail entry point: activates the most recent tab of the requested
+        // mode, opens a fresh singleton tab when none exists, and toggles the
+        // panel closed when the requested mode is already active and visible.
+        openContextSurface: (directory, mode) => {
+          const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
+          if (!normalizedDirectory) {
+            return;
+          }
+
+          const state = get();
+          const panelState = state.contextPanelByDirectory[normalizedDirectory];
+          const tabs = panelState?.tabs ?? [];
+          const activeTab = tabs.find((tab) => tab.id === panelState?.activeTabId) ?? null;
+
+          if (panelState?.isOpen && activeTab?.mode === mode) {
+            state.closeContextPanel(normalizedDirectory);
+            return;
+          }
+
+          const tabsOfMode = tabs.filter((tab) => tab.mode === mode);
+          if (tabsOfMode.length > 0) {
+            // `>=` so equal timestamps (same-millisecond opens) resolve to the
+            // later tab in insertion order.
+            const mostRecent = tabsOfMode.reduce((best, tab) => (tab.touchedAt >= best.touchedAt ? tab : best));
+            state.setActiveContextPanelTab(normalizedDirectory, mostRecent.id);
+            return;
+          }
+
+          // Content-driven modes need a payload (a preview URL or session);
+          // the rail renders them disabled until content exists. 'file' opens
+          // an empty editor whose embedded tree picks the first file.
+          if (mode === 'preview' || mode === 'chat') {
+            return;
+          }
+
+          state.openContextPanelTab(normalizedDirectory, { mode });
         },
 
         openContextPanelTab: (directory, tab) => {
@@ -1277,6 +1340,9 @@ export const useUIStore = create<UIStore>()(
             return;
           }
 
+          const closingTab = get().contextPanelByDirectory[normalizedDirectory]?.tabs
+            .find((tab) => tab.id === normalizedTabID);
+
           set((state) => {
             const prev = state.contextPanelByDirectory[normalizedDirectory];
             const current = touchContextPanelState(prev);
@@ -1291,6 +1357,12 @@ export const useUIStore = create<UIStore>()(
 
             return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
           });
+
+          // Keep the editor's own open-file state in sync so a reopened
+          // editor surface does not resurrect the closed file.
+          if (closingTab?.mode === 'file' && closingTab.targetPath) {
+            useFilesViewTabsStore.getState().removeOpenPath(normalizedDirectory, closingTab.targetPath);
+          }
         },
 
         closeContextPanel: (directory) => {
@@ -1338,7 +1410,7 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        setContextPanelWidth: (directory, width) => {
+        setContextPanelWidth: (directory, mode, width) => {
           const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
           if (!normalizedDirectory) {
             return;
@@ -1351,70 +1423,15 @@ export const useUIStore = create<UIStore>()(
               ...state.contextPanelByDirectory,
               [normalizedDirectory]: {
                 ...current,
-                width: clampContextPanelWidth(width),
+                widthByMode: {
+                  ...current.widthByMode,
+                  [mode]: clampContextPanelWidth(width),
+                },
               },
             };
 
             return { contextPanelByDirectory: clampContextPanelRoots(byDirectory, 20) };
           });
-        },
-
-        toggleBottomTerminal: () => {
-          set((state) => {
-            const newOpen = !state.isBottomTerminalOpen;
-
-            if (newOpen && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: newOpen,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: newOpen };
-          });
-        },
-
-        setBottomTerminalOpen: (open) => {
-          set((state) => {
-            if (state.isBottomTerminalOpen === open) {
-              if (!open) {
-                return state;
-              }
-              if (!state.hasManuallyResizedBottomTerminal && typeof window !== 'undefined') {
-                const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-                if (state.bottomTerminalHeight === proportionalHeight && state.hasManuallyResizedBottomTerminal === false) {
-                  return state;
-                }
-                return {
-                  isBottomTerminalOpen: open,
-                  bottomTerminalHeight: proportionalHeight,
-                  hasManuallyResizedBottomTerminal: false,
-                };
-              }
-              return state;
-            }
-
-            if (open && typeof window !== 'undefined') {
-              const proportionalHeight = Math.floor(window.innerHeight * 0.32);
-              return {
-                isBottomTerminalOpen: open,
-                bottomTerminalHeight: proportionalHeight,
-                hasManuallyResizedBottomTerminal: false,
-              };
-            }
-
-            return { isBottomTerminalOpen: open };
-          });
-        },
-
-        setBottomTerminalExpanded: (expanded) => {
-          set({ isBottomTerminalExpanded: expanded });
-        },
-
-        setBottomTerminalHeight: (height) => {
-          set({ bottomTerminalHeight: height, hasManuallyResizedBottomTerminal: true });
         },
 
         setNotesPanelHeight: (height) => {
@@ -1553,7 +1570,35 @@ export const useUIStore = create<UIStore>()(
         },
 
         setScheduledTasksDialogOpen: (open) => {
-          set({ isScheduledTasksDialogOpen: open });
+          set(open
+            ? { isScheduledTasksDialogOpen: true, isArchivePageOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            : { isScheduledTasksDialogOpen: false });
+        },
+
+        setArchivePageOpen: (open) => {
+          set(open
+            ? { isArchivePageOpen: true, isScheduledTasksDialogOpen: false, worktreesPageProjectId: null, isMultiRunLauncherOpen: false }
+            : { isArchivePageOpen: false });
+        },
+
+        setWorktreesPageProjectId: (projectId) => {
+          set(projectId
+            ? { worktreesPageProjectId: projectId, isScheduledTasksDialogOpen: false, isArchivePageOpen: false, isMultiRunLauncherOpen: false }
+            : { worktreesPageProjectId: null });
+        },
+
+        closeMainSurfaces: () => {
+          const state = get();
+          if (!state.isScheduledTasksDialogOpen && !state.isArchivePageOpen && !state.worktreesPageProjectId && !state.isMultiRunLauncherOpen) {
+            return;
+          }
+          set({
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
+            isMultiRunLauncherOpen: false,
+            multiRunLauncherPrefillPrompt: '',
+          });
         },
 
         setSettingsDialogOpen: (open) => {
@@ -1639,8 +1684,16 @@ export const useUIStore = create<UIStore>()(
           set({ showDeletionDialog: value });
         },
 
+        setShowOpenCodeRestartConfirm: (value) => {
+          set({ showOpenCodeRestartConfirm: value });
+        },
+
         setAutoDeleteEnabled: (value) => {
           set({ autoDeleteEnabled: value });
+        },
+
+        setAutoSaveEnabled: (value) => {
+          set({ autoSaveEnabled: value });
         },
 
         setAutoDeleteAfterDays: (days) => {
@@ -1670,6 +1723,10 @@ export const useUIStore = create<UIStore>()(
 
         setGlobalDraftStarters: (refs) => {
           set({ globalDraftStarters: refs });
+        },
+
+        setDraftStartersVisible: (value) => {
+          set({ draftStartersVisible: value });
         },
 
         setTerminalFontSize: (size) => {
@@ -1783,6 +1840,10 @@ export const useUIStore = create<UIStore>()(
 
         setDiffWrapLines: (wrap) => {
           set({ diffWrapLines: wrap });
+        },
+
+        setWalkthroughTocWidth: (width) => {
+          set({ walkthroughTocWidth: Math.round(width) });
         },
 
         setGitChangesViewMode: (mode) => {
@@ -1999,25 +2060,6 @@ export const useUIStore = create<UIStore>()(
           });
         },
 
-        updateProportionalSidebarWidths: () => {
-          if (typeof window === 'undefined') {
-            return;
-          }
-
-          set((state) => {
-            const updates: Partial<UIStore> = {};
-
-            if (state.isBottomTerminalOpen && !state.hasManuallyResizedBottomTerminal) {
-              const nextHeight = Math.floor(window.innerHeight * 0.32);
-              if (state.bottomTerminalHeight !== nextHeight) {
-                updates.bottomTerminalHeight = nextHeight;
-              }
-            }
-
-            return Object.keys(updates).length > 0 ? updates : state;
-          });
-        },
-
         applyTheme: () => {
           const { theme } = get();
           const root = document.documentElement;
@@ -2032,10 +2074,13 @@ export const useUIStore = create<UIStore>()(
           }
         },
 
+        // Multi-run is one of the mutually exclusive full-page surfaces:
+        // opening it closes the other surfaces and vice versa.
         setMultiRunLauncherOpen: (open) => {
           set((state) => ({
             isMultiRunLauncherOpen: open,
             multiRunLauncherPrefillPrompt: open ? state.multiRunLauncherPrefillPrompt : '',
+            ...(open ? { isScheduledTasksDialogOpen: false, isArchivePageOpen: false, worktreesPageProjectId: null } : {}),
           }));
         },
 
@@ -2044,6 +2089,9 @@ export const useUIStore = create<UIStore>()(
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: '',
             isSessionSwitcherOpen: false,
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
           });
         },
 
@@ -2052,6 +2100,9 @@ export const useUIStore = create<UIStore>()(
             isMultiRunLauncherOpen: true,
             multiRunLauncherPrefillPrompt: prompt,
             isSessionSwitcherOpen: false,
+            isScheduledTasksDialogOpen: false,
+            isArchivePageOpen: false,
+            worktreesPageProjectId: null,
           });
         },
 
@@ -2094,7 +2145,13 @@ export const useUIStore = create<UIStore>()(
         setNotifyOnCompletion: (value) => { set({ notifyOnCompletion: value }); },
         setNotifyOnError: (value) => { set({ notifyOnError: value }); },
         setNotifyOnQuestion: (value) => { set({ notifyOnQuestion: value }); },
-        setNotificationTemplates: (templates) => { set({ notificationTemplates: templates }); },
+        setNotificationTemplates: (templates) => {
+          set((state) => ({
+            notificationTemplates: typeof templates === 'function'
+              ? templates(state.notificationTemplates)
+              : templates,
+          }));
+        },
         setSummarizeLastMessage: (value) => { set({ summarizeLastMessage: value }); },
         setSummaryThreshold: (value) => { set({ summaryThreshold: value }); },
         setSummaryLength: (value) => { set({ summaryLength: value }); },
@@ -2104,6 +2161,9 @@ export const useUIStore = create<UIStore>()(
         },
         setShowOpenCodeUpdateNotifications: (value) => {
           set({ showOpenCodeUpdateNotifications: value });
+        },
+        setAgentControlToolEnabled: (value) => {
+          set({ agentControlToolEnabled: value });
         },
         setInputSpellcheckEnabled: (value) => {
           set({ inputSpellcheckEnabled: value });
@@ -2135,7 +2195,10 @@ export const useUIStore = create<UIStore>()(
           set({ weekStartPreference: value });
         },
         setDesktopWindowControlsPosition: (value) => {
-          set({ desktopWindowControlsPosition: value });
+          set({ desktopWindowControlsPosition: value === 'left' ? 'left' : 'right' });
+        },
+        setDesktopWindowControlsStyle: (value) => {
+          set({ desktopWindowControlsStyle: value === 'traffic-lights' ? 'traffic-lights' : 'classic' });
         },
         setMermaidRenderingMode: (value) => {
           set({ mermaidRenderingMode: value });
@@ -2161,28 +2224,13 @@ export const useUIStore = create<UIStore>()(
         setAllowPromptingSubagentSessions: (value) => {
           set({ allowPromptingSubagentSessions: value });
         },
-        setIsMobileSessionStatusBarCollapsed: (value) => {
-          set({ isMobileSessionStatusBarCollapsed: value });
-        },
-        setMobileSessionPanelOpen: (value) => {
-          set({ mobileSessionPanelOpen: value });
-        },
-        setMobileSessionFilterProjectId: (value) => {
-          set({ mobileSessionFilterProjectId: value });
-        },
         setReportUsage: (value) => {
           set({ reportUsage: value });
         },
         viewPagerPage: 'center',
         setViewPagerPage: (page: 'left' | 'center' | 'right') => {
           set({ viewPagerPage: page });
-          if (page === 'left') {
-            set({ isSessionSwitcherOpen: true, isRightSidebarOpen: false });
-          } else if (page === 'right') {
-            set({ isRightSidebarOpen: true, isSessionSwitcherOpen: false });
-          } else {
-            set({ isSessionSwitcherOpen: false, isRightSidebarOpen: false });
-          }
+          set({ isSessionSwitcherOpen: page === 'left' });
         },
 
         setShortcutOverride: (actionId, combo) => {
@@ -2221,12 +2269,38 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 11,
+        version: 13,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
           }
           const state = persistedState as Record<string, unknown>;
+
+          // v12 -> v13: promote FilesView localStorage autosave toggle into the store.
+          if (version < 13) {
+            if (typeof state.autoSaveEnabled !== 'boolean') {
+              let legacyEnabled = true;
+              try {
+                if (typeof localStorage !== 'undefined') {
+                  const legacy = localStorage.getItem('openchamber:files:auto-save-enabled');
+                  if (legacy !== null) {
+                    legacyEnabled = legacy !== 'false';
+                    localStorage.removeItem('openchamber:files:auto-save-enabled');
+                  }
+                }
+              } catch {
+                legacyEnabled = true;
+              }
+              state.autoSaveEnabled = legacyEnabled;
+            }
+          }
+
+          // v11 -> v12: drop legacy window-controls "auto" (always meant right).
+          if (version < 12) {
+            if (state.desktopWindowControlsPosition === 'auto' || state.desktopWindowControlsPosition == null) {
+              state.desktopWindowControlsPosition = 'right';
+            }
+          }
 
           // v10 -> v11: move the previous terminal font default forward.
           if (version < 11 && state.terminalFontSize === 13) {
@@ -2281,12 +2355,11 @@ export const useUIStore = create<UIStore>()(
             delete state.memoryLimitActiveSession;
           }
 
-          if (
-            typeof state.rightSidebarTab !== 'string'
-            || (state.rightSidebarTab !== 'git' && state.rightSidebarTab !== 'files' && state.rightSidebarTab !== 'context')
-          ) {
-            state.rightSidebarTab = 'git';
-          }
+          // Right-sidebar state was removed with the sidebar itself; drop
+          // stale persisted fields.
+          delete state.isRightSidebarOpen;
+          delete state.rightSidebarWidth;
+          delete state.rightSidebarTab;
 
           state.contextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
 
@@ -2321,19 +2394,24 @@ export const useUIStore = create<UIStore>()(
 
           state.fileEditorKeymap = normalizeFileEditorKeymap(state.fileEditorKeymap);
 
+          if (typeof state.autoSaveEnabled !== 'boolean') {
+            state.autoSaveEnabled = true;
+          }
+
+          state.contextRailOrder = Array.isArray(state.contextRailOrder)
+            ? (state.contextRailOrder as unknown[]).filter((id): id is string => typeof id === 'string' && id.trim() !== '')
+            : [];
+
           return state;
         },
         partialize: (state) => ({
           theme: state.theme,
           isSidebarOpen: state.isSidebarOpen,
           sidebarWidth: state.sidebarWidth,
-          isRightSidebarOpen: state.isRightSidebarOpen,
-          rightSidebarWidth: state.rightSidebarWidth,
-          rightSidebarTab: state.rightSidebarTab,
           contextPanelByDirectory: state.contextPanelByDirectory,
-          isBottomTerminalOpen: state.isBottomTerminalOpen,
-          isBottomTerminalExpanded: state.isBottomTerminalExpanded,
-          bottomTerminalHeight: state.bottomTerminalHeight,
+          contextRailOrder: state.contextRailOrder,
+          contextEditorTreeVisible: state.contextEditorTreeVisible,
+          contextEditorTreeWidth: state.contextEditorTreeWidth,
           notesPanelHeight: state.notesPanelHeight,
           todoPanelHeight: state.todoPanelHeight,
           isSessionSwitcherOpen: state.isSessionSwitcherOpen,
@@ -2355,7 +2433,9 @@ export const useUIStore = create<UIStore>()(
           chatRenderMode: state.chatRenderMode,
           activityRenderMode: state.activityRenderMode,
           showDeletionDialog: state.showDeletionDialog,
+          showOpenCodeRestartConfirm: state.showOpenCodeRestartConfirm,
           autoDeleteEnabled: state.autoDeleteEnabled,
+          autoSaveEnabled: state.autoSaveEnabled,
           autoDeleteAfterDays: state.autoDeleteAfterDays,
           sessionRetentionAction: state.sessionRetentionAction,
           autoDeleteLastRunAt: state.autoDeleteLastRunAt,
@@ -2379,6 +2459,7 @@ export const useUIStore = create<UIStore>()(
           recentEfforts: state.recentEfforts,
           diffLayoutPreference: state.diffLayoutPreference,
           diffWrapLines: state.diffWrapLines,
+          walkthroughTocWidth: state.walkthroughTocWidth,
           gitChangesViewMode: state.gitChangesViewMode,
           nativeNotificationsEnabled: state.nativeNotificationsEnabled,
           notificationMode: state.notificationMode,
@@ -2395,6 +2476,7 @@ export const useUIStore = create<UIStore>()(
           maxLastMessageLength: state.maxLastMessageLength,
           persistChatDraft: state.persistChatDraft,
           showOpenCodeUpdateNotifications: state.showOpenCodeUpdateNotifications,
+          agentControlToolEnabled: state.agentControlToolEnabled,
           inputSpellcheckEnabled: state.inputSpellcheckEnabled,
           wideChatLayoutEnabled: state.wideChatLayoutEnabled,
           codeBlockLineWrap: state.codeBlockLineWrap,
@@ -2405,6 +2487,7 @@ export const useUIStore = create<UIStore>()(
           timeFormatPreference: state.timeFormatPreference,
           weekStartPreference: state.weekStartPreference,
           desktopWindowControlsPosition: state.desktopWindowControlsPosition,
+          desktopWindowControlsStyle: state.desktopWindowControlsStyle,
           mermaidRenderingMode: state.mermaidRenderingMode,
           userMessageRenderingMode: state.userMessageRenderingMode,
           collapsibleUserMessages: state.collapsibleUserMessages,
@@ -2413,8 +2496,7 @@ export const useUIStore = create<UIStore>()(
           expandedEditorToolbar: state.expandedEditorToolbar,
           showSplitAssistantMessageActions: state.showSplitAssistantMessageActions,
           allowPromptingSubagentSessions: state.allowPromptingSubagentSessions,
-          isMobileSessionStatusBarCollapsed: state.isMobileSessionStatusBarCollapsed,
-          mobileSessionFilterProjectId: state.mobileSessionFilterProjectId,
+          draftStartersVisible: state.draftStartersVisible,
           shortcutOverrides: state.shortcutOverrides,
           fileEditorKeymap: state.fileEditorKeymap,
         })

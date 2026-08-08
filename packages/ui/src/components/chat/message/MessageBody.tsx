@@ -34,7 +34,6 @@ import { copyTextToClipboard } from '@/lib/clipboard';
 import { useChatSurfaceMode } from '@/components/chat/useChatSurfaceMode';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import { toPng } from 'html-to-image';
 import { toast } from '@/components/ui';
 import { Icon } from "@/components/icon/Icon";
 import { formatTimestampForDisplay } from './timeFormat';
@@ -72,9 +71,10 @@ const getDisplayFileName = (file: string): string => {
 const TurnChangedFileChipContent = React.memo(({ file, interactive = false }: { file: TurnChangedFile; interactive?: boolean }) => (
     <span
         className={cn(
-            'inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/30 bg-muted/30 px-2 py-1 text-xs leading-[1.35] text-muted-foreground',
+            'inline-flex max-w-full items-center gap-1.5 rounded-lg border border-border/30 bg-muted/30 px-2 py-1 text-xs text-muted-foreground',
             interactive && 'transition-colors hover:border-border/60 hover:bg-interactive-hover'
         )}
+        style={{ lineHeight: 'round(1.35em, 1px)' }}
     >
         <FileTypeIcon filePath={file.file} className="h-3.5 w-3.5 flex-shrink-0" />
         <span className="max-w-52 truncate text-foreground/80" title={file.file}>{getDisplayFileName(file.file)}</span>
@@ -284,16 +284,15 @@ const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
 const SHELL_CODE_TAG_STYLE: React.CSSProperties = { background: 'transparent', backgroundColor: 'transparent' };
 
 const UserShellActionPart: React.FC<{ part: ShellActionPartLike }> = ({ part }) => {
-    const [expanded, setExpanded] = React.useState(false);
+    const output = typeof part.shellAction?.output === 'string' ? part.shellAction.output : '';
+    const [expanded, setExpanded] = React.useState(true);
     const [copiedOutput, setCopiedOutput] = React.useState(false);
     const copiedResetTimeoutRef = React.useRef<number | null>(null);
     const { t } = useI18n();
 
     const command = typeof part.shellAction?.command === 'string' ? part.shellAction.command.trim() : '';
-    const output = typeof part.shellAction?.output === 'string' ? part.shellAction.output : '';
     const status = typeof part.shellAction?.status === 'string' ? part.shellAction.status.trim().toLowerCase() : '';
     const hasOutput = output.trim().length > 0;
-
     const clearCopiedResetTimeout = React.useCallback(() => {
         if (copiedResetTimeoutRef.current !== null && typeof window !== 'undefined') {
             window.clearTimeout(copiedResetTimeoutRef.current);
@@ -1531,6 +1530,9 @@ const AssistantMessageBody = React.memo(({
 
             let wrapper: HTMLDivElement | null = null;
             try {
+                // Load the exporter before attaching its temporary clone so a slow
+                // chunk request cannot leave export-only content in the page layout.
+                const { toPng } = await import('html-to-image');
                 const originalElement = sourceElement;
                 const computedStyle = window.getComputedStyle(originalElement);
                 const rootStyle = window.getComputedStyle(document.documentElement);
@@ -1541,6 +1543,7 @@ const AssistantMessageBody = React.memo(({
                 const paddingSize = 24;
 
                 wrapper = document.createElement('div');
+                wrapper.setAttribute('data-message-image-export', 'true');
                 wrapper.style.cssText = `
                     padding: ${paddingSize}px;
                     background-color: ${resolvedBackgroundColor};
@@ -2234,7 +2237,7 @@ const AssistantMessageBody = React.memo(({
                 )}
                 {shouldShowTurnFooter && (
                     <div
-                        className="mt-2 mb-1 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5"
+                        className="mt-2 mb-1 flex flex-wrap items-center justify-start gap-x-3 gap-y-1.5"
                         style={MESSAGE_FOOTER_CONTAINER_STYLE}
                     >
                         <div className="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-sm text-muted-foreground/60">

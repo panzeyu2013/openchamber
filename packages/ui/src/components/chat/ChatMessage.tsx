@@ -26,7 +26,7 @@ import { isLikelyProviderAuthFailure, PROVIDER_AUTH_FAILURE_MESSAGE } from '@/li
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import type { TurnGroupingContext } from './lib/turns/types';
-import { copyTextToClipboard } from '@/lib/clipboard';
+import { copyMarkdownToClipboard, copyTextToClipboard } from '@/lib/clipboard';
 import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual, areRelevantTurnGroupingContextsEqual } from './message/renderCompare';
@@ -37,6 +37,7 @@ import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
 import { setContextObligatoryMessage } from '@/sync/session-actions';
 import { isVSCodeRuntime } from '@/lib/desktop';
+import { focusChatInput } from './composer/editor/dom';
 
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
@@ -416,6 +417,10 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                 createdAt: messageCreatedAt,
                 role: isUser ? 'user' : 'assistant',
             }, !isPinnedIntoContext);
+            // Return focus to the composer so the user can keep typing right
+            // after adding the message to context (matches the refocus pattern
+            // used by the model/agent selectors).
+            requestAnimationFrame(focusChatInput);
         } catch (error) {
             console.error('[chat-message] failed to update context pin', error);
             toast.error(t('chat.messageBody.actions.contextPinFailed'));
@@ -771,7 +776,13 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const hasTextContent = messageTextContent.length > 0;
 
     const handleCopyMessage = React.useCallback(async () => {
-        const result = await copyTextToClipboard(messageTextContent);
+        let result;
+        if (isUser) {
+            result = await copyTextToClipboard(messageTextContent);
+        } else {
+            const { renderMarkdownSync } = await import('./markdown/markdownCore');
+            result = await copyMarkdownToClipboard(messageTextContent, renderMarkdownSync(messageTextContent));
+        }
         if (!result.ok) {
             return false;
         }

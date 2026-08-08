@@ -4,6 +4,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { reportSettingsSaveState } from '@/lib/persistence';
+import { useIsVSCodeRuntime } from '@/hooks/useRuntimeAPIs';
 import {
   Select,
   SelectContent,
@@ -19,6 +20,7 @@ import {
 } from '@/lib/responseStyle';
 import type { DesktopSettings } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import { noteDeferredRestartFromPayload, recordDeferredOpenCodeRestart } from '@/lib/opencode/deferredRestart';
 import { SettingsPageLayout } from '@/components/sections/shared/SettingsPageLayout';
 import {
   SettingsSection,
@@ -43,6 +45,7 @@ type ResponseStyleValue = ResponseStylePreset | 'custom';
 
 type BehaviorSettingsState = {
   prompt: string;
+  optimizeSystemPrompt: boolean;
   responseStyleEnabled: boolean;
   responseStylePreset: ResponseStyleValue;
   responseStyleCustomInstructions: string;
@@ -50,6 +53,7 @@ type BehaviorSettingsState = {
 
 const DEFAULT_BEHAVIOR_SETTINGS: BehaviorSettingsState = {
   prompt: '',
+  optimizeSystemPrompt: false,
   responseStyleEnabled: false,
   responseStylePreset: 'concise',
   responseStyleCustomInstructions: '',
@@ -98,13 +102,17 @@ const saveBehaviorSetting = async (settings: Partial<DesktopSettings>, fallbackE
 
 export const BehaviorPage: React.FC = () => {
   const { t } = useI18n();
+  const isVSCode = useIsVSCodeRuntime();
   const [prompt, setPrompt] = React.useState('');
+  const [optimizeSystemPrompt, setOptimizeSystemPrompt] = React.useState(false);
   const [responseStyleEnabled, setResponseStyleEnabled] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleEnabled);
   const [responseStylePreset, setResponseStylePreset] = React.useState<ResponseStyleValue>(DEFAULT_BEHAVIOR_SETTINGS.responseStylePreset);
   const [responseStyleCustomInstructions, setResponseStyleCustomInstructions] = React.useState(DEFAULT_BEHAVIOR_SETTINGS.responseStyleCustomInstructions);
   const [isLoading, setIsLoading] = React.useState(true);
   const [isSaving, setIsSaving] = React.useState(false);
+  const [isApplyingPromptOptimization, setIsApplyingPromptOptimization] = React.useState(false);
   const [initialPrompt, setInitialPrompt] = React.useState('');
+  const [initialOptimizeSystemPrompt, setInitialOptimizeSystemPrompt] = React.useState(false);
   const lastSavedResponseStyleRef = React.useRef<{
     enabled: boolean;
     preset: ResponseStyleValue;
@@ -134,6 +142,7 @@ export const BehaviorPage: React.FC = () => {
           const data = await settingsRes.json();
           nextSettings = {
             ...nextSettings,
+            optimizeSystemPrompt: data.optimizeSystemPrompt === true,
             responseStyleEnabled: data.responseStyleEnabled === true,
             responseStylePreset: sanitizeResponseStylePreset(data.responseStylePreset),
             responseStyleCustomInstructions: typeof data.responseStyleCustomInstructions === 'string'
@@ -153,6 +162,8 @@ export const BehaviorPage: React.FC = () => {
         }
 
         setPrompt(nextSettings.prompt);
+        setOptimizeSystemPrompt(nextSettings.optimizeSystemPrompt);
+        setInitialOptimizeSystemPrompt(nextSettings.optimizeSystemPrompt);
         setResponseStyleEnabled(nextSettings.responseStyleEnabled);
         setResponseStylePreset(nextSettings.responseStylePreset);
         setResponseStyleCustomInstructions(nextSettings.responseStyleCustomInstructions);
@@ -212,6 +223,7 @@ export const BehaviorPage: React.FC = () => {
 
   const responseStylePreview = getResponseStylePreview(responseStylePreset, responseStyleCustomInstructions);
   const isPromptDirty = prompt !== initialPrompt;
+  const isPromptOptimizationDirty = optimizeSystemPrompt !== initialOptimizeSystemPrompt;
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -230,13 +242,20 @@ export const BehaviorPage: React.FC = () => {
         throw new Error(await readApiError(response, t('settings.behavior.page.toast.saveFailed')));
       }
 
+      const payload = await response.json().catch(() => null);
+      const deferred = noteDeferredRestartFromPayload(payload, 'behavior', { id: 'agents-md' });
+
       await saveBehaviorSetting({
         globalBehaviorPrompt: content,
       }, t('settings.behavior.page.toast.saveFailed'));
 
       setPrompt(content);
       setInitialPrompt(content);
-      toast.success(t('settings.behavior.page.toast.saved'));
+      toast.success(
+        deferred
+          ? t('settings.view.pendingRestart.saved')
+          : t('settings.behavior.page.toast.saved'),
+      );
     } catch (error) {
       console.error('Failed to save behavior:', error);
       const message = error instanceof Error ? error.message : t('settings.behavior.page.toast.saveFailed');
@@ -246,12 +265,59 @@ export const BehaviorPage: React.FC = () => {
     }
   };
 
+  const handleSavePromptOptimization = async () => {
+    setIsApplyingPromptOptimization(true);
+    try {
+      await saveBehaviorSetting(
+        { optimizeSystemPrompt },
+        t('settings.behavior.page.toast.saveFailed'),
+      );
+      setInitialOptimizeSystemPrompt(optimizeSystemPrompt);
+      recordDeferredOpenCodeRestart('behavior', { id: 'optimize-system-prompt' });
+      toast.success(t('settings.view.pendingRestart.saved'));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t('settings.behavior.page.toast.saveFailed');
+      toast.error(message);
+    } finally {
+      setIsApplyingPromptOptimization(false);
+    }
+  };
+
   return (
     <SettingsPageLayout
       title={t('settings.behavior.page.title')}
       description={t('settings.page.behavior.description')}
       showSaveStatus
     >
+      {!isVSCode && (
+        <SettingsSection
+          title={t('settings.behavior.page.section.systemPromptOptimization')}
+          divider={false}
+          settingsItem="behavior.system-prompt-optimization"
+          contentClassName="space-y-3"
+        >
+          <SettingsCheckboxRow
+            checked={optimizeSystemPrompt}
+            onChange={setOptimizeSystemPrompt}
+            disabled={isLoading || isApplyingPromptOptimization}
+            label={t('settings.behavior.page.systemPromptOptimization.enable')}
+            ariaLabel={t('settings.behavior.page.systemPromptOptimization.enableAria')}
+            info={t('settings.behavior.page.systemPromptOptimization.info')}
+          />
+          <Button
+            type="button"
+            size="xs"
+            onClick={() => void handleSavePromptOptimization()}
+            disabled={isLoading || isApplyingPromptOptimization || !isPromptOptimizationDirty}
+            className="!font-normal"
+          >
+            {isApplyingPromptOptimization
+              ? t('settings.common.actions.saving')
+              : t('settings.common.actions.saveChanges')}
+          </Button>
+        </SettingsSection>
+      )}
+
       <SettingsSection
         title={t('settings.behavior.page.section.systemPrompt')}
         info={(
@@ -264,7 +330,6 @@ export const BehaviorPage: React.FC = () => {
             </p>
           </div>
         )}
-        divider={false}
         settingsItem="behavior.system-prompt"
         contentClassName="space-y-3"
       >

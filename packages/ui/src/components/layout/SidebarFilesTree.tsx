@@ -43,6 +43,7 @@ import { opencodeClient } from '@/lib/opencode/client';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { getContextFileOpenFailureMessage, validateContextFileOpen } from '@/lib/contextFileOpenGuard';
+import { isBrowserClientRuntime } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 
 type FileNode = {
@@ -190,6 +191,7 @@ interface FileRowProps {
   root: string;
   isExpanded: boolean;
   isActive: boolean;
+  isBrowserClient: boolean;
   status?: FileStatus | null;
   badge?: { modified: number; added: number } | null;
   permissions: {
@@ -211,6 +213,7 @@ const FileRow: React.FC<FileRowProps> = ({
   root,
   isExpanded,
   isActive,
+  isBrowserClient,
   status,
   badge,
   permissions,
@@ -223,6 +226,9 @@ const FileRow: React.FC<FileRowProps> = ({
   const { t } = useI18n();
   const isDir = node.type === 'directory';
   const { canRename, canCreateFile, canCreateFolder, canDelete, canReveal } = permissions;
+  const canDownload = !isDir && Boolean(downloadFile);
+  const canRevealPath = canReveal && !isBrowserClient;
+  const hasMenuActions = canRename || canCreateFile || canCreateFolder || canDelete || canDownload || canRevealPath;
 
   // Menu open state is local to each row so opening a menu in one row
   // never re-renders its siblings. Previously this state lived on the
@@ -231,10 +237,10 @@ const FileRow: React.FC<FileRowProps> = ({
   const [rightClickOpen, setRightClickOpen] = React.useState(false);
 
   const handleContextMenu = React.useCallback((event?: React.MouseEvent) => {
-    if (!canRename && !canCreateFile && !canCreateFolder && !canDelete && !canReveal) return;
+    if (!hasMenuActions) return;
     event?.preventDefault();
     setRightClickOpen(true);
-  }, [canRename, canCreateFile, canCreateFolder, canDelete, canReveal]);
+  }, [hasMenuActions]);
 
   const handleInteraction = React.useCallback(() => {
     if (isDir) {
@@ -283,10 +289,10 @@ const FileRow: React.FC<FileRowProps> = ({
             toast.error(t('sidebarFilesTree.toast.operationFailed'));
           });
         }}>
-          <Icon name="download" className="mr-2 h-4 w-4" /> {t('sidebarFilesTree.menu.save')}
+          <Icon name="download" className="mr-2 h-4 w-4" /> {t(isBrowserClient ? 'sidebarFilesTree.menu.download' : 'sidebarFilesTree.menu.save')}
         </Item>
       )}
-      {canReveal && (
+      {canRevealPath && (
         <Item onClick={(e: React.MouseEvent) => { e.stopPropagation(); onRevealPath(node.path); }}>
           <Icon name="folder-received" className="mr-2 h-4 w-4" /> {t(getRevealLabelKey())}
         </Item>
@@ -344,9 +350,9 @@ const FileRow: React.FC<FileRowProps> = ({
       >
         {isDir ? (
           isExpanded ? (
-            <Icon name="folder-open-fill" className="h-4 w-4 flex-shrink-0 text-primary/60" />
+            <Icon name="folder-open" className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
           ) : (
-            <Icon name="folder-3-fill" className="h-4 w-4 flex-shrink-0 text-primary/60" />
+            <Icon name="folder-3" className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
           )
         ) : (
           getFileIcon(node.path, node.extension)
@@ -362,7 +368,7 @@ const FileRow: React.FC<FileRowProps> = ({
           </span>
         )}
       </button>
-      {(canRename || canCreateFile || canCreateFolder || canDelete || canReveal) && (
+      {hasMenuActions && (
         <div className="absolute right-1 top-1/2 -translate-y-1/2 opacity-0 focus-within:opacity-100 group-hover:opacity-100">
           <DropdownMenu
             open={contextMenuOpen}
@@ -406,6 +412,7 @@ const areFileRowPropsEqual = (prev: FileRowProps, next: FileRowProps): boolean =
   && prev.root === next.root
   && prev.isExpanded === next.isExpanded
   && prev.isActive === next.isActive
+  && prev.isBrowserClient === next.isBrowserClient
   && prev.status === next.status
   && prev.badge === next.badge
   && prev.permissions === next.permissions
@@ -422,7 +429,8 @@ const MemoizedFileRow = React.memo(FileRow, areFileRowPropsEqual);
 
 export const SidebarFilesTree: React.FC = () => {
   const { t } = useI18n();
-  const { files } = useRuntimeAPIs();
+  const { files, runtime } = useRuntimeAPIs();
+  const isBrowserClient = isBrowserClientRuntime(runtime.platform);
   const currentDirectory = useEffectiveDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());
   const showHidden = useDirectoryShowHidden();
@@ -516,6 +524,7 @@ export const SidebarFilesTree: React.FC = () => {
   const addOpenPath = useFilesViewTabsStore((state) => state.addOpenPath);
   const removeOpenPathsByPrefix = useFilesViewTabsStore((state) => state.removeOpenPathsByPrefix);
   const toggleExpandedPath = useFilesViewTabsStore((state) => state.toggleExpandedPath);
+  const collapseAllExpandedPaths = useFilesViewTabsStore((state) => state.collapseAllExpandedPaths);
   const contextTabs = useUIStore((state) => (root ? (state.contextPanelByDirectory[root]?.tabs ?? EMPTY_CONTEXT_TABS) : EMPTY_CONTEXT_TABS));
   const openContextFilePaths = React.useMemo(() => new Set(
     contextTabs
@@ -867,7 +876,7 @@ export const SidebarFilesTree: React.FC = () => {
   const handleOpenFile = React.useCallback(async (node: FileNode) => {
     if (!root) return;
 
-    const openValidation = await validateContextFileOpen(files, node.path);
+    const openValidation = await validateContextFileOpen(files, node.path, { directory: root });
     if (!openValidation.ok) {
       toast.error(getContextFileOpenFailureMessage(openValidation.reason));
       return;
@@ -1044,6 +1053,7 @@ export const SidebarFilesTree: React.FC = () => {
             root={root}
             isExpanded={isExpanded}
             isActive={isActive}
+            isBrowserClient={isBrowserClient}
             status={!isDir ? getFileStatus(node.path) : undefined}
             badge={isDir ? getFolderBadge(node.path) : undefined}
             permissions={fileRowPermissions}
@@ -1077,30 +1087,8 @@ export const SidebarFilesTree: React.FC = () => {
 
   return (
     <section className="flex h-full min-h-0 flex-col overflow-hidden">
-      <div className="flex items-center gap-2 border-b border-border/40 px-3 py-2">
-        <div className="relative min-w-0 flex-1">
-          <Icon name="search" className="pointer-events-none absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
-          <Input
-            ref={searchInputRef}
-            value={searchQuery}
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder={t('sidebarFilesTree.search.placeholder')}
-            className="h-8 pl-8 pr-8 typography-meta"
-          />
-          {searchQuery.trim().length > 0 ? (
-            <button
-              type="button"
-              aria-label={t('sidebarFilesTree.search.clearAria')}
-              className="absolute right-2 top-2 inline-flex h-4 w-4 items-center justify-center text-muted-foreground hover:text-foreground"
-              onClick={() => {
-                setSearchQuery('');
-                searchInputRef.current?.focus();
-              }}
-            >
-              <Icon name="close" className="h-4 w-4" />
-            </button>
-          ) : null}
-        </div>
+      <div className="flex flex-col gap-2 border-b border-border/40 px-3 py-2">
+        <div className="flex items-center justify-end gap-2">
         {canCreateFile && (
           <Tooltip>
             <TooltipTrigger asChild>
@@ -1149,6 +1137,49 @@ export const SidebarFilesTree: React.FC = () => {
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={6}>{t('sidebarFilesTree.actions.refreshTitle')}</TooltipContent>
         </Tooltip>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex flex-shrink-0">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (root) collapseAllExpandedPaths(root);
+                }}
+                className="h-8 w-8 p-0 flex-shrink-0"
+                title={t('sidebarFilesTree.actions.collapseAllTitle')}
+                aria-label={t('sidebarFilesTree.actions.collapseAllTitle')}
+              >
+                <Icon name="collapse-vertical" className="h-4 w-4" />
+              </Button>
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" sideOffset={6}>{t('sidebarFilesTree.actions.collapseAllTitle')}</TooltipContent>
+        </Tooltip>
+        </div>
+        <div className="relative min-w-0">
+          <Icon name="search" className="pointer-events-none absolute left-2 top-2 h-4 w-4 text-muted-foreground" />
+          <Input
+            ref={searchInputRef}
+            value={searchQuery}
+            onChange={(event) => setSearchQuery(event.target.value)}
+            placeholder={t('sidebarFilesTree.search.placeholder')}
+            className="h-8 pl-8 pr-8 typography-meta"
+          />
+          {searchQuery.trim().length > 0 ? (
+            <button
+              type="button"
+              aria-label={t('sidebarFilesTree.search.clearAria')}
+              className="absolute right-2 top-2 inline-flex h-4 w-4 items-center justify-center text-muted-foreground hover:text-foreground"
+              onClick={() => {
+                setSearchQuery('');
+                searchInputRef.current?.focus();
+              }}
+            >
+              <Icon name="close" className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <ScrollableOverlay outerClassName="flex-1 min-h-0" className="p-2">

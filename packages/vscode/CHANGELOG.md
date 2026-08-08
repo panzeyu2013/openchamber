@@ -1,3 +1,74 @@
+## [1.18.1] - 2026-08-04
+
+- **Providers:** signing in to an OAuth-only provider (such as Cursor) now completes in the browser — the login is stored and the provider updates instead of remaining signed out. OAuth-only providers show a Connect flow instead of an API key form, and their models stay hidden until you are signed in.
+- **Sessions:** archived sessions can now be restored to the active list — from the sidebar context menu, the archived-sessions page, or the bulk-selection bar (thanks to @makeittech).
+- Providers: sign-ins that need extra details (such as GitHub Copilot Enterprise) now ask for them before opening the browser, and device codes come with a working copy button.
+- Chat: a manually chosen model now stays selected after a delegated subtask finishes, instead of reverting to the agent's default model.
+- Chat: Ctrl/Cmd+L now adds the selected text to the chat input, or focuses it when nothing is selected.
+
+## [1.18.0] - 2026-08-04
+
+- **Providers:** custom OpenAI-compatible providers can now be added and edited from Settings, including their endpoint, models, credentials, headers, and configuration scope (thanks to @makeittech).
+- UI/Localization: added German interface translations (thanks to @SGD-DEV).
+- Chat/Tools: Bash output now applies terminal control characters and strips ANSI formatting, preventing progress output and rewritten lines from appearing as raw escape sequences (thanks to @catan271).
+- Chat: queued messages now retry after a temporary send failure or an interrupted turn instead of remaining stuck until another session update.
+- Settings/Skills: repository-local `.agents/skills` now appear for the active workspace (thanks to @makeittech).
+- Settings/Skills: renaming a skill now preserves its instructions and supporting files; only skills in locations OpenChamber can safely rename show the action (thanks to @makeittech).
+- Usage: added DeepSeek quota tracking (thanks to @airtaxi).
+- Usage: Kimi for Coding now calculates usage correctly when the provider reports either used or remaining quota (thanks to @makeittech).
+- Chat: clicking an apply_patch tool result now opens each changed file at its correct path instead of always opening the first file (thanks to @nabsiddiqui).
+- Chat: assistant messages no longer render active HTML.
+- Sidebar: a worktree shared by more than one project no longer appears twice.
+- Sidebar: session titles no longer clip at the ends of their rows.
+- Sessions: archiving and unarchiving now stays scoped to the current workspace.
+
+## [1.17.2] - 2026-08-01
+
+- Per-session permission auto-accept now replies to live permission requests correctly when auto-accept is turned on.
+- Chat: messages arriving at the start of the SSE stream no longer drop silently after initial connection.
+- Sessions with active agents now show a live activity indicator even when the sidebar is collapsed (thanks to @pascalandr).
+- Usage: all Z.ai usage windows now appear in the usage view.
+- Chat: tool descriptions now show the glob pattern when a tool's input uses one.
+- Chat: clicking in the padding area of the composer now correctly places the cursor (thanks to @IbrahimKhan12).
+- Chat: the `/` command menu no longer lists a skill twice when a command shares its name (thanks to @IbrahimKhan12).
+
+## [1.17.1] - 2026-07-29
+
+- **Chat tools:** Bash tool cards now show output before a command finishes, keep it in a fixed-height pane, and follow new lines until you scroll away. Long-running commands no longer remain at a 300-second duration, and their timers continue until they finish.
+- **OpenCode updates:** the extension can now update a managed OpenCode installation and restart it automatically; externally managed servers are left unchanged (thanks to @yulia-ivashko).
+- Chat: a stalled response now reconnects instead of remaining stuck in the extension.
+- Chat: fully loaded histories no longer show "Load older" again after a refresh.
+- Chat: messages removed by reverting no longer reappear after you send another message.
+- Chat: slash-command starters now include text already entered in the draft as command arguments.
+- Settings: subpanels keep a visible vertical scrollbar and no longer show a horizontal scrollbar (thanks to @sergiofspedro).
+- Usage: OpenAI business-account Codex usage now shows the configured spend limit (thanks to @jrandiny).
+
+## [1.17.0] - 2026-07-28
+
+- **Context panel:** a new surface rail brings Changes, pull requests, files, terminal, notes, plans, previews, and side chats into one resizable panel. The pull-request surface now shows live checks and comments, and can attach failed checks or comments to a chat draft.
+- **Chat composer:** prompts now render Markdown emphasis, attention lines, file and agent mentions, slash commands, snippets, attachment citations, and `~path` references directly while you type. File mentions can be edited in place.
+- Sessions: the sidebar now uses clearer project zones and single-line session rows, with folders shown after ungrouped sessions and archived sessions kept in their existing workspace sections.
+- Sessions: fixed missing activity-based sorting; chats now move in the list when they start or finish instead of repeatedly reordering while a response streams.
+- Chat: selecting text from Markdown code blocks now preserves the code fences, language, and surrounding block structure when adding it to the composer or starting a new session (thanks to @ChangeHow).
+- Chat: code blocks no longer shift line layout or merge adjacent text while rendering, and copied code keeps its original text (thanks to @ChangeHow).
+- Chat/Permissions: sending a message while a permission prompt is open now denies pending requests in the session and its subagents, then queues the message for the next turn (thanks to @tomzx).
+- Chat/Subagents: subagent chats can be prompted when direct subagent prompting is enabled, even if the parent session has not loaded.
+- Chat: jumping to messages in long conversations now lands on the intended message when earlier rows have not been rendered yet.
+- Settings: added an option to hide starter suggestions on the new-session screen.
+- Shortcuts: fixed a regression where double-Escape could be primed when the current session was not active.
+- Usage: added Crof and NeuralWatt quota tracking, including the missing Crof switch arm that previously fell back to "Unsupported provider" (thanks to @kydorn).
+
+## [1.16.3] - 2026-07-22
+
+- **Chat attachments:** added Office and OpenDocument files (`.docx`, `.pptx`, `.xlsx`, `.odt`, `.odp`, and `.ods`), with readable text and supported embedded images extracted before sending. Attachments also support more source-code formats, notebooks, HAR files with credentials and cookies removed, SVG and Draw.io files, and HEIC/HEIF images; the composer warns when the selected model may ignore an attachment type.
+- **Performance:** opening and switching sessions now prioritizes the selected and visible chats in large workspaces. Failed refreshes keep the existing session list, parent sessions no longer disappear when their sub-sessions load first, and session data no longer crosses between workspaces or extension views.
+- Chat: assistant turns now show model, agent, thinking level, duration, and time together in the footer, and replies separated by hidden system or subagent prompts display as one continuous turn. The working indicator shows the model actually producing the active response, streaming at the bottom no longer jitters, and new user messages finish their entry animation instead of snapping into place.
+- Chat/Tools: attachments returned by plugin and custom tools remain visible after streaming and refreshes, with the same image previews and file chips as chat attachments (thanks to @FrostiDrinks).
+- Cursor: opening a chat no longer crashes when the editor webview does not expose its usual messaging APIs, and disposed editor tabs no longer receive late streaming messages (thanks to @makeittech).
+- Startup: the active workspace is now detected before startup state is restored, preventing projects outside the editor workspace from replacing it.
+- Agent Manager: worktree creation now recovers when an earlier Git operation left the repository locked, and removing a worktree while setup is still running no longer brings it back.
+- Sessions: workspace groups now default to manual ordering instead of recent-activity order; explicit sorting choices remain unchanged.
+
 ## [1.16.2] - 2026-07-18
 
 - **Settings:** pages now use a consistent responsive layout, navigation is grouped by area, and save failures are shown in the page header. Agent tool permissions now distinguish inherited and explicit rules and show session-granted rules separately (thanks to @makeittech).

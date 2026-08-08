@@ -58,6 +58,30 @@ const createTestHelpersWithRealSanitizers = () => {
 };
 
 describe('settings helpers', () => {
+  it('accepts only booleans for draft starter visibility', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ draftStartersVisible: true })).toEqual({ draftStartersVisible: true });
+    expect(helpers.sanitizeSettingsUpdate({ draftStartersVisible: false })).toEqual({ draftStartersVisible: false });
+    expect(helpers.sanitizeSettingsUpdate({ draftStartersVisible: 'false' })).toEqual({});
+  });
+
+  it('accepts only booleans for wide chat layout', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ wideChatLayoutEnabled: true })).toEqual({ wideChatLayoutEnabled: true });
+    expect(helpers.sanitizeSettingsUpdate({ wideChatLayoutEnabled: false })).toEqual({ wideChatLayoutEnabled: false });
+    expect(helpers.sanitizeSettingsUpdate({ wideChatLayoutEnabled: 'true' })).toEqual({});
+  });
+
+  it('accepts only booleans for collapsible user messages', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ collapsibleUserMessages: true })).toEqual({ collapsibleUserMessages: true });
+    expect(helpers.sanitizeSettingsUpdate({ collapsibleUserMessages: false })).toEqual({ collapsibleUserMessages: false });
+    expect(helpers.sanitizeSettingsUpdate({ collapsibleUserMessages: 'true' })).toEqual({});
+  });
+
   it('accepts messageStreamTransport as a persisted shared setting', () => {
     const helpers = createTestHelpers();
 
@@ -122,6 +146,48 @@ describe('settings helpers', () => {
     expect(helpers.sanitizeSettingsUpdate({ desktopMinimizeToTrayEnabled: false })).toEqual({
       desktopMinimizeToTrayEnabled: false,
     });
+  });
+
+  it('accepts desktopMacMenuBarEnabled as a persisted shared setting', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ desktopMacMenuBarEnabled: true })).toEqual({
+      desktopMacMenuBarEnabled: true,
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopMacMenuBarEnabled: false })).toEqual({
+      desktopMacMenuBarEnabled: false,
+    });
+    expect(helpers.formatSettingsResponse({ desktopMacMenuBarEnabled: false })).toMatchObject({
+      desktopMacMenuBarEnabled: false,
+    });
+  });
+
+  it('normalizes desktopWindowControlsPosition and maps legacy auto to right', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsPosition: 'left' })).toEqual({
+      desktopWindowControlsPosition: 'left',
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsPosition: 'right' })).toEqual({
+      desktopWindowControlsPosition: 'right',
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsPosition: 'auto' })).toEqual({
+      desktopWindowControlsPosition: 'right',
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsPosition: 'center' })).toEqual({});
+  });
+
+  it('sanitizes desktopWindowControlsStyle and rejects unknown values', () => {
+    const helpers = createTestHelpers();
+
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsStyle: 'classic' })).toEqual({
+      desktopWindowControlsStyle: 'classic',
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsStyle: 'traffic-lights' })).toEqual({
+      desktopWindowControlsStyle: 'traffic-lights',
+    });
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsStyle: 'macos' })).toEqual({});
+    expect(helpers.sanitizeSettingsUpdate({ desktopWindowControlsStyle: 'auto' })).toEqual({});
   });
 
   it('sanitizes the persisted permission auto-accept policy', () => {
@@ -362,6 +428,14 @@ describe('settings helpers', () => {
       expect(helpers.sanitizeSettingsUpdate({ recentEfforts: { '': ['high'] } })).toEqual({});
       expect(helpers.sanitizeSettingsUpdate({ recentEfforts: { 'anthropic/claude-opus-4': [] } })).toEqual({});
       expect(helpers.sanitizeSettingsUpdate({ recentEfforts: { 'anthropic/claude-opus-4': [123, ''] } })).toEqual({});
+    });
+
+    it('persists only boolean system prompt optimization values', () => {
+      const helpers = createTestHelpersWithRealSanitizers();
+
+      expect(helpers.sanitizeSettingsUpdate({ optimizeSystemPrompt: true })).toEqual({ optimizeSystemPrompt: true });
+      expect(helpers.sanitizeSettingsUpdate({ optimizeSystemPrompt: false })).toEqual({ optimizeSystemPrompt: false });
+      expect(helpers.sanitizeSettingsUpdate({ optimizeSystemPrompt: 'true' })).toEqual({});
     });
 
     it('survives a full settings.json payload containing all four previously-dropped fields (regression)', () => {

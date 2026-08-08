@@ -1,4 +1,5 @@
 import { createOpencodeClient } from '@opencode-ai/sdk/v2';
+import { buildDeferredRestartResponse } from './config-mutation-response.js';
 
 export const registerSkillRoutes = (app, dependencies) => {
   const {
@@ -10,9 +11,8 @@ export const registerSkillRoutes = (app, dependencies) => {
     readSettingsFromDisk,
     sanitizeSkillCatalogs,
     isUnsafeSkillRelativePath,
-    refreshOpenCodeAfterConfigChange,
-    clientReloadDelayMs,
     buildOpenCodeUrl,
+
     getOpenCodeAuthHeaders,
     getOpenCodePort,
     getSkillSources,
@@ -21,6 +21,8 @@ export const registerSkillRoutes = (app, dependencies) => {
     createSkill,
     updateSkill,
     deleteSkill,
+    renameSkill,
+    isManagedSkillPath,
     readSkillSupportingFile,
     writeSkillSupportingFile,
     deleteSkillSupportingFile,
@@ -200,9 +202,33 @@ export const registerSkillRoutes = (app, dependencies) => {
     return null;
   };
 
+  // Prefer an explicit request directory, then soft-fallback to the active
+  // project / lastDirectory so repository-local skills stay visible when the
+  // client omits `directory` (create already used resolveProjectDirectory).
+  const resolveSkillsDirectory = async (req) => {
+    const optional = await resolveOptionalProjectDirectory(req);
+    if (optional.error) {
+      return optional;
+    }
+    if (optional.directory) {
+      return optional;
+    }
+
+    try {
+      const fallback = await resolveProjectDirectory(req);
+      if (fallback.directory) {
+        return { directory: fallback.directory, error: null };
+      }
+    } catch {
+      // ignore — listing user-scoped skills without a project is valid
+    }
+
+    return { directory: null, error: null };
+  };
+
   app.get('/api/config/skills', async (req, res) => {
     try {
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
@@ -212,9 +238,15 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       const enrichedSkills = skills.map((skill) => {
         const sources = getSkillSources(skill.name, directory, skill);
+        const skillPath = typeof skill.path === 'string' ? skill.path : null;
         return {
           ...skill,
-          sources
+          sources,
+          renamable: Boolean(
+            skillPath
+            && skillPath !== '<built-in>'
+            && isManagedSkillPath(skillPath, directory)
+          ),
         };
       });
 
@@ -257,7 +289,7 @@ export const registerSkillRoutes = (app, dependencies) => {
 
   app.get('/api/config/skills/catalog/source', async (req, res) => {
     try {
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ ok: false, error: { kind: 'invalidSource', message: error } });
       }
@@ -444,19 +476,18 @@ export const registerSkillRoutes = (app, dependencies) => {
 
         const installed = result.installed || [];
         const skipped = result.skipped || [];
-        const requiresReload = installed.length > 0;
-
-        if (requiresReload) {
-          await refreshOpenCodeAfterConfigChange('skills install');
-        }
+        const requiresRestart = installed.length > 0;
 
         return res.json({
           ok: true,
           installed,
           skipped,
-          requiresReload,
-          message: requiresReload ? 'Skills installed successfully. Reloading interface…' : 'No skills were installed',
-          reloadDelayMs: requiresReload ? clientReloadDelayMs : undefined,
+          ...(requiresRestart
+            ? buildDeferredRestartResponse('Skills installed successfully. Restart OpenCode to apply.')
+            : {
+              requiresReload: false,
+              message: 'No skills were installed',
+            }),
         });
       }
 
@@ -495,19 +526,18 @@ export const registerSkillRoutes = (app, dependencies) => {
 
       const installed = result.installed || [];
       const skipped = result.skipped || [];
-      const requiresReload = installed.length > 0;
-
-      if (requiresReload) {
-        await refreshOpenCodeAfterConfigChange('skills install');
-      }
+      const requiresRestart = installed.length > 0;
 
       res.json({
         ok: true,
         installed,
         skipped,
-        requiresReload,
-        message: requiresReload ? 'Skills installed successfully. Reloading interface…' : 'No skills were installed',
-        reloadDelayMs: requiresReload ? clientReloadDelayMs : undefined,
+        ...(requiresRestart
+          ? buildDeferredRestartResponse('Skills installed successfully. Restart OpenCode to apply.')
+          : {
+            requiresReload: false,
+            message: 'No skills were installed',
+          }),
       });
     } catch (error) {
       console.error('Failed to install skills:', error);
@@ -518,7 +548,7 @@ export const registerSkillRoutes = (app, dependencies) => {
   app.get('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
@@ -546,7 +576,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (isUnsafeSkillRelativePath(filePath)) {
         return res.status(400).json({ error: 'Invalid file path' });
       }
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
@@ -579,7 +609,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       const { scope, source: skillSource, ...config } = req.body;
       const { directory, error } = scope === SKILL_SCOPE.PROJECT
         ? await resolveProjectDirectory(req)
-        : await resolveOptionalProjectDirectory(req);
+        : await resolveSkillsDirectory(req);
       if (error || (scope === SKILL_SCOPE.PROJECT && !directory)) {
         return res.status(400).json({ error: error || 'Project skill creation requires a directory' });
       }
@@ -588,14 +618,9 @@ export const registerSkillRoutes = (app, dependencies) => {
       console.log('[Server] Scope:', scope, 'Working directory:', directory);
 
       createSkill(skillName, { ...config, source: skillSource }, directory, scope);
-      await refreshOpenCodeAfterConfigChange('skill creation');
-
-      res.json({
-        success: true,
-        requiresReload: true,
-        message: `Skill ${skillName} created successfully. Reloading interface…`,
-        reloadDelayMs: clientReloadDelayMs,
-      });
+      res.json(buildDeferredRestartResponse(
+        `Skill ${skillName} created successfully. Restart OpenCode to apply.`,
+      ));
     } catch (error) {
       console.error('Failed to create skill:', error);
       res.status(500).json({ error: error.message || 'Failed to create skill' });
@@ -606,23 +631,34 @@ export const registerSkillRoutes = (app, dependencies) => {
     try {
       const skillName = req.params.name;
       const updates = req.body;
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
+      }
+
+      if (typeof updates?.renameTo === 'string') {
+        const newName = updates.renameTo.trim();
+        console.log(`[Server] Renaming skill: ${skillName} -> ${newName}`);
+        console.log('[Server] Working directory:', directory);
+        renameSkill(skillName, newName, directory);
+        await refreshOpenCodeAfterConfigChange('skill rename');
+
+        return res.json({
+          success: true,
+          name: newName,
+          requiresReload: true,
+          message: `Skill renamed to ${newName} successfully. Reloading interface…`,
+          reloadDelayMs: clientReloadDelayMs,
+        });
       }
 
       console.log(`[Server] Updating skill: ${skillName}`);
       console.log('[Server] Working directory:', directory);
 
       updateSkill(skillName, updates, directory, updates?.targetPath);
-      await refreshOpenCodeAfterConfigChange('skill update');
-
-      res.json({
-        success: true,
-        requiresReload: true,
-        message: `Skill ${skillName} updated successfully. Reloading interface…`,
-        reloadDelayMs: clientReloadDelayMs,
-      });
+      res.json(buildDeferredRestartResponse(
+        `Skill ${skillName} updated successfully. Restart OpenCode to apply.`,
+      ));
     } catch (error) {
       console.error('[Server] Failed to update skill:', error);
       res.status(500).json({ error: error.message || 'Failed to update skill' });
@@ -637,7 +673,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error: 'Invalid file path' });
       }
       const { content } = req.body;
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
@@ -671,7 +707,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (isUnsafeSkillRelativePath(filePath)) {
         return res.status(400).json({ error: 'Invalid file path' });
       }
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
@@ -701,20 +737,15 @@ export const registerSkillRoutes = (app, dependencies) => {
   app.delete('/api/config/skills/:name', async (req, res) => {
     try {
       const skillName = req.params.name;
-      const { directory, error } = await resolveOptionalProjectDirectory(req);
+      const { directory, error } = await resolveSkillsDirectory(req);
       if (error) {
         return res.status(400).json({ error });
       }
 
       deleteSkill(skillName, directory);
-      await refreshOpenCodeAfterConfigChange('skill deletion');
-
-      res.json({
-        success: true,
-        requiresReload: true,
-        message: `Skill ${skillName} deleted successfully. Reloading interface…`,
-        reloadDelayMs: clientReloadDelayMs,
-      });
+      res.json(buildDeferredRestartResponse(
+        `Skill ${skillName} deleted successfully. Restart OpenCode to apply.`,
+      ));
     } catch (error) {
       console.error('Failed to delete skill:', error);
       res.status(500).json({ error: error.message || 'Failed to delete skill' });

@@ -3,12 +3,14 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import { removeProviderConfig, getProviderSources } from './opencodeConfig';
+import { removeProviderConfig, getProviderSources, upsertProviderConfig } from './opencodeConfig';
 import { getProviderAuth, removeProviderAuth } from './opencodeAuth';
 import { fetchQuotaForProvider, listConfiguredQuotaProviders } from './quotaProviders';
 import { fetchOpenCodeGoUsage } from './opencodeGoQuota';
 import { credentialStatus, deleteCredential, importCursorCredential, normalizeCredential, readCredential, validateCredential, writeCredential, type ManagedProvider } from './quotaCredentials';
 import { getSessionActivitySnapshot } from './sessionActivityWatcher';
+import { getOpenCodeUpgradeStatus, upgradeManagedOpenCode } from './opencode-upgrade-runtime';
+import { buildDeferredRestartResponse } from './config-mutation-response';
 import type { BridgeContext, BridgeResponse } from './bridge';
 
 type BridgeMessageInput = {
@@ -76,10 +78,13 @@ const getOrCreateInstallId = (scope: string): string => {
   return installId;
 };
 
-const mapNodePlatformToApiPlatform = (value: string): 'macos' | 'windows' | 'linux' | 'web' => {
+const mapNodePlatformToApiPlatform = (value: string): 'macos' | 'windows' | 'linux' | 'android' | 'ios' | 'web' => {
+  // The webview already sends API-shaped values; Node's os.platform() is the fallback source.
+  if (value === 'macos' || value === 'windows' || value === 'linux' || value === 'android' || value === 'ios' || value === 'web') {
+    return value;
+  }
   if (value === 'darwin') return 'macos';
   if (value === 'win32') return 'windows';
-  if (value === 'linux') return 'linux';
   return 'web';
 };
 
@@ -269,6 +274,15 @@ export async function handleSystemBridgeMessage(
       }
     }
 
+    case 'api:opencode/upgrade-status': {
+      return { id, type, success: true, data: await getOpenCodeUpgradeStatus(ctx?.manager) };
+    }
+
+    case 'api:opencode/upgrade': {
+      const target = (payload as { target?: unknown } | undefined)?.target;
+      return { id, type, success: true, data: await upgradeManagedOpenCode(ctx?.manager, target) };
+    }
+
     case 'api:session-activity:get': {
       return { id, type, success: true, data: getSessionActivitySnapshot() };
     }
@@ -305,7 +319,6 @@ export async function handleSystemBridgeMessage(
           : os.arch();
         const reportUsage = body.reportUsage !== false;
 
-        const installId = getOrCreateInstallId('vscode');
         const requestBody = {
           appType: 'vscode',
           deviceClass,
@@ -313,7 +326,7 @@ export async function handleSystemBridgeMessage(
           arch: mapNodeArchToApiArch(archRaw),
           channel: 'stable',
           currentVersion,
-          installId,
+          ...(reportUsage ? { installId: getOrCreateInstallId('vscode') } : {}),
           instanceMode,
           reportUsage,
         };
@@ -344,13 +357,12 @@ export async function handleSystemBridgeMessage(
     case 'editor:openFile': {
       const { path: filePath, line, column } = payload as { path: string; line?: number; column?: number };
       try {
-        const doc = await vscode.workspace.openTextDocument(filePath);
         const options: vscode.TextDocumentShowOptions = {};
         if (typeof line === 'number') {
           const pos = new vscode.Position(Math.max(0, line - 1), column || 0);
           options.selection = new vscode.Range(pos, pos);
         }
-        await vscode.window.showTextDocument(doc, options);
+        await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(filePath), options);
         return { id, type, success: true };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
@@ -431,21 +443,19 @@ export async function handleSystemBridgeMessage(
           return { id, type, success: false, error: 'Invalid scope' };
         }
 
-        if (removed) {
-          await ctx?.manager?.restart();
-        }
         return {
           id,
           type,
           success: true,
           data: {
-            success: true,
             removed,
-            requiresReload: removed,
-            message: removed
-              ? `Provider ${providerId} disconnected successfully. Reloading interface…`
-              : `Provider ${providerId} was not configured.`,
-            reloadDelayMs: removed ? deps.clientReloadDelayMs : undefined,
+            ...(removed
+              ? buildDeferredRestartResponse(`Provider ${providerId} disconnected successfully. Restart OpenCode to apply.`)
+              : {
+                success: true,
+                requiresReload: false,
+                message: `Provider ${providerId} was not configured.`,
+              }),
           },
         };
       } catch (error) {
@@ -467,6 +477,64 @@ export async function handleSystemBridgeMessage(
         const auth = getProviderAuth(providerId);
         sources.auth.exists = Boolean(auth);
         return { id, type, success: true, data: { providerId, sources } };
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        return { id, type, success: false, error: errorMessage };
+      }
+    }
+
+    case 'api:provider:upsert': {
+      const {
+        providerID,
+        providerId: providerIdAlias,
+        config,
+        scope,
+        directory,
+      } = (payload || {}) as {
+        providerID?: string;
+        providerId?: string;
+        config?: unknown;
+        scope?: string;
+        directory?: string;
+      };
+      const providerId = (typeof providerID === 'string' && providerID.trim())
+        || (typeof providerIdAlias === 'string' && providerIdAlias.trim())
+        || '';
+      if (!providerId) {
+        return { id, type, success: false, error: 'Provider ID is required' };
+      }
+      if (!config || typeof config !== 'object' || Array.isArray(config)) {
+        return { id, type, success: false, error: 'Provider config is required' };
+      }
+      const normalizedScope = typeof scope === 'string' ? scope : 'user';
+      if (normalizedScope !== 'user' && normalizedScope !== 'project' && normalizedScope !== 'custom') {
+        return { id, type, success: false, error: 'Invalid scope' };
+      }
+      try {
+        const workingDirectory = typeof directory === 'string' && directory.trim().length > 0
+          ? directory.trim()
+          : ctx?.manager?.getWorkingDirectory();
+        const result = upsertProviderConfig(
+          providerId,
+          config,
+          workingDirectory,
+          normalizedScope,
+          { hasStoredAuth: Boolean(getProviderAuth(providerId)) },
+        );
+        await ctx?.manager?.restart();
+        return {
+          id,
+          type,
+          success: true,
+          data: {
+            success: true,
+            providerId: result.providerId,
+            path: result.path,
+            config: result.config,
+            requiresReload: true,
+            reloadDelayMs: deps.clientReloadDelayMs,
+          },
+        };
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
         return { id, type, success: false, error: errorMessage };

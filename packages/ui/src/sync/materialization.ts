@@ -4,6 +4,8 @@ import type { SessionMaterializationReason } from "./event-reducer"
 
 const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
 const STREAMING_PART_FIELDS = ["text", "output"] as const
+const ACTIVE_TOOL_STATUSES = new Set(["pending", "running"])
+const FINAL_TOOL_STATUSES = new Set(["completed", "error", "aborted", "failed", "timeout", "cancelled"])
 
 export type MaterializedMessageRecord = {
   info: Message
@@ -65,7 +67,30 @@ export function isSessionMaterializationStillNeeded(
     return !(state.part[request.messageID] ?? []).some((part) => part.id === request.partID)
   }
 
+  if (request.reason === "settled-running-tool") {
+    return getStaleRunningToolMessageID(state, sessionID) === request.messageID
+  }
+
   return true
+}
+
+export function getStaleRunningToolMessageID(
+  state: MaterializedState,
+  sessionID: string,
+): string | undefined {
+  const messages = state.message[sessionID] ?? []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role === "user") return undefined
+    if (message.role !== "assistant") continue
+    const hasActiveTool = (state.part[message.id] ?? []).some((part) => {
+      if (part.type !== "tool") return false
+      const status = (part as { state?: { status?: unknown } }).state?.status
+      return typeof status === "string" && ACTIVE_TOOL_STATUSES.has(status)
+    })
+    return hasActiveTool ? message.id : undefined
+  }
+  return undefined
 }
 
 function sortParts(parts: Part[], skipPartTypes: ReadonlySet<string>) {
@@ -108,6 +133,13 @@ function getStringField(part: Part, field: "text" | "output"): string | undefine
   return typeof value === "string" ? value : undefined
 }
 
+function getPartStateAttachments(part: Part): Array<unknown> | undefined {
+  const state = (part as Record<string, unknown>).state as Record<string, unknown> | undefined
+  if (!state) return undefined
+  const attachments = state.attachments
+  return Array.isArray(attachments) ? attachments : undefined
+}
+
 function hasLiveStreamingField(part: Part): boolean {
   if (getPartEndTime(part) !== undefined) return false
   return STREAMING_PART_FIELDS.some((field) => {
@@ -126,7 +158,31 @@ function getPartStateTime(part: Part): { start?: number; end?: number } | undefi
 }
 
 function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
-  if (!existing || getPartEndTime(next) !== undefined) return next
+  if (!existing) return next
+
+  if (existing.type === "tool" && next.type === "tool") {
+    const existingStatus = (existing as { state?: { status?: unknown } }).state?.status
+    const nextStatus = (next as { state?: { status?: unknown } }).state?.status
+    if (
+      typeof existingStatus === "string"
+      && FINAL_TOOL_STATUSES.has(existingStatus)
+      && typeof nextStatus === "string"
+      && ACTIVE_TOOL_STATUSES.has(nextStatus)
+    ) {
+      return existing
+    }
+  }
+
+  if (getPartEndTime(next) !== undefined) {
+    const existingAttachments = getPartStateAttachments(existing)
+    if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
+      const nextRecord = { ...next }
+      const nextState = { ...((next as Record<string, unknown>).state as Record<string, unknown> ?? {}), attachments: existingAttachments }
+      ;(nextRecord as Record<string, unknown>).state = nextState
+      return nextRecord
+    }
+    return next
+  }
 
   let merged: Part = next
   for (const field of STREAMING_PART_FIELDS) {
@@ -142,6 +198,15 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     mergedRecord[field] = existingValue
   }
 
+  const existingAttachments = getPartStateAttachments(existing)
+  if (existingAttachments?.length && getPartStateAttachments(next) === undefined) {
+    if (merged === next) merged = { ...next }
+    const mergedRecord = merged as Record<string, unknown>
+    const nextState = (next as Record<string, unknown>).state as Record<string, unknown> | undefined
+    const newState = { ...(nextState ?? {}), attachments: existingAttachments }
+    mergedRecord.state = newState
+  }
+
   const existingTime = getPartStateTime(existing)
   if (existingTime) {
     const nextTime = getPartStateTime(next)
@@ -150,8 +215,8 @@ function mergeMaterializedPart(existing: Part | undefined, next: Part): Part {
     if (preservedStart !== nextTime?.start || preservedEnd !== nextTime?.end) {
       if (merged === next) merged = { ...next }
       const mergedRecord = merged as Record<string, unknown>
-      const nextState = (next as Record<string, unknown>).state as Record<string, unknown> | undefined
-      const newState = { ...(nextState ?? {}), time: { start: preservedStart, end: preservedEnd } }
+      const currentState = (mergedRecord.state as Record<string, unknown> | undefined) ?? (next as Record<string, unknown>).state as Record<string, unknown> | undefined
+      const newState = { ...(currentState ?? {}), time: { start: preservedStart, end: preservedEnd } }
       mergedRecord.state = newState
     }
   }

@@ -13,10 +13,24 @@ import updaterPkg from 'electron-updater';
 import { ElectronSshManager } from './ssh-manager.mjs';
 import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
+import { resolveStartupUrlProbePlan, shouldIgnoreLoopbackConnectionLimit } from './startup-url-selection.mjs';
 import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
+import { resolveUpdaterChannel } from './updater-channel.mjs';
 import { resolveUpdaterFeed } from './updater-feed.mjs';
+import {
+  buildLinuxInstalledApps,
+  buildLinuxOpenSpecs,
+  fetchLinuxAppIcons,
+  filterLinuxInstalledApps,
+  readLinuxDesktopEntries,
+} from './linux-app-discovery.mjs';
+import {
+  readLinuxAutostartEnabled,
+  setLinuxAutostartEnabled,
+} from './linux-autostart.mjs';
+import { unsupportedAppSpecificOpenError, validateLocalPath } from './path-open-utils.mjs';
 import { mintOutsideFileGrant } from '@openchamber/web/server/lib/fs/routes.js';
 
 const execFileAsync = promisify(execFile);
@@ -24,6 +38,7 @@ const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const isDev = process.env.OPENCHAMBER_ELECTRON_DEV === '1' || !app.isPackaged;
+const electronStartupStartedAt = performance.now();
 
 const DEEP_LINK_PROTOCOL = 'openchamber';
 const UI_PROTOCOL = 'openchamber-ui';
@@ -44,6 +59,9 @@ const getLoginItemOptions = () => {
 };
 
 const readLoginItemSettings = () => {
+  if (process.platform === 'linux') {
+    return null;
+  }
   if (process.platform !== 'darwin' && process.platform !== 'win32') return null;
   try {
     return app.getLoginItemSettings(getLoginItemOptions());
@@ -71,6 +89,16 @@ if (isDev) {
 }
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.commandLine.appendSwitch('proxy-bypass-list', '<-loopback>');
+// Lift Chromium's per-host cap only for bundled UI. Applying this to Vite HMR
+// lets the renderer request most of the module graph at once, overwhelming the
+// dev server's transform pipeline and leaving the HTML splash visible for up
+// to a minute before React mounts.
+if (shouldIgnoreLoopbackConnectionLimit({
+  development: isDev,
+  packagedUi: process.env.OPENCHAMBER_ELECTRON_USE_BUNDLED_UI === '1',
+})) {
+  app.commandLine.appendSwitch('ignore-connections-limit', '127.0.0.1,localhost');
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -106,6 +134,32 @@ log.transports.console.level = isDev ? 'debug' : 'warn';
 // the fact. Route all console calls through electron-log so server-side
 // diagnostics are persisted.
 Object.assign(console, log.functions);
+
+const STARTUP_PERF_ENABLED_VALUES = new Set(['1', 'true']);
+const ELECTRON_STARTUP_PERF_PHASES = new Set([
+  'electron.app.ready',
+  'electron.server.start',
+  'electron.server.ready',
+  'electron.navigation.start',
+  'electron.navigation.ready',
+  'electron.renderer.dom-ready',
+  'electron.renderer.loaded',
+  'electron.window.ready-to-show',
+]);
+const ELECTRON_STARTUP_DOCUMENT_CLASSES = new Set(['splash', 'application']);
+const recordElectronStartupPerformance = (phase, details = {}) => {
+  const enabled = STARTUP_PERF_ENABLED_VALUES.has(String(process.env.OPENCHAMBER_STARTUP_PERF ?? '').toLowerCase());
+  if (!enabled || !ELECTRON_STARTUP_PERF_PHASES.has(phase)) return;
+  const event = {
+    phase,
+    at: Date.now(),
+    totalDurationMs: Math.max(0, performance.now() - electronStartupStartedAt),
+  };
+  if (Number.isFinite(details.durationMs) && details.durationMs >= 0) event.durationMs = details.durationMs;
+  if (ELECTRON_STARTUP_DOCUMENT_CLASSES.has(details.documentClass)) event.documentClass = details.documentClass;
+  log.info('[startup-performance]', event);
+};
+const classifyStartupDocument = (url) => String(url || '').startsWith('data:') ? 'splash' : 'application';
 
 const LOG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 try {
@@ -182,9 +236,8 @@ const GITHUB_FEATURE_REQUEST_URL = 'https://github.com/openchamber/openchamber/i
 const DISCORD_INVITE_URL = 'https://discord.gg/ZYRSdnwwKA';
 const INSTALLED_APPS_CACHE_TTL_SECS = 60 * 60 * 24;
 const INSTALLED_APPS_CACHE_FILE = 'discovered-apps.json';
+const LINUX_DESKTOP_ENTRIES_CACHE_TTL_MS = 30_000;
 const OPENCODE_SHUTDOWN_GRACE_MS = 100;
-const SKIP_LOCAL_SERVER = process.env.OPENCHAMBER_SKIP_LOCAL_SERVER === '1';
-
 const { autoUpdater } = updaterPkg;
 
 const state = {
@@ -215,6 +268,7 @@ const state = {
   sshStatuses: new Map(),
   sshLogs: new Map(),
   trayController: null,
+  trayFocusListener: null,
   lastFocusedWindowId: null,
   keepAwakeBlockerId: null,
 };
@@ -245,7 +299,7 @@ const readDesktopKeepAwakeStatus = () => {
 };
 
 const readDesktopMinimizeToTrayStatus = () => {
-  const supported = process.platform === 'win32';
+  const supported = process.platform === 'win32' || process.platform === 'linux';
   return {
     supported,
     enabled: supported && readSettingsRoot().desktopMinimizeToTrayEnabled === true,
@@ -253,7 +307,7 @@ const readDesktopMinimizeToTrayStatus = () => {
 };
 
 const shouldHideMainWindowToTray = (browserWindow) => {
-  if (process.platform !== 'win32') return false;
+  if (process.platform !== 'win32' && process.platform !== 'linux') return false;
   if (!state.trayController) return false;
   if (!browserWindow || browserWindow.isDestroyed()) return false;
   if (browserWindow.__ocMiniChat === true) return false;
@@ -328,6 +382,10 @@ const prepareForQuit = ({ installingUpdate = false } = {}) => {
     } catch {
     }
     state.trayController = null;
+  }
+  if (state.trayFocusListener) {
+    app.removeListener('browser-window-focus', state.trayFocusListener);
+    state.trayFocusListener = null;
   }
 
   if (state.mainWindow && !state.mainWindow.isDestroyed()) {
@@ -842,6 +900,16 @@ const buildVersionUrl = (url) => {
   }
 };
 
+const buildSessionStatusUrl = (url) => {
+  try {
+    const parsed = new URL(url);
+    parsed.pathname = `${parsed.pathname.replace(/\/$/, '') || ''}/auth/session`;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+};
+
 const classifyVersionPayload = (payload) => {
   const compatibility = payload?.compatibility;
   if (!payload || payload.status !== 'ok' || !compatibility || typeof compatibility !== 'object') {
@@ -876,7 +944,8 @@ const fetchVersionPayload = async (versionUrl, { headers, timeoutMs }) => {
 
 const probeHostWithTimeout = async (url, timeoutMs, clientToken = '', requestHeaders = {}, expectedServerId = '') => {
   const versionUrl = buildVersionUrl(url);
-  if (!versionUrl) {
+  const sessionStatusUrl = buildSessionStatusUrl(url);
+  if (!versionUrl || !sessionStatusUrl) {
     throw new Error('Invalid URL');
   }
 
@@ -920,8 +989,19 @@ const probeHostWithTimeout = async (url, timeoutMs, clientToken = '', requestHea
       return { status: 'unreachable', latencyMs: Date.now() - started };
     }
     const payload = await response.json().catch(() => null);
+    const versionStatus = classifyVersionPayload(payload);
+    if (versionStatus !== 'ok') {
+      return { status: versionStatus, latencyMs: Date.now() - started };
+    }
+    const sessionResponse = await fetchVersionPayload(sessionStatusUrl, { headers, timeoutMs });
+    if (sessionResponse.status === 401 || sessionResponse.status === 403) {
+      return { status: 'auth', latencyMs: Date.now() - started };
+    }
+    if (!sessionResponse.ok) {
+      return { status: 'unreachable', latencyMs: Date.now() - started };
+    }
     return {
-      status: classifyVersionPayload(payload),
+      status: versionStatus,
       latencyMs: Date.now() - started,
     };
   } catch {
@@ -1294,11 +1374,16 @@ const loadShellEnv = () => {
 
 // Merge the user's login-shell env (PATH, etc.) into this process before we
 import { pathLooksUserConfigured, mergePathValues } from '@openchamber/web/server/lib/opencode/path-utils.js';
+import { clearAppImageArgv0FromProcessEnv } from '@openchamber/web/server/lib/inherited-env.js';
 
 // import/start the server in-process. The server and its children (opencode
 // CLI, git, etc.) inherit process.env directly now — there is no sidecar
 // subprocess to hand a custom env to.
 const inheritUserShellEnv = () => {
+  // Clear before probing/merging so login-shell snapshots and children never
+  // inherit the AppImage path as argv[0] via zsh's ARGV0 parameter (#2588).
+  clearAppImageArgv0FromProcessEnv();
+
   const shellEnv = loadShellEnv();
   if (!shellEnv) return;
 
@@ -1308,7 +1393,7 @@ const inheritUserShellEnv = () => {
   const currentPathLooksUserConfigured = pathLooksUserConfigured(currentPath, homeDir, delimiter);
 
   for (const [key, value] of Object.entries(shellEnv)) {
-    if (key === 'PATH') continue;
+    if (key === 'PATH' || key === 'ARGV0') continue;
     if (typeof process.env[key] === 'undefined') {
       process.env[key] = value;
     }
@@ -1320,7 +1405,14 @@ const inheritUserShellEnv = () => {
   }
 };
 
+const shouldSkipLocalServer = () => {
+  inheritUserShellEnv();
+  return process.env.OPENCHAMBER_SKIP_LOCAL_SERVER === '1';
+};
+
 const spawnLocalServer = async () => {
+  const serverStartedAt = performance.now();
+  recordElectronStartupPerformance('electron.server.start');
   inheritUserShellEnv();
 
   const settings = readSettingsRoot();
@@ -1404,6 +1496,9 @@ const spawnLocalServer = async () => {
 
   state.serverHandle = handle;
   state.sidecarUrl = url;
+  recordElectronStartupPerformance('electron.server.ready', {
+    durationMs: performance.now() - serverStartedAt,
+  });
 
   await mutateSettingsRoot((root) => {
     root.desktopLocalPort = port;
@@ -1530,6 +1625,16 @@ const buildInitScript = (localOrigin, bootOutcome, apiBaseUrl = '', clientToken 
     `try{var __oc_local=${local};var __oc_api=${apiBase};var __oc_headers=${headers};var __oc_packaged=${packagedOrigin};var __oc_origin=window.location&&window.location.origin||'';var __oc_is_packaged=__oc_origin===__oc_packaged;var __oc_is_local=__oc_local&&__oc_origin===new URL(__oc_local).origin;window.__OPENCHAMBER_MACOS_MAJOR__=${macVersion};window.__OPENCHAMBER_LOCAL_ORIGIN__=__oc_local;window.__OPENCHAMBER_API_BASE_URL__=__oc_api;if(__oc_is_local||__oc_is_packaged){window.__OPENCHAMBER_HOME__=${home};window.__OPENCHAMBER_RUNTIME_HEADERS__=__oc_headers;}if((__oc_is_local||__oc_is_packaged)&&${token}){window.__OPENCHAMBER_CLIENT_TOKEN__=${token};}var __oc_bo=${outcome};if(__oc_bo){window.__OPENCHAMBER_DESKTOP_BOOT_OUTCOME__=__oc_bo;}}catch(_e){}`,
     '}())',
   ].join('');
+};
+
+// Keep the main window aligned with global host configuration without overwriting
+// the runtime-specific bootstrap retained by additional and Mini Chat windows.
+const syncMainWindowInitScript = (initScript = state.initScript) => {
+  if (!initScript) return;
+  const mainWindow = state.mainWindow;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.__ocInitScript = initScript;
+  }
 };
 
 const computeBootOutcome = ({ envTargetUrl, probe, config, localAvailable }) => {
@@ -1683,8 +1788,19 @@ const isBenignNavigationAbort = (error) => {
 };
 
 const navigateWindow = async (browserWindow, url, { allowAbort = false } = {}) => {
+  const navigationStartedAt = performance.now();
+  const documentClass = classifyStartupDocument(url);
+  if (browserWindow.__ocLabel === 'main') {
+    recordElectronStartupPerformance('electron.navigation.start', { documentClass });
+  }
   try {
     await browserWindow.loadURL(url);
+    if (browserWindow.__ocLabel === 'main') {
+      recordElectronStartupPerformance('electron.navigation.ready', {
+        documentClass,
+        durationMs: performance.now() - navigationStartedAt,
+      });
+    }
   } catch (error) {
     if (allowAbort && isBenignNavigationAbort(error)) {
       return;
@@ -2139,6 +2255,13 @@ const dispatchMenuAction = (action) => {
   dispatchDomEventToWindow(target, 'openchamber:menu-action', action);
 };
 
+// Append-style menu actions must reach the renderer exactly once. Dual IPC+DOM
+// delivery (dispatchMenuAction) would insert the selection twice.
+const dispatchAddSelectionToChat = () => {
+  const target = getMenuTargetWindow();
+  if (target) emitToWindow(target, 'openchamber:menu-action', 'add-selection-to-chat');
+};
+
 // Mini-chat draft windows are not deduplicated, so this must reach the renderer
 // exactly once — emitToWindow alone (no DOM-event double dispatch). The renderer
 // resolves the active directory/project and opens the window.
@@ -2221,6 +2344,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   const usesCustomTitleBar = process.platform === 'darwin' || usesFramelessChrome;
   // macOS vibrancy, on by default; users can disable it (Appearance settings).
   const useVibrancy = process.platform === 'darwin' && readSettingsRoot().desktopVibrancy !== false;
+  const trayEnabled = process.platform !== 'darwin' || readSettingsRoot().desktopMacMenuBarEnabled !== false;
   const titleBarOverlayEnabled = false;
   const autoHidesNativeMenuBar = process.platform !== 'darwin';
   const windowIconPath = getWindowIconPath();
@@ -2256,6 +2380,7 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
         `--openchamber-home=${desktopHome}`,
         `--openchamber-macos-major=${desktopMacosMajor}`,
         `--openchamber-mac-vibrancy=${useVibrancy ? '1' : '0'}`,
+        `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
         `--openchamber-boot-outcome=${JSON.stringify(state.bootOutcome || null)}`,
         `--openchamber-relay-host-id=${rendererRuntimeConfig.relayHostId || ''}`,
       ],
@@ -2338,12 +2463,6 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   browserWindow.on('move', () => {
     debounceWindowStatePersist(browserWindow, false);
   });
-  browserWindow.on('minimize', (event) => {
-    if (!shouldHideMainWindowToTray(browserWindow)) return;
-    debounceWindowStatePersist(browserWindow, true);
-    event.preventDefault();
-    browserWindow.hide();
-  });
   browserWindow.on('close', (event) => {
     if (!state.quitRequested && shouldHideMainWindowToTray(browserWindow)) {
       debounceWindowStatePersist(browserWindow, true);
@@ -2390,7 +2509,15 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
     try {
       const url = new URL(raw);
       if (url.protocol === 'devtools:') return true;
+      if (url.protocol === `${UI_PROTOCOL}:`) return true;
       if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
+      // In development the renderer is served by Vite while state.localOrigin
+      // remains the separate local API server. Permit same-origin reloads from
+      // the renderer itself so Vite full-reload fallbacks stay in Electron.
+      try {
+        if (new URL(browserWindow.webContents.getURL()).origin === url.origin) return true;
+      } catch {
+      }
       if (state.localOrigin) {
         try {
           if (new URL(state.localOrigin).origin === url.origin) return true;
@@ -2437,13 +2564,23 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   });
 
   browserWindow.webContents.on('dom-ready', () => {
-    const initScript = browserWindow.__ocInitScript || state.initScript;
+    if (browserWindow.__ocLabel === 'main') {
+      recordElectronStartupPerformance('electron.renderer.dom-ready', {
+        documentClass: classifyStartupDocument(browserWindow.webContents.getURL()),
+      });
+    }
+    const initScript = browserWindow.__ocInitScript;
     if (initScript) {
       void browserWindow.webContents.executeJavaScript(initScript).catch(() => {});
     }
   });
 
   browserWindow.webContents.on('did-finish-load', () => {
+    if (browserWindow.__ocLabel === 'main') {
+      recordElectronStartupPerformance('electron.renderer.loaded', {
+        documentClass: classifyStartupDocument(browserWindow.webContents.getURL()),
+      });
+    }
     browserWindow.webContents.setZoomFactor(1);
     if (state.mainWindow && browserWindow.id === state.mainWindow.id && pendingDeepLinks.length > 0) {
       const timer = setTimeout(flushPendingDeepLinks, 400);
@@ -2452,6 +2589,11 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
   });
 
   browserWindow.once('ready-to-show', () => {
+    if (browserWindow.__ocLabel === 'main') {
+      recordElectronStartupPerformance('electron.window.ready-to-show', {
+        documentClass: classifyStartupDocument(browserWindow.webContents.getURL()),
+      });
+    }
     browserWindow.show();
     browserWindow.focus();
     if (useVibrancy) applyMacVibrancy(browserWindow);
@@ -2489,6 +2631,7 @@ const activateMainWindow = async (url, localOrigin, bootOutcome, runtimeConfig =
     rendererRuntimeConfig.clientToken,
     rendererRuntimeConfig.requestHeaders,
   );
+  syncMainWindowInitScript(state.initScript);
 
   const mainWindow = state.mainWindow;
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2619,6 +2762,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
   const usesFramelessChrome = process.platform === 'win32' || process.platform === 'linux';
   // macOS vibrancy, on by default; users can disable it (Appearance settings).
   const useVibrancy = process.platform === 'darwin' && readSettingsRoot().desktopVibrancy !== false;
+  const trayEnabled = process.platform !== 'darwin' || readSettingsRoot().desktopMacMenuBarEnabled !== false;
   const browserWindow = new BrowserWindow({
     title: 'OpenChamber Mini Chat',
     width: MINI_CHAT_WINDOW_WIDTH,
@@ -2644,6 +2788,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
         `--openchamber-runtime-headers=${JSON.stringify(desktopRequestHeaders)}`,
         `--openchamber-home=${desktopHome}`,
         `--openchamber-macos-major=${desktopMacosMajor}`,
+        `--openchamber-tray-enabled=${trayEnabled ? '1' : '0'}`,
       ],
       preload: isDev ? path.join(__dirname, 'preload.mjs') : path.join(app.getAppPath(), 'preload.mjs'),
       backgroundThrottling: false,
@@ -2710,7 +2855,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     void shell.openExternal(url).catch(() => {});
   });
   browserWindow.webContents.on('dom-ready', () => {
-    const initScript = browserWindow.__ocInitScript || state.initScript;
+    const initScript = browserWindow.__ocInitScript;
     if (initScript) {
       void browserWindow.webContents.executeJavaScript(initScript).catch(() => {});
     }
@@ -2760,15 +2905,22 @@ const resolveInitialUrl = async () => {
   const hmrUiPort = process.env.OPENCHAMBER_HMR_UI_PORT || '5173';
   const hmrApiUrl = `http://127.0.0.1:${hmrApiPort}`;
   const hmrUiUrl = `http://127.0.0.1:${hmrUiPort}`;
-  const localUrl = SKIP_LOCAL_SERVER
+  const usePackagedUi = shouldUsePackagedUi();
+  const skipLocalServer = shouldSkipLocalServer();
+  const startupProbePlan = resolveStartupUrlProbePlan({
+    development: isDev,
+    packagedUi: usePackagedUi,
+    skipLocalServer,
+  });
+  const localUrl = skipLocalServer
     ? null
-    : isDev && await waitForHealth(hmrApiUrl, 5_000, 100)
+    : startupProbePlan.probeHmrApi && await waitForHealth(hmrApiUrl, 5_000, 100)
       ? hmrApiUrl
       : await spawnLocalServer();
 
-  const localUiUrl = shouldUsePackagedUi()
+  const localUiUrl = usePackagedUi
     ? buildPackagedUiUrl('/index.html')
-    : isDev && await waitForHealth(hmrUiUrl, 8_000, 100)
+    : startupProbePlan.probeHmrUi && await waitForHealth(hmrUiUrl, 8_000, 100)
     ? hmrUiUrl
     : localUrl;
 
@@ -2788,14 +2940,14 @@ const resolveInitialUrl = async () => {
     apiBaseUrl = envTarget;
     clientToken = '';
     requestHeaders = {};
-    initialUrl = shouldUsePackagedUi() ? localUiUrl : envTarget;
+    initialUrl = usePackagedUi ? localUiUrl : envTarget;
   } else if (config.defaultHostId && config.defaultHostId !== LOCAL_HOST_ID) {
     const host = config.hosts.find((entry) => entry.id === config.defaultHostId);
     if (host?.url) {
       apiBaseUrl = host.apiUrl || host.url;
       clientToken = host.clientToken || '';
       requestHeaders = sanitizeRuntimeRequestHeaders(host.requestHeaders || {});
-      initialUrl = shouldUsePackagedUi() ? localUiUrl : host.url;
+      initialUrl = usePackagedUi ? localUiUrl : host.url;
     }
   }
 
@@ -2857,10 +3009,17 @@ const setupAutoUpdater = () => {
   const testBuild = typeof __OPENCHAMBER_UPDATER_E2E_BUILD__ !== 'undefined'
     && __OPENCHAMBER_UPDATER_E2E_BUILD__ === true;
   const feed = resolveUpdaterFeed({ testBuild });
+  const updaterChannel = feed.provider === 'github'
+    ? resolveUpdaterChannel({ platform: process.platform, architecture: process.arch })
+    : null;
+  if (updaterChannel) {
+    autoUpdater.channel = updaterChannel;
+  }
   autoUpdater.setFeedURL(feed);
   log.info('[electron] updater feed configured', {
     provider: feed.provider,
     target: feed.provider === 'github' ? `${feed.owner}/${feed.repo}` : feed.url,
+    channel: updaterChannel || 'latest',
   });
 
   autoUpdater.on('download-progress', (progress) => {
@@ -2992,6 +3151,74 @@ const buildInstalledApps = async (apps) => {
     results.push({ name, iconDataUrl });
   }
   return results;
+};
+
+let linuxDesktopEntriesCache = { expiresAt: 0, entries: null };
+
+const getLinuxDesktopEntries = async () => {
+  const now = Date.now();
+  if (linuxDesktopEntriesCache.entries && linuxDesktopEntriesCache.expiresAt > now) {
+    return linuxDesktopEntriesCache.entries;
+  }
+  const entries = await readLinuxDesktopEntries();
+  linuxDesktopEntriesCache = { entries, expiresAt: now + LINUX_DESKTOP_ENTRIES_CACHE_TTL_MS };
+  return entries;
+};
+
+const buildPlatformInstalledApps = async (apps) => {
+  if (process.platform === 'linux') {
+    return buildLinuxInstalledApps(apps);
+  }
+  if (process.platform === 'win32') {
+    return buildWindowsInstalledApps(apps);
+  }
+  return buildInstalledApps(apps);
+};
+
+const spawnDetachedLinux = (program, args) => new Promise((resolve, reject) => {
+  const child = spawn(program, args, {
+    detached: true,
+    stdio: 'ignore',
+  });
+  let settled = false;
+  const finish = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    callback(value);
+  };
+  child.once('error', (error) => finish(reject, error));
+  child.once('spawn', () => {
+    child.unref();
+    finish(resolve);
+  });
+});
+
+const runLinuxSpecChain = async (specs, appName) => {
+  if (!Array.isArray(specs) || specs.length === 0) {
+    throw new Error(`Failed to open in ${appName}: no launch candidates`);
+  }
+
+  const failures = [];
+  for (const spec of specs) {
+    if (spec.kind === 'default') {
+      if (spec.targetKind === 'file') {
+        shell.showItemInFolder(spec.targetPath);
+        return;
+      }
+      const errorMessage = await shell.openPath(spec.targetPath);
+      if (!errorMessage) return;
+      failures.push(`default opener: ${errorMessage}`);
+      continue;
+    }
+
+    try {
+      await spawnDetachedLinux(spec.program, spec.args);
+      return;
+    } catch (error) {
+      failures.push(`${spec.program}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new Error(`Failed to open in ${appName}: ${failures.join('; ')}`);
 };
 
 const parseSshConfigImports = () => {
@@ -3475,12 +3702,23 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return APP_VERSION;
 
     case 'desktop_get_launch_at_login': {
+      if (process.platform === 'linux') {
+        return { supported: true, enabled: await readLinuxAutostartEnabled() };
+      }
       if (process.platform !== 'darwin' && process.platform !== 'win32') return { supported: false, enabled: false };
       const settings = app.getLoginItemSettings(getLoginItemOptions());
       return { supported: true, enabled: settings.openAtLogin === true };
     }
 
     case 'desktop_set_launch_at_login': {
+      if (process.platform === 'linux') {
+        const enabled = args.enabled === true;
+        return setLinuxAutostartEnabled({
+          enabled,
+          appName: app.getName(),
+          backgroundArg: BACKGROUND_START_ARG,
+        });
+      }
       if (process.platform !== 'darwin' && process.platform !== 'win32') return { supported: false, enabled: false };
       const enabled = args.enabled === true;
       const settingsArgs = {
@@ -3499,7 +3737,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_set_minimize_to_tray': {
-      if (process.platform !== 'win32') return { supported: false, enabled: false };
+      if (process.platform !== 'win32' && process.platform !== 'linux') return { supported: false, enabled: false };
       const enabled = args.enabled === true;
       await mutateSettingsRoot((root) => {
         root.desktopMinimizeToTrayEnabled = enabled;
@@ -3677,13 +3915,19 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     case 'desktop_open_path': {
       const targetPath = typeof args.path === 'string' ? args.path.trim() : '';
       const appName = typeof args.app === 'string' ? args.app.trim() : '';
-      if (!targetPath) throw new Error('Path is required');
+      const validated = await validateLocalPath(targetPath);
       if (process.platform === 'darwin') {
-        const openArgs = appName ? ['-a', appName, targetPath] : [targetPath];
+        const openArgs = appName ? ['-a', appName, validated.path] : [validated.path];
         spawn('open', openArgs, { detached: true, stdio: 'ignore' }).unref();
         return null;
       }
-      await shell.openPath(targetPath);
+      if (appName && process.platform !== 'linux' && process.platform !== 'win32') {
+        throw new Error(unsupportedAppSpecificOpenError('paths'));
+      }
+      const errorMessage = await shell.openPath(validated.path);
+      if (errorMessage) {
+        throw new Error(`Failed to open path: ${errorMessage}`);
+      }
       return null;
     }
 
@@ -3701,18 +3945,16 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     }
 
     case 'desktop_reveal_path': {
-      const targetPath = typeof args.path === 'string' ? args.path.trim() : '';
-      if (!targetPath) {
-        throw new Error('Path is required');
-      }
-
-      const stats = await fsp.stat(targetPath).catch(() => null);
-      if (stats?.isDirectory()) {
-        await shell.openPath(targetPath);
+      const validated = await validateLocalPath(typeof args.path === 'string' ? args.path.trim() : '');
+      if (validated.stats.isDirectory()) {
+        const errorMessage = await shell.openPath(validated.path);
+        if (errorMessage) {
+          throw new Error(`Failed to reveal path: ${errorMessage}`);
+        }
         return null;
       }
 
-      shell.showItemInFolder(targetPath);
+      shell.showItemInFolder(validated.path);
       return null;
     }
 
@@ -3723,19 +3965,31 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (!projectPath || !appId || !appName) {
         throw new Error('Project path, app id, and app name are required');
       }
+      const validated = await validateLocalPath(projectPath, 'Project path');
       if (process.platform === 'win32') {
         if (appId === 'finder') {
-          const error = await shell.openPath(projectPath);
+          const error = await shell.openPath(validated.path);
           if (error) throw new Error(error);
           return null;
         }
-        runSpecChain(buildWindowsOpenProjectSpecs({ projectPath, appId, appName }), appName);
+        runSpecChain(buildWindowsOpenProjectSpecs({ projectPath: validated.path, appId, appName }), appName);
+        return null;
+      }
+      if (process.platform === 'linux') {
+        const entries = await getLinuxDesktopEntries();
+        await runLinuxSpecChain(buildLinuxOpenSpecs({
+          targetPath: validated.path,
+          appId,
+          appName,
+          targetKind: 'project',
+          entries,
+        }), appName);
         return null;
       }
       if (process.platform !== 'darwin') {
-        throw new Error('desktop_open_in_app is only supported on macOS and Windows');
+        throw new Error(unsupportedAppSpecificOpenError('projects'));
       }
-      runSpecChain(buildOpenProjectSpecs({ projectPath, appId, appName }), appName);
+      runSpecChain(buildOpenProjectSpecs({ projectPath: validated.path, appId, appName }), appName);
       return null;
     }
 
@@ -3746,14 +4000,26 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (!filePath || !appId || !appName) {
         throw new Error('File path, app id, and app name are required');
       }
+      const validated = await validateLocalPath(filePath, 'File path');
       if (process.platform === 'win32') {
-        runSpecChain(buildWindowsOpenFileSpecs({ filePath, appId, appName }), appName);
+        runSpecChain(buildWindowsOpenFileSpecs({ filePath: validated.path, appId, appName }), appName);
+        return null;
+      }
+      if (process.platform === 'linux') {
+        const entries = await getLinuxDesktopEntries();
+        await runLinuxSpecChain(buildLinuxOpenSpecs({
+          targetPath: validated.path,
+          appId,
+          appName,
+          targetKind: 'file',
+          entries,
+        }), appName);
         return null;
       }
       if (process.platform !== 'darwin') {
-        throw new Error('desktop_open_file_in_app is only supported on macOS and Windows');
+        throw new Error(unsupportedAppSpecificOpenError('files'));
       }
-      runSpecChain(buildOpenFileSpecs({ filePath, appId, appName }), appName);
+      runSpecChain(buildOpenFileSpecs({ filePath: validated.path, appId, appName }), appName);
       return null;
     }
 
@@ -3761,8 +4027,11 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (process.platform === 'win32') {
         return (await buildWindowsInstalledApps(args.apps)).map((app) => app.name);
       }
+      if (process.platform === 'linux') {
+        return filterLinuxInstalledApps(args.apps);
+      }
       if (process.platform !== 'darwin') {
-        throw new Error('desktop_filter_installed_apps is only supported on macOS');
+        throw new Error('desktop_filter_installed_apps is only supported on macOS, Windows, and Linux');
       }
       if (!Array.isArray(args.apps)) return [];
       const results = await Promise.all(
@@ -3786,8 +4055,11 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         }
         return results;
       }
+      if (process.platform === 'linux') {
+        return fetchLinuxAppIcons(Array.isArray(args.apps) ? args.apps : []);
+      }
       if (process.platform !== 'darwin') {
-        throw new Error('desktop_fetch_app_icons is only supported on macOS');
+        throw new Error('desktop_fetch_app_icons is only supported on macOS, Windows, and Linux');
       }
       const names = Array.isArray(args.apps) ? args.apps : [];
       const results = [];
@@ -3812,14 +4084,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const hasCache = Boolean(cache);
       const isCacheStale = !cache || (now - Number(cache.updatedAt || 0)) > INSTALLED_APPS_CACHE_TTL_SECS;
       const refresh = async () => {
-        const apps = process.platform === 'win32'
-          ? await buildWindowsInstalledApps(args.apps)
-          : await buildInstalledApps(Array.isArray(args.apps) ? args.apps : []);
+        const apps = await buildPlatformInstalledApps(Array.isArray(args.apps) ? args.apps : []);
         await fsp.mkdir(path.dirname(cachePath), { recursive: true });
         await fsp.writeFile(cachePath, JSON.stringify({ updatedAt: now, apps }, null, 2));
         emitToAllWindows('openchamber:installed-apps-updated', apps);
       };
-      if (process.platform !== 'darwin' && process.platform !== 'win32') {
+      if (process.platform !== 'darwin' && process.platform !== 'win32' && process.platform !== 'linux') {
         return { apps: [], hasCache: false, isCacheStale: false, supported: false };
       }
       if (!hasCache || isCacheStale || args.force === true) {
@@ -3849,7 +4119,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         localAvailable: Boolean(state.sidecarUrl || state.localOrigin),
       });
       state.initScript = buildInitScript(state.localOrigin, state.bootOutcome, state.apiBaseUrl, state.clientToken, state.requestHeaders || {});
-      log.info('[electron] hosts config updated, recomputed bootOutcome', state.bootOutcome);
+      syncMainWindowInitScript(state.initScript);
       return null;
     }
 
@@ -4172,7 +4442,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
 
     case 'desktop_minimize_current_window':
       if (browserWindow && !browserWindow.isDestroyed()) {
-        browserWindow.minimize();
+        if (shouldHideMainWindowToTray(browserWindow)) {
+          debounceWindowStatePersist(browserWindow, true);
+          browserWindow.hide();
+        } else {
+          browserWindow.minimize();
+        }
       }
       return null;
 
@@ -4295,6 +4570,7 @@ const buildMacMenu = () => {
         { type: 'separator' },
         { role: 'cut' },
         { label: 'Copy', accelerator: 'Cmd+C', click: () => handleCopyAction() },
+        { label: 'Add Selection to Chat', accelerator: 'Cmd+L', registerAccelerator: false, click: () => dispatchAddSelectionToChat() },
         { role: 'paste' },
         { role: 'selectAll' },
       ],
@@ -4313,7 +4589,7 @@ const buildMacMenu = () => {
         { label: 'Dark Theme', click: () => dispatchAction('theme-dark') },
         { label: 'System Theme', click: () => dispatchAction('theme-system') },
         { type: 'separator' },
-        { label: 'Toggle Session Sidebar', accelerator: 'Cmd+L', click: () => dispatchAction('toggle-sidebar') },
+        { label: 'Toggle Session Sidebar', accelerator: 'Cmd+Alt+L', click: () => dispatchAction('toggle-sidebar') },
         { label: 'Toggle Memory Debug', accelerator: 'Cmd+Shift+D', click: () => dispatchAction('toggle-memory-debug') },
         { type: 'separator' },
         { role: 'togglefullscreen' },
@@ -4392,6 +4668,7 @@ const buildAutoHiddenMenu = () => {
         { type: 'separator' },
         { role: 'cut' },
         { label: 'Copy', accelerator: 'Ctrl+C', click: () => handleCopyAction() },
+        { label: 'Add Selection to Chat', accelerator: 'Ctrl+L', registerAccelerator: false, click: () => dispatchAddSelectionToChat() },
         { role: 'paste' },
         { role: 'selectAll' },
       ],
@@ -4414,7 +4691,7 @@ const buildAutoHiddenMenu = () => {
         { label: 'Dark Theme', click: () => dispatchAction('theme-dark') },
         { label: 'System Theme', click: () => dispatchAction('theme-system') },
         { type: 'separator' },
-        { label: 'Toggle Session Sidebar', accelerator: 'Ctrl+L', click: () => dispatchAction('toggle-sidebar') },
+        { label: 'Toggle Session Sidebar', accelerator: 'Ctrl+Alt+L', click: () => dispatchAction('toggle-sidebar') },
         { label: 'Toggle Memory Debug', accelerator: 'Ctrl+Shift+D', click: () => dispatchAction('toggle-memory-debug') },
         { type: 'separator' },
         { role: 'togglefullscreen' },
@@ -4507,6 +4784,9 @@ const isLocalSender = (webContents) => {
     if (!raw) return false;
     const url = new URL(raw);
     if (url.protocol === `${UI_PROTOCOL}:` && url.hostname === 'app') return true;
+    // Electron dev renders from Vite while the local API is served on a
+    // separate port. This exact loopback HMR origin is trusted only in dev.
+    if (isDev && url.origin === `http://127.0.0.1:${process.env.OPENCHAMBER_HMR_UI_PORT || '5173'}`) return true;
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
     if (state.localOrigin) {
       try {
@@ -4626,23 +4906,14 @@ ipcMain.handle('openchamber:file:grant-existing', async (event, filePath) => {
 });
 
 // --- Native tray / menu bar ---------------------------------------------------
-// Tray lives on macOS and Windows; the renderer streams a compact state snapshot via
-// the `desktop_tray_update` IPC command (see the command switch). Tray clicks
-// flow back through dispatchTrayAction → renderer (focus/respond) or native
-// handlers (show window / quit).
+// Tray lives on macOS, Windows, and Linux. The renderer streams a compact state
+// snapshot via the `desktop_tray_update` IPC command (see the command switch).
+// Tray clicks flow back through dispatchTrayAction → renderer (focus/respond) or
+// native handlers (show / hide / toggle / quit).
 
 // Icon assets: a calm outline (idle), a statically filled cube (a finished
 // session left unread), and an eased sequence the busy state breathes through.
 const TRAY_BREATH_FRAME_COUNT = 16;
-// Track the most recently focused window (main or mini-chat) so tray actions
-// can target the surface the user was last using, even when the tray menu is
-// open and nothing is focused right now.
-app.on('browser-window-focus', (_event, browserWindow) => {
-  if (browserWindow && !browserWindow.isDestroyed()) {
-    state.lastFocusedWindowId = browserWindow.id;
-  }
-});
-
 // The window the user is "on" for tray routing: the focused one, else the last
 // focused that is still alive.
 const resolveTraySurface = () => {
@@ -4658,8 +4929,10 @@ const resolveTraySurface = () => {
 const trayIconAssets = () => {
   const dir = path.join(resourceRoot(), 'icons', 'tray');
   const statusDir = path.join(dir, 'status');
-  if (process.platform === 'win32') {
-    const iconPath = getWindowIconPath() || path.join(resourceRoot(), 'icons', 'icon.ico');
+  if (process.platform === 'win32' || process.platform === 'linux') {
+    const iconPath = process.platform === 'linux'
+      ? (getWindowIconPath() || path.join(resourceRoot(), 'icons', 'icon.png'))
+      : (getWindowIconPath() || path.join(resourceRoot(), 'icons', 'icon.ico'));
     return {
       idleIconPath: iconPath,
       unseenIconPath: iconPath,
@@ -4691,7 +4964,8 @@ const trayIconAssets = () => {
 };
 
 const setupTray = () => {
-  if (!['darwin', 'win32'].includes(process.platform) || state.trayController) return;
+  if (!['darwin', 'win32', 'linux'].includes(process.platform) || state.trayController) return;
+  if (process.platform === 'darwin' && readSettingsRoot().desktopMacMenuBarEnabled === false) return;
   const assets = trayIconAssets();
   if (!fs.existsSync(assets.idleIconPath)) {
     log.warn('[electron] tray icon missing, skipping tray setup', { iconPath: assets.idleIconPath });
@@ -4705,6 +4979,14 @@ const setupTray = () => {
     // Seed an empty snapshot so the icon appears immediately; the renderer
     // pushes the real state once the sync stores are mounted.
     state.trayController.update({ sessions: [], approvals: [] });
+    if (!state.trayFocusListener) {
+      state.trayFocusListener = (_event, browserWindow) => {
+        if (browserWindow && !browserWindow.isDestroyed()) {
+          state.lastFocusedWindowId = browserWindow.id;
+        }
+      };
+      app.on('browser-window-focus', state.trayFocusListener);
+    }
   } catch (error) {
     log.warn('[electron] failed to set up tray', error);
     state.trayController = null;
@@ -4752,6 +5034,30 @@ const dispatchTrayAction = async (action) => {
 
   if (action.type === 'quit') {
     app.quit();
+    return;
+  }
+
+  if (action.type === 'hide-main-window') {
+    const target = (state.mainWindow && !state.mainWindow.isDestroyed())
+      ? state.mainWindow
+      : BrowserWindow.getFocusedWindow();
+    if (target && !target.isDestroyed() && target.isVisible()) {
+      debounceWindowStatePersist(target, true);
+      target.hide();
+    }
+    return;
+  }
+
+  if (action.type === 'toggle-main-window') {
+    const target = (state.mainWindow && !state.mainWindow.isDestroyed())
+      ? state.mainWindow
+      : null;
+    if (target && target.isVisible() && !target.isMinimized()) {
+      debounceWindowStatePersist(target, true);
+      target.hide();
+      return;
+    }
+    await revealMainWindow();
     return;
   }
 
@@ -4876,6 +5182,7 @@ app.on('activate', async () => {
 });
 
 app.whenReady().then(async () => {
+  recordElectronStartupPerformance('electron.app.ready');
   const loginItemSettings = readLoginItemSettings();
   const isBackgroundStart = shouldStartInBackground(loginItemSettings);
   log.info('[electron] app starting', {
@@ -4907,6 +5214,21 @@ app.whenReady().then(async () => {
     });
   }
 
+  if (process.platform === 'linux' && app.isPackaged) {
+    try {
+      const enabled = await readLinuxAutostartEnabled();
+      if (enabled) {
+        await setLinuxAutostartEnabled({
+          enabled: true,
+          appName: app.getName(),
+          backgroundArg: BACKGROUND_START_ARG,
+        });
+      }
+    } catch (error) {
+      log.warn('[electron] failed to reconcile Linux autostart entry', error);
+    }
+  }
+
   if (isBackgroundStart) {
     const { localOrigin, bootOutcome, apiBaseUrl, clientToken, requestHeaders } = await resolveInitialUrl();
     state.localOrigin = localOrigin;
@@ -4916,7 +5238,7 @@ app.whenReady().then(async () => {
     state.requestHeaders = sanitizeRuntimeRequestHeaders(requestHeaders || {});
     // Serverless background startup re-probes the remote when a window is
     // eventually opened instead of trusting reachability from login time.
-    state.startupResolved = !SKIP_LOCAL_SERVER;
+    state.startupResolved = !shouldSkipLocalServer();
     state.initScript = buildInitScript(localOrigin, state.bootOutcome, apiBaseUrl, clientToken, state.requestHeaders);
     log.info('[electron] started in background without window');
     return;

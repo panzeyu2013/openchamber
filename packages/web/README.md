@@ -49,6 +49,13 @@ openchamber update                   # Update to latest version
 
 `startup enable` snapshots your current environment into the native service so startup behaves like you launched `openchamber` from the same shell. This preserves provider tokens, PATH, SSH agent settings, and other CLI auth/config env vars. Use `--no-env-snapshot` for a minimal service env.
 
+When OpenChamber launches the local OpenCode server, it also registers a native
+`openchamber` agent tool for project, session, and scheduled-task orchestration.
+The tool is not injected when connecting to an external OpenCode server.
+Behavior settings can optionally inject a managed system-prompt optimizer on
+the next OpenCode restart. It is disabled by default and is not available for
+external OpenCode servers.
+
 ### Tunnel behavior notes
 
 - One active tunnel per running OpenChamber instance (port).
@@ -103,7 +110,7 @@ OPENCODE_HOST=https://myhost:4096 OPENCODE_SKIP_START=true openchamber
 | `OPENCODE_HOST` | Full base URL of external server (overrides `OPENCODE_PORT`) |
 | `OPENCODE_PORT` | Port of external server |
 | `OPENCODE_SKIP_START` | Skip starting embedded OpenCode server |
-| `OPENCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only) |
+| `OPENCHAMBER_OPENCODE_HOSTNAME` | Bind hostname for managed OpenCode server (default: `127.0.0.1`, use `0.0.0.0` for LAN/remote access — trusted networks only). Invalid values are rejected with an error and fall back to loopback |
 | `OPENCHAMBER_HOST` | Bind hostname for the OpenChamber web server (default: `127.0.0.1`; use `0.0.0.0` for LAN/remote access — trusted networks only) |
 | `OPENCHAMBER_VERBOSE_REQUEST_LOGS` | Set to `true` to log every HTTP request; disabled by default to keep user logs small |
 | `OPENCHAMBER_SKIP_API_COMPRESSION` | Set to `true` to disable gzip compression for `/api/*` responses |

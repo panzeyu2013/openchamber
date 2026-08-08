@@ -69,6 +69,7 @@ import { createServerUtilsRuntime } from './lib/opencode/server-utils-runtime.js
 import { createStaticRoutesRuntime } from './lib/opencode/static-routes-runtime.js';
 import { createSettingsRuntime } from './lib/opencode/settings-runtime.js';
 import { createOpenCodeResolutionRuntime } from './lib/opencode/opencode-resolution-runtime.js';
+import { resolveOpenCodeUpgradeCapability } from './lib/opencode/upgrade-capability.js';
 import { createBootstrapRuntime } from './lib/opencode/bootstrap-runtime.js';
 import { createSessionRuntime } from './lib/opencode/session-runtime.js';
 import { createOpenCodeWatcherRuntime } from './lib/opencode/watcher.js';
@@ -95,6 +96,11 @@ import { createPreviewProxyRuntime } from './lib/preview/proxy-runtime.js';
 import { attachRealtimeProxy } from './lib/realtime-proxy.js';
 import { createRelayService } from './lib/relay/service.js';
 import { createRelayHostLock } from './lib/relay/host-lock.js';
+import { createAgentToolRuntime } from './lib/agent-tool/runtime.js';
+import { createSystemPromptRuntime } from './lib/system-prompt/runtime.js';
+import { createOpenChamberSessionService } from './lib/openchamber-sessions/routes.js';
+import { createScheduledTaskService } from './lib/scheduled-tasks/service.js';
+import { createOpenChamberControlService } from './lib/openchamber-control/service.js';
 import { createProxyMiddleware, responseInterceptor } from 'http-proxy-middleware';
 import webPush from 'web-push';
 
@@ -264,6 +270,8 @@ const themeRuntime = createThemeRuntime({
 const readCustomThemesFromDisk = (...args) => themeRuntime.readCustomThemesFromDisk(...args);
 
 let notificationTemplateRuntime = null;
+let agentToolRuntime = null;
+let systemPromptRuntime = null;
 
 const createTimeoutSignal = (...args) => notificationTemplateRuntime.createTimeoutSignal(...args);
 const formatProjectLabel = (...args) => notificationTemplateRuntime.formatProjectLabel(...args);
@@ -659,6 +667,7 @@ const getLoginShellEnvSnapshot = (...args) => openCodeEnvRuntime.getLoginShellEn
 const ensureOpencodeCliEnv = (...args) => openCodeEnvRuntime.ensureOpencodeCliEnv(...args);
 const applyOpencodeBinaryFromSettings = (...args) => openCodeEnvRuntime.applyOpencodeBinaryFromSettings(...args);
 const resolveOpencodeCliPath = (...args) => openCodeEnvRuntime.resolveOpencodeCliPath(...args);
+const isBundledOpenCodeCliPath = (...args) => openCodeEnvRuntime.isBundledOpenCodeCliPath(...args);
 const isExecutable = (...args) => openCodeEnvRuntime.isExecutable(...args);
 const searchPathFor = (...args) => openCodeEnvRuntime.searchPathFor(...args);
 const resolveGitBinaryForSpawn = (...args) => openCodeEnvRuntime.resolveGitBinaryForSpawn(...args);
@@ -886,6 +895,7 @@ const serverUtilsRuntime = createServerUtilsRuntime({
   getOpenCodeAuthHeaders,
   buildOpenCodeUrl,
   ensureOpenCodeApiPrefix,
+  getUpstreamStallTimeoutMs,
   getUiNotificationClients: () => uiNotificationClients,
   getOpenCodePort: () => openCodePort,
   setOpenCodePortState: (value) => {
@@ -952,6 +962,7 @@ const bootstrapRuntime = createBootstrapRuntime({
   registerTtsRoutes,
   registerNotificationRoutes,
   registerOpenChamberRoutes,
+  registerAgentToolRoutes: (app, options) => options.agentToolRuntime.registerRoutes(app, options.express),
   express,
 });
 const tunnelWiringRuntime = createTunnelWiringRuntime({
@@ -1048,7 +1059,63 @@ const openCodeLifecycleRuntime = createOpenCodeLifecycleRuntime({
   buildManagedOpenCodePath,
   getManagedOpenCodeShellEnvSnapshot: getLoginShellEnvSnapshot,
   getActiveSessionCount,
+  // Most-recently-used directories first: OpenCode initializes each directory
+  // lazily on first request (seconds on large session stores), so the
+  // lifecycle warms these right after readiness — before the UI's first
+  // interactive request would otherwise pay that cost.
+  getWarmupDirectories: async () => {
+    const settings = await readSettingsFromDiskMigrated().catch(() => null);
+    if (!settings) return [];
+    const directories = [];
+    if (typeof settings.lastDirectory === 'string' && settings.lastDirectory) {
+      directories.push(settings.lastDirectory);
+    }
+    const projects = Array.isArray(settings.projects) ? [...settings.projects] : [];
+    projects.sort((a, b) => (b?.lastOpenedAt ?? 0) - (a?.lastOpenedAt ?? 0));
+    for (const project of projects) {
+      if (typeof project?.path === 'string' && project.path) {
+        directories.push(project.path);
+      }
+    }
+    return [...new Set(directories)];
+  },
+  // A managed restart can move OpenCode to a NEW port (the old one may stay
+  // occupied by an orphaned process, e.g. killProcessOnPort is a no-op on
+  // Windows). Rebind the message-stream upstream readers to the current port
+  // so the UI keeps receiving events instead of staying pinned to the old
+  // process (#2638). The runtime is created later by the startup pipeline;
+  // by the time any restart runs, it is assigned.
+  onOpenCodeRestarted: () => {
+    try {
+      messageStreamRuntime?.rebindUpstream();
+    } catch (error) {
+      console.warn('Failed to rebind message stream after OpenCode restart:', error?.message ?? error);
+    }
+  },
+  getManagedOpenCodeEnv: async () => {
+    const settings = await readSettingsFromDiskMigrated().catch(() => null);
+    const managedEnv = settings?.agentControlToolEnabled === false
+      ? {}
+      : await (agentToolRuntime?.prepareManagedOpenCodeEnv() || {});
+    if (settings?.optimizeSystemPrompt !== true) return managedEnv;
+
+    const configContent = managedEnv.OPENCODE_CONFIG_CONTENT ?? process.env.OPENCODE_CONFIG_CONTENT;
+    const systemPromptEnv = await systemPromptRuntime.prepareManagedOpenCodeEnv(configContent);
+    return { ...managedEnv, ...systemPromptEnv };
+  },
 });
+
+const getOpenCodeUpgradeCapability = () => {
+  const activeBinary = lastOpenCodeLaunchDiagnostics?.sourceBinary
+    || lastOpenCodeLaunchDiagnostics?.binary
+    || resolvedOpencodeBinary;
+  return resolveOpenCodeUpgradeCapability({
+    isExternal: isExternalOpenCode,
+    hasManagedProcess: Boolean(openCodeProcess),
+    activeBinary,
+    isBundledBinary: isBundledOpenCodeCliPath,
+  });
+};
 
 const restartOpenCode = (...args) => openCodeLifecycleRuntime.restartOpenCode(...args);
 const waitForOpenCodeReady = (...args) => openCodeLifecycleRuntime.waitForOpenCodeReady(...args);
@@ -1085,6 +1152,50 @@ const scheduledTasksRuntime = createScheduledTasksRuntime({
     }
   },
   logger: console,
+});
+const emitSessionCreatedEvent = (event) => {
+  for (const client of uiOpenChamberEventClients) {
+    try {
+      writeSseEvent(client, {
+        type: 'openchamber:session-created',
+        properties: {
+          sessionId: event.sessionID,
+          directory: event.directory,
+          createdAt: event.createdAt,
+          promptDispatched: event.promptDispatched === true,
+          dispatchedAsCommand: event.dispatchedAsCommand === true,
+          ...(event.projectID ? { projectId: event.projectID } : {}),
+          ...(event.title ? { title: event.title } : {}),
+        },
+      });
+    } catch {
+      uiOpenChamberEventClients.delete(client);
+    }
+  }
+};
+const scheduledTaskService = createScheduledTaskService({
+  readSettingsFromDiskMigrated,
+  sanitizeProjects,
+  projectConfigRuntime,
+  scheduledTasksRuntime,
+});
+const openChamberSessionService = createOpenChamberSessionService({
+  readSettingsFromDiskMigrated,
+  sanitizeProjects,
+  validateDirectoryPath,
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  waitForOpenCodeReady,
+  emitSessionCreatedEvent,
+});
+const openChamberControlService = createOpenChamberControlService({
+  readSettingsFromDiskMigrated,
+  sanitizeProjects,
+  buildOpenCodeUrl,
+  getOpenCodeAuthHeaders,
+  waitForOpenCodeReady,
+  sessionService: openChamberSessionService,
+  scheduledTaskService,
 });
 
 const ensureGlobalWatcherStarted = async () => {
@@ -1173,6 +1284,23 @@ async function main(options = {}) {
     || (typeof process.env.OPENCHAMBER_HOST === 'string' && process.env.OPENCHAMBER_HOST.trim().length > 0
       ? process.env.OPENCHAMBER_HOST.trim()
       : '127.0.0.1');
+  agentToolRuntime = createAgentToolRuntime({
+    crypto,
+    fsPromises,
+    path,
+    dataDir: OPENCHAMBER_DATA_DIR,
+    env: process.env,
+    executeAction: (...args) => openChamberControlService.execute(...args),
+    getActivePort: () => {
+      const address = server?.address?.();
+      return typeof address === 'object' && address ? address.port : null;
+    },
+  });
+  systemPromptRuntime = createSystemPromptRuntime({
+    fsPromises,
+    path,
+    dataDir: OPENCHAMBER_DATA_DIR,
+  });
 
   // Pairing transports advertised to the create-device dialog. LAN reachability is
   // derived from the SERVER's actual bind (a wildcard bind → the machine's LAN IP;
@@ -1302,7 +1430,9 @@ async function main(options = {}) {
 
   console.log(`Starting OpenChamber on port ${port === 0 ? 'auto' : port}`);
 
-  const sayTTSCapability = await detectSayTtsCapability(process);
+  // Voice enumeration is independent from route registration. Start it now,
+  // but do not hold server listen or managed OpenCode startup on `say -v "?"`.
+  const sayTTSCapability = detectSayTtsCapability(process);
 
   const app = express();
   const serverStartedAt = new Date().toISOString();
@@ -1357,6 +1487,10 @@ async function main(options = {}) {
   // relay candidate lazily at request time, so a late-bound holder is enough.
   let relayServiceInstance = null;
 
+  // Same pattern for the tunnel runtime: created after the base routes so
+  // /api/system/info resolves port + tunnel URL lazily at request time.
+  let tunnelRuntimeContextHolder = null;
+
   const bootstrapResult = bootstrapRuntime.setupBaseRoutes(app, {
     process,
     openchamberVersion: OPENCHAMBER_VERSION,
@@ -1393,6 +1527,15 @@ async function main(options = {}) {
         apiOnly,
       };
     },
+    // Port this instance serves on and the active tunnel's public URL (if
+    // any), for /api/system/info. Resolved lazily because the tunnel runtime
+    // is created after these base routes are registered.
+    getServerPort: () => {
+      const activePort = tunnelRuntimeContextHolder?.getActivePort?.();
+      if (Number.isFinite(activePort) && activePort > 0) return activePort;
+      return Number.isFinite(port) && port > 0 ? port : null;
+    },
+    getTunnelUrl: () => tunnelRuntimeContextHolder?.tunnelService?.getPublicUrl?.() ?? null,
     verboseRequestLogs: OPENCHAMBER_VERBOSE_REQUEST_LOGS,
     uiPassword,
     tunnelAuthController,
@@ -1455,6 +1598,7 @@ async function main(options = {}) {
     fetchFreeZenModels,
     getCachedZenModels,
     setAutoAcceptSession,
+    agentToolRuntime,
   });
   uiAuthController = bootstrapResult.uiAuthController;
   realtimeProxyRuntime = attachRealtimeProxy({
@@ -1467,6 +1611,7 @@ async function main(options = {}) {
 
   const tunnelRuntimeContext = tunnelWiringRuntime.initialize(app, port);
   const { tunnelService, startTunnelWithNormalizedRequest } = tunnelRuntimeContext;
+  tunnelRuntimeContextHolder = tunnelRuntimeContext;
 
   // Private relay host service: config + management routes + host client
   // lifecycle. Loopback port comes from the same source the tunnel uses so
@@ -1518,6 +1663,7 @@ async function main(options = {}) {
     readCustomThemesFromDisk,
     refreshOpenCodeAfterConfigChange,
     getOpenCodeResolutionSnapshot,
+    getOpenCodeUpgradeCapability,
     formatSettingsResponse,
     readSettingsFromDisk,
     readSettingsFromDiskMigrated,
@@ -1531,6 +1677,11 @@ async function main(options = {}) {
     buildAugmentedPath,
     projectConfigRuntime,
     scheduledTasksRuntime,
+    scheduledTaskService,
+    openChamberSessionService,
+    openChamberControlService,
+    waitForOpenCodeReady,
+    emitSessionCreatedEvent,
     getOpenChamberEventClients: () => uiOpenChamberEventClients,
     writeSseEvent,
     permissionAutoAcceptRuntime,

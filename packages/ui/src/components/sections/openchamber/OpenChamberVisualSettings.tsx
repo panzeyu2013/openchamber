@@ -17,7 +17,15 @@ import {
     SelectValue,
 } from '@/components/ui/select';
 import { Icon } from "@/components/icon/Icon";
-import { invokeDesktop, isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
+import {
+    invokeDesktop,
+    isDesktopShell,
+    isVSCodeRuntime,
+    isWebRuntime,
+    usesFramelessElectronChrome,
+    type DesktopWindowControlsPosition,
+    type DesktopWindowControlsStyle,
+} from '@/lib/desktop';
 import { useDeviceInfo } from '@/lib/device';
 import { usePwaDetection } from '@/hooks/usePwaDetection';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -271,7 +279,17 @@ const normalizeUserMessageRenderingMode = (mode: unknown): 'markdown' | 'plain' 
     return mode === 'markdown' ? 'markdown' : 'plain';
 };
 
-type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'reportUsage' | 'expandedEditorToolbar';
+type VisibleSetting = 'sessionAssist' | 'sessionGoal' | 'theme' | 'windowControlsPosition' | 'pwaInstallName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'timeFormat' | 'weekStart' | 'fontSize' | 'terminalFontSize' | 'terminalShell' | 'terminalLoginShell' | 'editorFontSize' | 'spacing' | 'inputBarOffset' | 'mermaidRendering' | 'userMessageRendering' | 'chatRenderMode' | 'messageTransport' | 'activityRenderMode' | 'collapsibleUserMessages' | 'stickyUserHeader' | 'promptNavigatorEnabled' | 'wideChatLayout' | 'codeBlockLineWrap' | 'splitAssistantMessageActions' | 'subagentReadOnlyBanner' | 'diffLayout' | 'mobileStatusBar' | 'dotfiles' | 'fileViewerPreview' | 'reasoning' | 'showToolFileIcons' | 'showTurnChangedFiles' | 'expandedTools' | 'followUpBehavior' | 'terminalQuickKeys' | 'fileEditorKeymap' | 'persistDraft' | 'inputSpellcheck' | 'reportUsage' | 'expandedEditorToolbar' | 'autoSaveEnabled';
+
+const WINDOW_CONTROLS_POSITION_OPTIONS: Array<{ id: DesktopWindowControlsPosition; labelKey: string }> = [
+    { id: 'left', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsLeft' },
+    { id: 'right', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsRight' },
+];
+
+const WINDOW_CONTROLS_STYLE_OPTIONS: Array<{ id: DesktopWindowControlsStyle; labelKey: string }> = [
+    { id: 'classic', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsClassic' },
+    { id: 'traffic-lights', labelKey: 'settings.openchamber.desktopNetwork.option.windowControlsTrafficLights' },
+];
 
 interface OpenChamberVisualSettingsProps {
     /** Which settings to show. If undefined, shows all. */
@@ -312,6 +330,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setPromptNavigatorEnabled = useUIStore(state => state.setPromptNavigatorEnabled);
     const expandedEditorToolbar = useUIStore(state => state.expandedEditorToolbar);
     const setExpandedEditorToolbar = useUIStore(state => state.setExpandedEditorToolbar);
+    const autoSaveEnabled = useUIStore(state => state.autoSaveEnabled);
+    const setAutoSaveEnabled = useUIStore(state => state.setAutoSaveEnabled);
     const wideChatLayoutEnabled = useUIStore(state => state.wideChatLayoutEnabled);
     const setWideChatLayoutEnabled = useUIStore(state => state.setWideChatLayoutEnabled);
     const codeBlockLineWrap = useUIStore(state => state.codeBlockLineWrap);
@@ -368,6 +388,8 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const setShowSplitAssistantMessageActions = useUIStore(state => state.setShowSplitAssistantMessageActions);
     const allowPromptingSubagentSessions = useUIStore(state => state.allowPromptingSubagentSessions);
     const setAllowPromptingSubagentSessions = useUIStore(state => state.setAllowPromptingSubagentSessions);
+    const draftStartersVisible = useUIStore(state => state.draftStartersVisible);
+    const setDraftStartersVisible = useUIStore(state => state.setDraftStartersVisible);
     const messageStreamTransport = useConfigStore((state) => state.settingsMessageStreamTransport);
     const setMessageStreamTransport = useConfigStore((state) => state.setSettingsMessageStreamTransport);
     const effectiveMessageStreamTransport = messageStreamTransport;
@@ -408,6 +430,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     );
     const dockBadgeEnabled = useUIStore(state => state.dockBadgeEnabled);
     const setDockBadgeEnabled = useUIStore(state => state.setDockBadgeEnabled);
+    const showWindowControlsPosition = usesFramelessElectronChrome();
+    const desktopWindowControlsPosition = useUIStore((state) => state.desktopWindowControlsPosition);
+    const setDesktopWindowControlsPosition = useUIStore((state) => state.setDesktopWindowControlsPosition);
+    const desktopWindowControlsStyle = useUIStore((state) => state.desktopWindowControlsStyle);
+    const setDesktopWindowControlsStyle = useUIStore((state) => state.setDesktopWindowControlsStyle);
     const [chatRenderPreviewTick, setChatRenderPreviewTick] = React.useState(0);
     const reportUsage = useUIStore(state => state.reportUsage);
     const setReportUsage = useUIStore(state => state.setReportUsage);
@@ -417,6 +444,16 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         setReportUsage(enabled);
         void updateDesktopSettings({ reportUsage: enabled });
     }, [setReportUsage]);
+
+    const handleWindowControlsPositionChange = React.useCallback((value: DesktopWindowControlsPosition) => {
+        setDesktopWindowControlsPosition(value);
+        void updateDesktopSettings({ desktopWindowControlsPosition: value });
+    }, [setDesktopWindowControlsPosition]);
+
+    const handleWindowControlsStyleChange = React.useCallback((value: DesktopWindowControlsStyle) => {
+        setDesktopWindowControlsStyle(value);
+        void updateDesktopSettings({ desktopWindowControlsStyle: value });
+    }, [setDesktopWindowControlsStyle]);
 
     const shouldAnimateChatPreview = (isSettingsDialogOpen || isMobile || isVSCodeRuntime())
         && (visibleSettings ? visibleSettings.includes('chatRenderMode') : true);
@@ -478,6 +515,11 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
         setPromptNavigatorEnabled(enabled);
         void updateDesktopSettings({ promptNavigatorEnabled: enabled });
     }, [setPromptNavigatorEnabled]);
+
+    const handleDraftStartersVisibleChange = React.useCallback((enabled: boolean) => {
+        setDraftStartersVisible(enabled);
+        void updateDesktopSettings({ draftStartersVisible: enabled });
+    }, [setDraftStartersVisible]);
 
     const handleExpandedEditorToolbarChange = React.useCallback((enabled: boolean) => {
         setExpandedEditorToolbar(enabled);
@@ -596,13 +638,14 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
 
     const isVSCode = isVSCodeRuntime();
     const hasThemeSettings = shouldShow('theme') && !isVSCode;
+    const showWindowControlsPositionSetting = shouldShow('windowControlsPosition') && showWindowControlsPosition;
     const hasLocalizationSettings = shouldShow('theme') || shouldShow('timeFormat') || shouldShow('weekStart');
     const showMobileLayoutSetting = isMobile && isWebRuntime() && !isDesktopShell() && !isVSCode;
     const hasAppearanceSettings = isVSCode
         ? hasLocalizationSettings
-        : (shouldShow('theme') || showMobileLayoutSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
+        : (shouldShow('theme') || showWindowControlsPositionSetting || showMobileLayoutSetting || shouldShow('pwaInstallName') || shouldShow('pwaOrientation') || shouldShow('timeFormat') || shouldShow('weekStart'));
     const hasLayoutSettings = shouldShow('fontSize') || shouldShow('terminalFontSize') || shouldShow('editorFontSize') || shouldShow('spacing') || (shouldShow('inputBarOffset') && isMobile);
-    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || (shouldShow('expandedEditorToolbar') && !isVSCode);
+    const hasNavigationSettings = (shouldShow('terminalQuickKeys') && !isMobile) || ((shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode) || shouldShow('fileEditorKeymap') || shouldShow('autoSaveEnabled') || (shouldShow('expandedEditorToolbar') && !isVSCode);
     const hasBehaviorSettings = shouldShow('mermaidRendering')
         || (shouldShow('sessionGoal') && !isVSCode)
         || shouldShow('userMessageRendering')
@@ -977,6 +1020,45 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         />
                                     </SettingsInset>
                                 )}
+                            </SettingsSection>
+                        )}
+
+                        {showWindowControlsPositionSetting && (
+                            <SettingsSection
+                                title={t('settings.openchamber.desktopNetwork.field.windowControls')}
+                                info={t('settings.openchamber.desktopNetwork.field.windowControlsPositionDescription')}
+                                divider={hasThemeSettings}
+                            >
+                                <SettingsTwoColumn>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowControlsPosition')}
+                                        settingsItem="sessions.desktop-window-controls-position"
+                                    >
+                                        <SettingsChipGroup
+                                            value={desktopWindowControlsPosition}
+                                            options={WINDOW_CONTROLS_POSITION_OPTIONS.map((option) => ({
+                                                value: option.id,
+                                                label: tUnsafe(option.labelKey),
+                                            }))}
+                                            onChange={handleWindowControlsPositionChange}
+                                            aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsPositionAria')}
+                                        />
+                                    </SettingsStackedField>
+                                    <SettingsStackedField
+                                        label={t('settings.openchamber.desktopNetwork.field.windowControlsStyle')}
+                                        settingsItem="sessions.desktop-window-controls-style"
+                                    >
+                                        <SettingsChipGroup
+                                            value={desktopWindowControlsStyle}
+                                            options={WINDOW_CONTROLS_STYLE_OPTIONS.map((option) => ({
+                                                value: option.id,
+                                                label: tUnsafe(option.labelKey),
+                                            }))}
+                                            onChange={handleWindowControlsStyleChange}
+                                            aria-label={t('settings.openchamber.desktopNetwork.field.windowControlsStyleAria')}
+                                        />
+                                    </SettingsStackedField>
+                                </SettingsTwoColumn>
                             </SettingsSection>
                         )}
 
@@ -1435,6 +1517,16 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                             </SettingsControlGroup>
                         )}
                         <div className={SETTINGS_OPTION_STACK_CLASS}>
+                            {shouldShow('autoSaveEnabled') && (
+                                <SettingsCheckboxRow
+                                    checked={autoSaveEnabled}
+                                    onChange={setAutoSaveEnabled}
+                                    label={t('settings.openchamber.visual.field.autoSaveEnabled')}
+                                    ariaLabel={t('settings.openchamber.visual.field.autoSaveEnabledAria')}
+                                    info={t('settings.openchamber.visual.field.autoSaveEnabledInfo')}
+                                    settingsItem="appearance.auto-save-enabled"
+                                />
+                            )}
                             {shouldShow('expandedEditorToolbar') && !isVSCode && (
                                 <SettingsCheckboxRow
                                     checked={expandedEditorToolbar}
@@ -1725,12 +1817,18 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                         />
                                     </SettingsSection>
                                 )}
-                                {(shouldShow('sessionAssist') || shouldShow('subagentReadOnlyBanner')) && (
-                                    <SettingsSection
-                                        title={t('settings.openchamber.visual.section.sessionAssistance')}
-                                        settingsItem="chat.session-assistance"
-                                        contentClassName={SETTINGS_OPTION_STACK_CLASS}
-                                    >
+                                <SettingsSection
+                                    title={t('settings.openchamber.visual.section.sessionAssistance')}
+                                    settingsItem="chat.session-assistance"
+                                    contentClassName={SETTINGS_OPTION_STACK_CLASS}
+                                >
+                                    <SettingsCheckboxRow
+                                        checked={draftStartersVisible}
+                                        onChange={handleDraftStartersVisibleChange}
+                                        label={t('settings.openchamber.visual.field.draftStartersVisible')}
+                                        ariaLabel={t('settings.openchamber.visual.field.draftStartersVisibleAria')}
+                                        settingsItem="chat.draft-starters-visible"
+                                    />
                                         {shouldShow('sessionAssist') && (
                                             <>
                                                 <SettingsCheckboxRow
@@ -1758,8 +1856,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
                                                 settingsItem="chat.subagent-read-only-banner"
                                             />
                                         )}
-                                    </SettingsSection>
-                                )}
+                                </SettingsSection>
                                 {/* The goal loop runs in the web server — VS Code only renders
                                     goal state, so the settings section is hidden there too. */}
                                 {shouldShow('sessionGoal') && !isVSCode && (

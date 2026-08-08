@@ -1,11 +1,4 @@
 import * as React from 'react';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -17,6 +10,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { formatTimeForPreference } from '@/lib/timeFormat';
 import type { TimeFormatPreference } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
@@ -360,18 +354,25 @@ export function ScheduledTasksDialog() {
     }
     setMutatingTaskID(task.id);
     try {
-      await runScheduledTaskNow(selectedProjectID, task.id);
+      const { sessionId } = await runScheduledTaskNow(selectedProjectID, task.id);
       await Promise.all([
         reloadTasks(selectedProjectID, { silent: true }),
         refreshGlobalSessions(),
       ]);
       toast.success(t('sessions.scheduledTasks.dialog.toast.started'));
+      if (sessionId) {
+        // Jump straight into the started session; selecting it also closes
+        // this surface (MainLayout closes surfaces on session selection).
+        const project = projects.find((entry) => entry.id === selectedProjectID);
+        useSessionUIStore.getState().setCurrentSession(sessionId, project?.path ?? null);
+        useUIStore.getState().setActiveMainTab('chat');
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('sessions.scheduledTasks.dialog.toast.runFailed'));
     } finally {
       setMutatingTaskID(null);
     }
-  }, [selectedProjectID, reloadTasks, t]);
+  }, [selectedProjectID, projects, reloadTasks, t]);
 
   const projectSelector = (
     <div className="flex flex-col items-start gap-1">
@@ -412,19 +413,16 @@ export function ScheduledTasksDialog() {
     setEditorOpen(true);
   };
 
-  const tasksContent = (
-    <div className="space-y-4">
-      {!isMobile ? (
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          {projectSelector}
-          <Button onClick={openNewTaskEditor} disabled={!selectedProjectID}>
-            <Icon name="add" className="mr-1 h-4 w-4" /> {t('sessions.scheduledTasks.dialog.actions.newTask')}
-          </Button>
-        </div>
-      ) : (
-        projectSelector
-      )}
+  const selectProject = (nextProjectID: string) => {
+    setSelectedProjectID(nextProjectID);
+    if (nextProjectID) {
+      void reloadTasks(nextProjectID);
+    } else {
+      setTasks([]);
+    }
+  };
 
+  const tasksList = (
       <div className="min-h-[280px]">
       {loading ? (
         <div className="flex items-center gap-2 typography-meta text-muted-foreground">
@@ -465,6 +463,14 @@ export function ScheduledTasksDialog() {
                   <div className="typography-micro truncate text-muted-foreground">
                     {formatSchedule(task, t)}
                   </div>
+                  {task.loopFile ? (
+                    <div
+                      className="typography-micro truncate text-muted-foreground/70"
+                      title={task.loopFile}
+                    >
+                      {t('sessions.scheduledTasks.dialog.loopFile.note', { file: task.loopFile })}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-1 typography-micro text-muted-foreground">
@@ -527,8 +533,11 @@ export function ScheduledTasksDialog() {
                     className={cn(
                       'inline-flex cursor-pointer items-center gap-2 typography-micro font-medium',
                       task.enabled ? 'text-foreground' : 'text-muted-foreground',
-                      isBusy && 'cursor-not-allowed opacity-50',
+                      (isBusy || task.loopFile) && 'cursor-not-allowed opacity-50',
                     )}
+                    title={task.loopFile
+                      ? t('sessions.scheduledTasks.dialog.loopFile.toggleDisabled')
+                      : undefined}
                   >
                     <Checkbox
                       checked={task.enabled}
@@ -536,7 +545,7 @@ export function ScheduledTasksDialog() {
                       ariaLabel={task.enabled
                         ? t('sessions.scheduledTasks.dialog.taskToggle.pauseAria', { taskName: task.name })
                         : t('sessions.scheduledTasks.dialog.taskToggle.enableAria', { taskName: task.name })}
-                      disabled={isBusy}
+                      disabled={isBusy || Boolean(task.loopFile)}
                     />
                     {task.enabled ? t('sessions.scheduledTasks.dialog.taskToggle.enabled') : t('sessions.scheduledTasks.dialog.taskToggle.paused')}
                   </label>
@@ -557,7 +566,10 @@ export function ScheduledTasksDialog() {
                         setEditorTask(task);
                         setEditorOpen(true);
                       }}
-                      disabled={isBusy}
+                      disabled={isBusy || Boolean(task.loopFile)}
+                      title={task.loopFile
+                        ? t('sessions.scheduledTasks.dialog.loopFile.actionsDisabled')
+                        : undefined}
                       aria-label={t('sessions.scheduledTasks.dialog.actions.editAria', { taskName: task.name })}
                     >
                       <Icon name="edit-2" className="h-4 w-4" /> {t('sessions.scheduledTasks.dialog.actions.edit')}
@@ -566,7 +578,10 @@ export function ScheduledTasksDialog() {
                       variant="destructive"
                       size="sm"
                       onClick={() => void handleDeleteTask(task)}
-                      disabled={isBusy}
+                      disabled={isBusy || Boolean(task.loopFile)}
+                      title={task.loopFile
+                        ? t('sessions.scheduledTasks.dialog.loopFile.actionsDisabled')
+                        : undefined}
                       aria-label={t('sessions.scheduledTasks.dialog.actions.deleteAria', { taskName: task.name })}
                     >
                       <Icon name="delete-bin" className="h-4 w-4" />
@@ -579,6 +594,12 @@ export function ScheduledTasksDialog() {
         </div>
       )}
       </div>
+  );
+
+  const tasksContent = (
+    <div className="space-y-4">
+      {projectSelector}
+      {tasksList}
     </div>
   );
 
@@ -613,18 +634,53 @@ export function ScheduledTasksDialog() {
         >
           {tasksContent}
         </MobileOverlayPanel>
-      ) : (
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>{t('sessions.scheduledTasks.dialog.title')}</DialogTitle>
-              <DialogDescription>{t('sessions.scheduledTasks.dialog.description')}</DialogDescription>
-            </DialogHeader>
-
-            {tasksContent}
-          </DialogContent>
-        </Dialog>
-      )}
+      ) : open ? (
+        // Full-page surface replacing the chat area (mounted inside <main>).
+        // Master-detail: a scrollable project filter panel at the left, the
+        // selected project's tasks at the right. The app Header shows the
+        // surface title, so the page itself only carries the close affordance.
+        <div className="absolute inset-0 z-10 flex flex-col bg-background">
+          <div className="flex min-h-0 flex-1">
+            <div className="flex w-60 flex-shrink-0 flex-col border-r border-border/50">
+              <div className="flex-1 space-y-0.5 overflow-y-auto p-2">
+                {projects.length === 0 ? (
+                  <div className="px-2 py-2 typography-meta text-muted-foreground">
+                    {t('sessions.scheduledTasks.dialog.project.empty')}
+                  </div>
+                ) : projects.map((project) => (
+                  <button
+                    key={project.id}
+                    type="button"
+                    onClick={() => selectProject(project.id)}
+                    className={cn(
+                      'flex w-full min-w-0 items-center rounded-md px-2 py-1.5 text-left typography-ui-label focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50',
+                      selectedProjectID === project.id
+                        ? 'bg-interactive-selection text-foreground'
+                        : 'text-muted-foreground hover:bg-interactive-hover/50 hover:text-foreground',
+                    )}
+                  >
+                    {renderProjectLabel(project)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="flex min-w-0 flex-1 flex-col">
+              {/* Pages have no close button: you leave by picking a session,
+                  a draft, or another surface in the sidebar. */}
+              <div className="flex items-center px-6 pt-3">
+                <Button size="sm" onClick={openNewTaskEditor} disabled={!selectedProjectID}>
+                  <Icon name="add" className="mr-1 h-4 w-4" /> {t('sessions.scheduledTasks.dialog.actions.newTask')}
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+                <div className="mx-auto w-full max-w-3xl">
+                  {tasksList}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <ScheduledTaskEditorDialog
         open={editorOpen}
