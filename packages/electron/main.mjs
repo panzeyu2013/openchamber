@@ -270,6 +270,10 @@ const state = {
   trayController: null,
   trayFocusListener: null,
   lastFocusedWindowId: null,
+  // The runtime identity the current tray snapshot reflects (reported by the
+  // pushing local window). Tray clicks route to a window serving this same
+  // runtime so a session id is never emitted into a different runtime's page.
+  lastTrayRuntimeKey: '',
   keepAwakeBlockerId: null,
 };
 
@@ -671,10 +675,15 @@ const buildRendererRuntimeConfig = (uiUrl, runtimeConfig = {}) => {
   // host receive it here so the preload can expose it even on pages where the
   // URL alone cannot identify the host (e.g. the packaged local UI).
   const desktopHostId = typeof runtimeConfig.desktopHostId === 'string' ? runtimeConfig.desktopHostId : '';
+  // The runtime this window was created to serve. The renderer re-pushes the
+  // live runtimeKey through `desktop_set_runtime_config` whenever its Active
+  // Runtime changes in place; host windows keep the creation-time host key
+  // (they cannot update it: the command is gated to local senders).
+  const runtimeKey = desktopHostId ? `host:${desktopHostId}` : '';
   if (shouldUseSameOriginDevProxy(uiUrl, apiBaseUrl)) {
-    return { apiBaseUrl: '', clientToken: '', requestHeaders: {}, relayHostId, desktopHostId };
+    return { apiBaseUrl: '', clientToken: '', requestHeaders: {}, relayHostId, desktopHostId, runtimeKey };
   }
-  return { apiBaseUrl, clientToken, requestHeaders, relayHostId, desktopHostId };
+  return { apiBaseUrl, clientToken, requestHeaders, relayHostId, desktopHostId, runtimeKey };
 };
 
 const readDesktopLocalClientToken = () => {
@@ -2405,7 +2414,12 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {} }
 
   const browserWindow = new BrowserWindow(options);
   browserWindow.__ocLabel = label || nextWindowLabel();
-  browserWindow.__ocRuntimeConfig = { apiBaseUrl: desktopApiBaseUrl, clientToken: desktopClientToken, requestHeaders: desktopRequestHeaders };
+  browserWindow.__ocRuntimeConfig = {
+    apiBaseUrl: desktopApiBaseUrl,
+    clientToken: desktopClientToken,
+    requestHeaders: desktopRequestHeaders,
+    runtimeKey: rendererRuntimeConfig.runtimeKey || '',
+  };
   browserWindow.__ocInitScript = buildInitScript(desktopLocalOrigin, state.bootOutcome, desktopApiBaseUrl, desktopClientToken, desktopRequestHeaders);
   browserWindow.__ocTitleBarOverlayEnabled = titleBarOverlayEnabled;
 
@@ -2731,6 +2745,7 @@ const getWindowRuntimeConfig = (browserWindow) => {
     apiBaseUrl: state.apiBaseUrl || state.localOrigin || state.sidecarUrl || '',
     clientToken: state.clientToken || '',
     requestHeaders: state.requestHeaders || {},
+    runtimeKey: '',
   };
   if (!browserWindow || browserWindow.isDestroyed()) return fallback;
   const config = browserWindow.__ocRuntimeConfig;
@@ -2738,6 +2753,7 @@ const getWindowRuntimeConfig = (browserWindow) => {
     apiBaseUrl: typeof config?.apiBaseUrl === 'string' ? config.apiBaseUrl : fallback.apiBaseUrl,
     clientToken: typeof config?.clientToken === 'string' ? config.clientToken : fallback.clientToken,
     requestHeaders: sanitizeRuntimeRequestHeaders(config?.requestHeaders || fallback.requestHeaders),
+    runtimeKey: typeof config?.runtimeKey === 'string' ? config.runtimeKey : fallback.runtimeKey,
   };
 };
 
@@ -3770,6 +3786,12 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       if (wcId === null || wcId < 0) throw new Error('webContentsId is required');
       const wc = webContents.fromId(wcId);
       if (!wc || wc.isDestroyed()) throw new Error('WebContents not found');
+      // Cross-window capture gate: the target must be a <webview> embedded in
+      // the SENDER's own window. A remote page must never screenshot another
+      // window's content (e.g. the local UI with session/token material).
+      if (wc.hostWebContents !== event.sender) {
+        throw new Error('WebContents is not owned by this window');
+      }
       const image = await wc.capturePage();
       const buffer = image.toJPEG(82);
       return {
@@ -3891,6 +3913,9 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
 
     case 'desktop_tray_update':
+      if (typeof args?.runtimeKey === 'string' && args.runtimeKey.trim()) {
+        state.lastTrayRuntimeKey = args.runtimeKey.trim();
+      }
       if (state.trayController) {
         try {
           state.trayController.update(args || {});
@@ -4413,6 +4438,25 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       return null;
     }
 
+    case 'desktop_set_runtime_config': {
+      // The renderer re-pushes its live Active Runtime identity whenever
+      // switchRuntimeEndpoint runs in place (gated to local senders, so a
+      // remote page can never claim another runtime and bait tray clicks).
+      if (!browserWindow || browserWindow.isDestroyed()) return null;
+      const apiBaseUrl = typeof args.apiBaseUrl === 'string' ? args.apiBaseUrl : '';
+      const runtimeKey = typeof args.runtimeKey === 'string' ? args.runtimeKey.trim() : '';
+      const clientToken = typeof args.clientToken === 'string' ? args.clientToken : '';
+      const requestHeaders = sanitizeRuntimeRequestHeaders(args.requestHeaders || {});
+      browserWindow.__ocRuntimeConfig = {
+        ...(browserWindow.__ocRuntimeConfig || {}),
+        apiBaseUrl,
+        clientToken,
+        requestHeaders,
+        runtimeKey,
+      };
+      return null;
+    }
+
     case 'desktop_set_window_pinned':
       return setMiniChatPinned(browserWindow, args.pinned === true);
 
@@ -4788,9 +4832,13 @@ app.on('web-contents-created', (_event, contents) => {
 // Strategy: commands fall into two buckets by capability, not by origin.
 // Window/host-switcher operations (probe a URL, open a new window, set
 // title, read the hosts list) are safe for any renderer. Filesystem,
-// shell.openPath, installed-app scans, app relaunch, and file dialogs
-// are gated to local senders — even the user's own remote UI shouldn't
-// need them, and a compromised remote can't use them either.
+// shell.openPath, installed-app scans, app relaunch, file dialogs, and the
+// global tray/dock snapshot are gated to local senders — even the user's
+// own remote UI shouldn't need them, and a compromised remote can't use
+// them either. The tray menu (including its approval rows) and the dock
+// badge are app-level surfaces; a remote page must not be able to forge
+// system-level approval prompts or route tray clicks onto another window's
+// active runtime.
 const isLocalSender = (webContents) => {
   try {
     const raw = typeof webContents?.getURL === 'function' ? webContents.getURL() : '';
@@ -4838,7 +4886,6 @@ const COMMANDS_SAFE_FOR_REMOTE = new Set([
   'desktop_get_app_version',
   'desktop_get_lan_address',
   'desktop_capture_page_rect',
-  'desktop_tray_update',
 ]);
 
 // Resolve which saved host (desktop host or SSH instance) the current page
@@ -4982,6 +5029,33 @@ const resolveTraySurface = () => {
   return null;
 };
 
+// Which runtime a window currently serves. Local windows re-push this whenever
+// their Active Runtime switches in place (desktop_set_runtime_config); host
+// windows keep the runtimeKey they were created with (`host:<id>`).
+const getWindowRuntimeIdentity = (browserWindow) => {
+  if (!browserWindow || browserWindow.isDestroyed()) return '';
+  const config = browserWindow.__ocRuntimeConfig;
+  if (typeof config?.runtimeKey === 'string' && config.runtimeKey) return config.runtimeKey;
+  if (typeof config?.desktopHostId === 'string' && config.desktopHostId) return `host:${config.desktopHostId}`;
+  return '';
+};
+
+// The tray snapshot reflects ONE runtime (the pushing window's active runtime,
+// recorded as state.lastTrayRuntimeKey). Route tray clicks to a window serving
+// that same runtime instead of whatever window happens to be focused — a
+// session id from runtime X must never be emitted into a window on Y. Falls
+// back to the caller's default target when no window matches.
+const resolveRuntimeMatchedWindow = (fallback) => {
+  const runtimeKey = state.lastTrayRuntimeKey || '';
+  if (runtimeKey) {
+    for (const browserWindow of BrowserWindow.getAllWindows()) {
+      if (browserWindow.isDestroyed()) continue;
+      if (getWindowRuntimeIdentity(browserWindow) === runtimeKey) return browserWindow;
+    }
+  }
+  return fallback();
+};
+
 const trayIconAssets = () => {
   const dir = path.join(resourceRoot(), 'icons', 'tray');
   const statusDir = path.join(dir, 'status');
@@ -5117,30 +5191,41 @@ const dispatchTrayAction = async (action) => {
     return;
   }
 
-  // Responding to a permission doesn't need to steal focus — just deliver it.
+  // Responding to a permission doesn't need to steal focus — just deliver it
+  // to a window serving the runtime the snapshot came from. Mini-chat windows
+  // are excluded: only the main window's renderer listens for tray-action.
   if (action.type === 'respond-permission') {
-    const target = (state.mainWindow && !state.mainWindow.isDestroyed())
-      ? state.mainWindow
-      : await revealMainWindow();
+    const matched = resolveRuntimeMatchedWindow(() => null);
+    const target = (matched && !matched.isDestroyed() && !matched.__ocMiniChat)
+      ? matched
+      : ((state.mainWindow && !state.mainWindow.isDestroyed()) ? state.mainWindow : null)
+        || await revealMainWindow();
+    if (!target || target.isDestroyed()) return;
     emitToWindow(target, 'openchamber:tray-action', action);
     return;
   }
 
   // Mini chat opens its own small window; we only need a renderer with context,
-  // not to surface the main window.
+  // not to surface the main window. Route to a window serving the snapshot's
+  // runtime so the new Mini Chat inherits the tray's runtime, not the focused
+  // window's.
   if (action.type === 'new-mini-chat') {
-    let target = getMenuTargetWindow();
+    let target = resolveRuntimeMatchedWindow(() => getMenuTargetWindow());
     if (!target) target = await revealMainWindow();
     dispatchOpenMiniChat(target);
     return;
   }
 
-  // Open a session on the surface the user was last on: if that's a mini-chat,
-  // switch THAT window to the session in place (no new window); otherwise use
-  // the main window.
+  // Open a session on the surface serving the snapshot's runtime: the surface
+  // the user was last on when it already serves that runtime (a mini-chat
+  // switches the session in place), else any window serving that runtime, else
+  // the main window. A session id from runtime X must never be emitted into a
+  // window serving runtime Y.
   if (action.type === 'focus-session') {
+    const runtimeKey = state.lastTrayRuntimeKey || '';
     const surface = resolveTraySurface();
-    if (surface && surface.__ocMiniChat === true && action.sessionId) {
+    const surfaceMatches = Boolean(surface && !surface.isDestroyed() && (!runtimeKey || getWindowRuntimeIdentity(surface) === runtimeKey));
+    if (surfaceMatches && surface.__ocMiniChat === true && action.sessionId) {
       if (surface.isMinimized()) surface.restore();
       surface.show();
       surface.focus();
@@ -5150,8 +5235,40 @@ const dispatchTrayAction = async (action) => {
       });
       return;
     }
+    if (surfaceMatches && surface.__ocMiniChat !== true) {
+      if (surface.isMinimized()) surface.restore();
+      surface.show();
+      surface.focus();
+      emitToWindow(surface, 'openchamber:open-session', {
+        sessionId: action.sessionId,
+        directory: action.directory || '',
+      });
+      return;
+    }
+    const matched = resolveRuntimeMatchedWindow(() => null);
+    if (matched && !matched.isDestroyed() && !matched.__ocMiniChat) {
+      if (matched.isMinimized()) matched.restore();
+      matched.show();
+      matched.focus();
+      emitToWindow(matched, 'openchamber:open-session', {
+        sessionId: action.sessionId,
+        directory: action.directory || '',
+      });
+      return;
+    }
     await focusMainWindowWithSession(action.sessionId, action.directory || '');
     return;
+  }
+
+  if (action.type === 'new-session') {
+    const matched = resolveRuntimeMatchedWindow(() => null);
+    if (matched && !matched.isDestroyed() && !matched.__ocMiniChat) {
+      if (matched.isMinimized()) matched.restore();
+      matched.show();
+      matched.focus();
+      emitToWindow(matched, 'openchamber:open-draft-session', { directory: '', projectId: '' });
+      return;
+    }
   }
 
   const target = await revealMainWindow();

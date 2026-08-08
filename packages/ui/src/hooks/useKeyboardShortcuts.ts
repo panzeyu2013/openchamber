@@ -8,7 +8,7 @@ import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { useCurrentSessionActivity } from '@/hooks/useSessionActivity';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { canUseElectronDesktopIPC, invokeDesktop, isVSCodeRuntime } from '@/lib/desktop';
+import { canUseElectronDesktopIPC, getDesktopRuntimeEndpointArgs, invokeDesktop, isVSCodeRuntime } from '@/lib/desktop';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
 import {
   eventMatchesShortcut,
@@ -296,6 +296,7 @@ export const useKeyboardShortcuts = () => {
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
           directory: currentDirectory || activeProject?.path || '',
           projectId: activeProject?.id ?? null,
+          ...getDesktopRuntimeEndpointArgs(),
         }).catch((error) => {
           console.warn('[keyboard-shortcuts] failed to open draft mini chat window', error);
         });

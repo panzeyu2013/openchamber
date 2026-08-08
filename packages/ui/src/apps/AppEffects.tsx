@@ -14,7 +14,9 @@ import { useFleetStore } from '@/fleet/fleet-store';
 import { useFleetSummaryStore } from '@/fleet/fleet-summary-store';
 import { FleetSummaryBridge } from '@/fleet/FleetSummaryBridge';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
-import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
+import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 
 const MINI_CHAT_PRESENCE_CHANNEL = 'openchamber:mini-chat-presence';
 
@@ -136,6 +138,32 @@ export function SyncRuntimeEffects({ embeddedBackgroundWorkEnabled }: {
   return <SyncOptimisticBridge />;
 }
 
+// Keeps the main process's per-window runtime config in sync with the
+// renderer's Active Runtime. switchRuntimeEndpoint only updates renderer-side
+// state; the main process needs the live runtimeKey to route tray clicks to a
+// window serving the SAME runtime. Gated to the desktop shell; the command
+// itself is local-sender-only in main.mjs.
+const DesktopRuntimeSyncBridge: React.FC = () => {
+  React.useEffect(() => {
+    if (!canUseElectronDesktopIPC()) return;
+
+    const push = () => {
+      void invokeDesktop('desktop_set_runtime_config', {
+        apiBaseUrl: getRuntimeApiBaseUrl(),
+        runtimeKey: getRuntimeKey(),
+        clientToken: getRuntimeBearerTokenSync(),
+        requestHeaders: getRuntimeExtraHeadersSync(),
+      }).catch(() => {});
+    };
+
+    push();
+    const unsubscribe = subscribeRuntimeEndpointChanged(push);
+    return unsubscribe;
+  }, []);
+
+  return null;
+};
+
 export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
@@ -147,6 +175,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
     <>
       <SyncRuntimeEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
       <MiniChatPresenceBridge />
+      <DesktopRuntimeSyncBridge />
       <FleetRegistryBridge />
       <FleetSummaryBridge />
     </>

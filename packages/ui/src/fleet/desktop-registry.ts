@@ -96,8 +96,7 @@ export const connectFleetSshServer = async (fleetServerId: string): Promise<bool
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const server = useFleetStore.getState().servers.get(fleetServerId);
     if (server?.descriptor.apiBaseUrl) {
-      useFleetStore.getState().activateServer(fleetServerId);
-      return true;
+      return useFleetStore.getState().probeAndActivateServer(fleetServerId);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }

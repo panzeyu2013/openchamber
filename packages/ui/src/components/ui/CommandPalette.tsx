@@ -37,7 +37,7 @@ import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { formatShortcutForDisplay, getEffectiveShortcutCombo } from '@/lib/shortcuts';
-import { canUseElectronDesktopIPC, invokeDesktop, isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
+import { canUseElectronDesktopIPC, getDesktopRuntimeEndpointArgs, invokeDesktop, isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
 import { SETTINGS_PAGE_METADATA, type SettingsRuntimeContext } from '@/lib/settings/metadata';
 
 const EMPTY_PINNED_SESSION_IDS = new Set<string>();
@@ -251,6 +251,7 @@ export const CommandPalette: React.FC = () => {
           void invokeDesktop('desktop_open_draft_mini_chat_window', {
             directory: normalizePath(currentDirectory || activeProject?.path || ''),
             projectId: activeProject?.id ?? null,
+            ...getDesktopRuntimeEndpointArgs(),
           }).catch((error) => {
             console.warn('[command-palette] failed to open draft mini chat window', error);
           });

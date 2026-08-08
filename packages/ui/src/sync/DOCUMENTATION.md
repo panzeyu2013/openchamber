@@ -29,15 +29,25 @@ in-memory observer for saved desktop hosts, not a second copy of the sync
 system:
 
 - `fleet-store.ts` owns the known host descriptors and chooses exactly one
-  **Active Runtime** through `runtime-switch.ts`.
+  **Active Runtime** through `runtime-switch.ts`. Activation validates an
+  unverified server with the same probe the Host Switcher uses (direct HTTP or
+  the E2EE relay) and never switches the Active Runtime or clears Fleet
+  transient state when the probe fails; rows the observation loop already
+  verified switch without a probe.
 - `fleet-summary-store.ts` retains only summary rows (session ID, title,
   directory, update time) under the composite `serverId\0sessionId` key.
+  Fetches that return exactly the server limit are marked `truncated` — the
+  API exposes no total, so UI must never render an exact "N more" derived from
+  the returned list length.
 - `fleet-live-store.ts` retains only activity plus pending
   permission/question booleans. A narrow per-inactive-host SSE subscription
-  updates those values. Session create/update/delete events trigger a targeted
-  summary reconciliation; no messages, parts, or permission payloads enter
-  Fleet. When that server becomes Active Runtime, its transient Fleet index is
-  cleared before the normal runtime bootstrap takes authority.
+  updates those values. Only session create/delete events trigger a targeted
+  summary reconciliation — `session.updated` fires on every recency change
+  while the remote works, so reconciling on it would starve the poll loop; the
+  periodic refresh picks up title/archive changes instead. No messages, parts,
+  or permission payloads enter Fleet. When that server becomes Active Runtime,
+  its transient Fleet index is cleared before the normal runtime bootstrap
+  takes authority.
 - Switching/opening a Fleet session first changes Active Runtime, then uses the
   normal `session-ui-store` selection path. Active Runtime bootstrap remains
   the sole authority for full session data.

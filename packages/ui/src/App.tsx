@@ -18,7 +18,7 @@ import { usePwaInstallPrompt } from '@/hooks/usePwaInstallPrompt';
 import { useWindowTitle } from '@/hooks/useWindowTitle';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { hasModifier } from '@/lib/utils';
-import { isDesktopLocalOriginActive, isDesktopShell, restartDesktopApp, invokeDesktop } from '@/lib/desktop';
+import { getDesktopRuntimeEndpointArgs, isDesktopLocalOriginActive, isDesktopShell, restartDesktopApp, invokeDesktop } from '@/lib/desktop';
 import {
   getInjectedBootOutcome,
   getBootInjectionStatus,
@@ -624,6 +624,11 @@ function App({ apis }: AppProps) {
       void invokeDesktop('desktop_open_draft_mini_chat_window', {
         directory: currentDir || activeProject?.path || '',
         projectId: activeProject?.id ?? null,
+        ...getDesktopRuntimeEndpointArgs(),
+      }).catch((error) => {
+        // Remote-origin windows are not allowed to open Mini Chat windows;
+        // the main process rejects the command there.
+        console.warn('[app] failed to open draft mini chat window', error);
       });
     };
     window.addEventListener('openchamber:open-mini-chat', onOpenMiniChat);

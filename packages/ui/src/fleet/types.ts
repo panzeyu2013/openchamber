@@ -63,4 +63,9 @@ export type FleetServerSummary = {
   complete: boolean;
   refreshedAt?: number;
   errorMessage?: string;
+  /**
+   * True when the summary fetch returned exactly the server's limit, so the
+   * list may not cover every session. Never rendered as an exact count.
+   */
+  truncated?: boolean;
 };

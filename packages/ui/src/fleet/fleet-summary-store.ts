@@ -3,7 +3,7 @@ import { fleetSessionKey, type FleetServerSummary, type FleetSessionSummary } fr
 
 type FleetSummaryState = {
   servers: Map<string, FleetServerSummary>;
-  replaceServerSummary: (serverId: string, sessions: FleetSessionSummary[], refreshedAt?: number) => void;
+  replaceServerSummary: (serverId: string, sessions: FleetSessionSummary[], refreshedAt?: number, truncated?: boolean) => void;
   markServerFailed: (serverId: string, errorMessage: string) => void;
   removeSession: (serverId: string, sessionId: string) => void;
   removeServer: (serverId: string) => void;
@@ -27,16 +27,16 @@ const summariesEqual = (left: Map<string, FleetSessionSummary>, right: Map<strin
  */
 export const useFleetSummaryStore = create<FleetSummaryState>()((set) => ({
   servers: new Map(),
-  replaceServerSummary: (serverId, sessions, refreshedAt = Date.now()) => set((state) => {
+  replaceServerSummary: (serverId, sessions, refreshedAt = Date.now(), truncated = false) => set((state) => {
     const nextSessions = new Map(sessions.map((session) => [fleetSessionKey(serverId, session.sessionId), session]));
     const previous = state.servers.get(serverId);
-    if (previous && previous.complete && !previous.errorMessage && summariesEqual(previous.sessions, nextSessions)) {
+    if (previous && previous.complete && !previous.errorMessage && previous.truncated === truncated && summariesEqual(previous.sessions, nextSessions)) {
       const servers = new Map(state.servers);
       servers.set(serverId, { ...previous, refreshedAt });
       return { servers };
     }
     const servers = new Map(state.servers);
-    servers.set(serverId, { serverId, sessions: nextSessions, complete: true, refreshedAt });
+    servers.set(serverId, { serverId, sessions: nextSessions, complete: true, truncated, refreshedAt });
     return { servers };
   }),
   markServerFailed: (serverId, errorMessage) => set((state) => {

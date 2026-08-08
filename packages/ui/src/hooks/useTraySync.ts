@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive } from '@/lib/desktop';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { getSyncChildStores, getAllSyncSessions } from '@/sync/sync-refs';
 import { opencodeClient } from '@/lib/opencode/client';
@@ -79,6 +79,9 @@ type TraySnapshot = {
   // Active instance label (e.g. "Local OpenChamber" or a remote host name) so
   // the tray header makes clear which instance/window it reflects.
   instanceName: string;
+  // Runtime identity the snapshot reflects, so the main process can route
+  // tray clicks to a window serving the SAME runtime (never another one).
+  runtimeKey: string;
   // Provider rate-limit usage, only for providers the user enabled for the
   // dropdown (same "configured to show" rule as the header/mobile). Empty
   // groups → the tray omits the Usage submenu entirely.
@@ -424,7 +427,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     }
   }
 
-  return { sessions, approvals, instanceName, usage: buildUsage(), dockBadgeCount };
+  return { sessions, approvals, instanceName, runtimeKey: getRuntimeKey(), usage: buildUsage(), dockBadgeCount };
 };
 
 export const useTraySync = (): void => {
@@ -443,7 +446,10 @@ export const useTraySync = (): void => {
       const serialized = JSON.stringify(snapshot);
       if (serialized === lastSerialized) return;
       lastSerialized = serialized;
-      void invokeDesktop('desktop_tray_update', snapshot);
+      // Best-effort push. The main process gates desktop_tray_update to local
+      // senders: a remote window's snapshot is rejected there, and the tray
+      // keeps showing the last local window's state instead.
+      void invokeDesktop('desktop_tray_update', snapshot).catch(() => {});
     };
 
     void resolveInstanceName().then((name) => {

@@ -4,6 +4,11 @@ import type { FleetRuntimeDescriptor, FleetSessionSummary } from './types';
 
 const SUMMARY_LIMIT = 100;
 
+// A stream that stayed up this long is healthy; shorter-lived connections
+// count as failures so a connect/EOF loop keeps backing off instead of
+// reconnecting at full frequency forever.
+const HEALTHY_STREAM_MS = 30_000;
+
 const describeError = (value: unknown): string => {
   if (value instanceof Error) return value.message;
   if (typeof value === 'string') return value;
@@ -40,6 +45,12 @@ const createTransportFetch = (descriptor: FleetRuntimeDescriptor, tunnel: RelayT
 type SummaryResult = {
   sessions: FleetSessionSummary[];
   status: Record<string, unknown>;
+  /**
+   * True when the server returned exactly the summary limit, which means
+   * sessions may exist beyond it. The API exposes no total, so callers must
+   * never render an exact "N more" derived from the returned list length.
+   */
+  truncated: boolean;
 };
 
 export type FleetLiveEvent = {
@@ -110,13 +121,15 @@ export class FleetSummaryTransport {
       updatedAt: session.time.updated,
       archived: Boolean(session.time.archived),
     }));
-    return { sessions, status: statusResult.data as Record<string, unknown> };
+    return { sessions, status: statusResult.data as Record<string, unknown>, truncated: sessions.length >= SUMMARY_LIMIT };
   }
 
   /**
    * A narrow SSE observer for an inactive server. It intentionally handles
    * only sidebar-liveness fields and never forwards message/part payloads into
-   * Fleet memory. Reconnect pacing mirrors the background-friendly transport.
+   * Fleet memory. Reconnect pacing mirrors the background-friendly transport:
+   * delay grows with consecutive failures (EOF counts as a failure) and only
+   * a stream that stayed up long enough resets the backoff.
    */
   observeServer(
     serverId: string,
@@ -126,26 +139,31 @@ export class FleetSummaryTransport {
   ): () => void {
     const abort = new AbortController();
     const client = this.createClient(serverId, descriptor, abort.signal);
-    let retryDelayMs = 1_000;
+    let consecutiveFailures = 0;
     const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
     void (async () => {
       while (!abort.signal.aborted) {
+        const acquiredAt = Date.now();
         try {
           const stream = await client.global.event({ signal: abort.signal });
-          retryDelayMs = 1_000;
           for await (const raw of stream.stream) {
             if (abort.signal.aborted) return;
             const event = parseFleetLiveEvent(raw);
             if (event) onEvent(event);
           }
+          // A normal EOF is still a disconnect: the server closed the stream,
+          // so liveness is stale and the next attempt must back off.
+          if (abort.signal.aborted) return;
         } catch {
           if (abort.signal.aborted) return;
-          onDisconnected();
         }
-        if (abort.signal.aborted) return;
+        onDisconnected();
+        // Only a genuinely healthy stream (long enough to outlive brief
+        // churn) resets the backoff; short connect/EOF loops keep growing it.
+        consecutiveFailures = Date.now() - acquiredAt >= HEALTHY_STREAM_MS ? 0 : consecutiveFailures + 1;
         const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-        await wait(hidden ? Math.min(retryDelayMs, 60_000) : Math.min(retryDelayMs, 10_000));
-        retryDelayMs = Math.min(retryDelayMs * 2, 60_000);
+        const baseDelay = Math.min(1_000 * (2 ** consecutiveFailures), 60_000);
+        await wait(hidden ? baseDelay : Math.min(baseDelay, 10_000));
       }
     })();
     return () => abort.abort();

@@ -1,6 +1,6 @@
 import React from 'react';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
-import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
+import { canUseElectronDesktopIPC, getDesktopRuntimeEndpointArgs, invokeDesktop } from '@/lib/desktop';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
@@ -30,6 +30,7 @@ export const useMiniChatKeyboardShortcuts = () => {
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
           directory: currentDirectory || activeProject?.path || '',
           projectId: activeProject?.id ?? null,
+          ...getDesktopRuntimeEndpointArgs(),
         })?.catch((error) => {
           console.warn('[mini-chat-shortcuts] failed to open draft mini chat window', error);
         });

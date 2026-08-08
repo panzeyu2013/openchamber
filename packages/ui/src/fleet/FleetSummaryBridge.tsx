@@ -6,6 +6,9 @@ import { FleetSummaryTransport } from './fleet-summary-transport';
 
 const FOREGROUND_REFRESH_MS = 5_000;
 const BACKGROUND_REFRESH_MS = 30_000;
+// Bounded pool for the first/restore sweep: one server's summary fetch must
+// never be able to hang the sweep for every other server behind it.
+const MAX_CONCURRENT_REFRESHES = 4;
 
 const toErrorMessage = (value: unknown): string => value instanceof Error ? value.message : 'fleet summary request failed';
 
@@ -55,7 +58,12 @@ export const FleetSummaryBridge: React.FC = () => {
                 hasPendingQuestion: event.hasPendingQuestion ?? previous?.hasPendingQuestion ?? false,
               });
             }
-            if (event.structural) {
+            // Only create/delete reconcile the summary snapshot. session.updated
+            // fires on every recency/status change while the remote works; a
+            // refresh on each would starve the 250ms debounce and re-run the
+            // full poll forever. The poll itself still picks up title/archive
+            // changes on its next cycle.
+            if (event.structural === 'created' || event.structural === 'deleted') {
               const previousTimer = structuralRefreshTimers.get(serverId);
               if (previousTimer) clearTimeout(previousTimer);
               structuralRefreshTimers.set(serverId, setTimeout(() => {
@@ -89,7 +97,8 @@ export const FleetSummaryBridge: React.FC = () => {
         && Boolean(server.descriptor.apiBaseUrl)
         && (!onlyServerId || server.id === onlyServerId)
       ));
-      await Promise.all(inactive.map(async (server) => {
+      let nextServerIndex = 0;
+      const refreshServer = async (server: typeof inactive[number]) => {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 8_000);
         try {
@@ -101,7 +110,7 @@ export const FleetSummaryBridge: React.FC = () => {
           }
           const result = await transport.fetchServerSummary(server.id, server.descriptor, controller.signal);
           if (stopped) return;
-          useFleetSummaryStore.getState().replaceServerSummary(server.id, result.sessions);
+          useFleetSummaryStore.getState().replaceServerSummary(server.id, result.sessions, Date.now(), result.truncated);
           const now = Date.now();
           const liveById = useFleetLiveStore.getState().sessions;
           const seenSessionIds = new Set(result.sessions.map((session) => session.sessionId));
@@ -142,6 +151,15 @@ export const FleetSummaryBridge: React.FC = () => {
           }
         } finally {
           clearTimeout(timeout);
+        }
+      };
+      // Bounded concurrency: at most MAX_CONCURRENT_REFRESHES summaries in
+      // flight, so one slow or hung server can't monopolize the sweep.
+      await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENT_REFRESHES, inactive.length) }, async () => {
+        while (nextServerIndex < inactive.length) {
+          const server = inactive[nextServerIndex];
+          nextServerIndex += 1;
+          await refreshServer(server);
         }
       }));
       refreshing = false;

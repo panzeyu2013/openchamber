@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
 import { useFleetLiveStore } from './fleet-live-store';
+import { probeFleetServer } from './fleet-probe';
 import type { FleetServer, FleetServerStatus } from './types';
 
 type FleetState = {
@@ -10,7 +11,7 @@ type FleetState = {
   replaceServers: (servers: FleetServer[]) => void;
   removeServer: (serverId: string) => void;
   updateServerStatus: (serverId: string, status: FleetServerStatus, errorMessage?: string) => void;
-  activateServer: (serverId: string) => boolean;
+  probeAndActivateServer: (serverId: string) => Promise<boolean>;
   syncActiveServer: () => void;
 };
 
@@ -73,11 +74,46 @@ export const useFleetStore = create<FleetState>()((set, get) => ({
     });
     return { servers };
   }),
-  activateServer: (serverId) => {
+  /**
+   * Activates a Fleet server as the single Active Runtime, with the same
+   * validation the Host Switcher applies before a switch: an unverified
+   * server is probed (direct HTTP or the E2EE relay) and the runtime is only
+   * switched on a usable result. A failed probe leaves the current runtime
+   * and the target server's transient Fleet state fully intact — no switch,
+   * no snapshot clearing — and marks the server failed so the sidebar shows
+   * why. Rows the observation loop already verified (status 'connected') take
+   * the fast path, matching the Host Switcher's cached-ok behavior.
+   */
+  probeAndActivateServer: async (serverId) => {
     const server = get().servers.get(serverId);
     if (!server) return false;
-    if (getRuntimeKey() !== server.descriptor.runtimeKey) {
-      switchRuntimeEndpoint(server.descriptor);
+    if (get().activeServerId === serverId) return true;
+    if (server.status === 'connecting') return false;
+
+    if (server.status !== 'connected') {
+      get().updateServerStatus(serverId, 'connecting');
+      const probe = await probeFleetServer(server).catch(() => null);
+      const current = get().servers.get(serverId);
+      if (!current) return false;
+      if (!probe) {
+        get().updateServerStatus(serverId, 'error', 'Unable to verify the server');
+        return false;
+      }
+      if (probe.status === 'unreachable' || probe.status === 'wrong-service' || probe.status === 'incompatible') {
+        get().updateServerStatus(serverId, 'error', probe.status === 'unreachable'
+          ? 'Host is unreachable'
+          : (probe.status === 'wrong-service' ? 'Endpoint is not an OpenChamber server' : 'Server version is incompatible'));
+        return false;
+      }
+      // Reachable and authenticated (or auth-gated, which the session auth
+      // gate resolves after the switch) — mark connected and proceed.
+      get().updateServerStatus(serverId, 'connected');
+    }
+
+    const verified = get().servers.get(serverId);
+    if (!verified) return false;
+    if (getRuntimeKey() !== verified.descriptor.runtimeKey) {
+      switchRuntimeEndpoint(verified.descriptor);
     }
     // The active runtime immediately becomes the only full synchronization
     // authority. Its former Fleet hint must not survive as a competing status.

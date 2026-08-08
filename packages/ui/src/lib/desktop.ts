@@ -3,6 +3,7 @@ import { getInjectedBootOutcome } from '@/lib/desktopBoot';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 
 type ManagedRemoteTunnelPreset = {
@@ -313,6 +314,23 @@ export const invokeDesktop = async <T = unknown>(command: string, args?: Record<
   if (typeof bridge?.invoke !== 'function') return null;
   return bridge.invoke(command, args ?? {}) as Promise<T>;
 };
+
+/**
+ * The current Active Runtime's endpoint credentials, read at call time for a
+ * new desktop window (e.g. Mini Chat). Runtime switching only updates the
+ * renderer's in-memory runtime; the main process's per-window config stays at
+ * its creation-time value, so window-opening commands must carry the live
+ * endpoint, bearer token, and custom request headers explicitly.
+ */
+export const getDesktopRuntimeEndpointArgs = (): {
+  apiBaseUrl: string;
+  clientToken: string;
+  requestHeaders: Record<string, string>;
+} => ({
+  apiBaseUrl: getRuntimeApiBaseUrl(),
+  clientToken: getRuntimeBearerTokenSync(),
+  requestHeaders: getRuntimeExtraHeadersSync(),
+});
 
 type LaunchAtLoginStatus = {
   supported: boolean;

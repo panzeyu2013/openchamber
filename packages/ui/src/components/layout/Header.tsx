@@ -68,12 +68,11 @@ import { OpenInAppButton } from '@/components/desktop/OpenInAppButton';
 import { useTerminalStore } from '@/stores/useTerminalStore';
 import { ProjectActionsButton } from '@/components/layout/ProjectActionsButton';
 import { SessionSwitcherDropdown } from '@/components/session/SessionSwitcherDropdown';
-import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, startDesktopWindowDrag, type UpdateInfo } from '@/lib/desktop';
+import { canUseElectronDesktopIPC, getDesktopRuntimeEndpointArgs, invokeDesktop, isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, startDesktopWindowDrag, type UpdateInfo } from '@/lib/desktop';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeBearerTokenSync } from '@/lib/runtime-auth';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { useShallow } from 'zustand/react/shallow';
 import type { IconName } from "@/components/icon/icons";
@@ -1644,8 +1643,7 @@ export const Header: React.FC<HeaderProps> = ({
     void invokeDesktop('desktop_open_draft_mini_chat_window', {
       directory: normalize(openDirectory || activeProject?.path || ''),
       projectId: activeProject?.id ?? null,
-      apiBaseUrl: getRuntimeApiBaseUrl(),
-      clientToken: getRuntimeBearerTokenSync(),
+      ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[header] failed to open draft mini chat window', error);
     });
@@ -1663,8 +1661,7 @@ export const Header: React.FC<HeaderProps> = ({
     void invokeDesktop('desktop_open_session_mini_chat_window', {
       sessionId: currentSessionId,
       directory: normalize(openDirectory || activeProject?.path || ''),
-      apiBaseUrl: getRuntimeApiBaseUrl(),
-      clientToken: getRuntimeBearerTokenSync(),
+      ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[header] failed to open session mini chat window', error);
     });

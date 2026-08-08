@@ -56,4 +56,21 @@ describe('Fleet summary snapshots', () => {
 
     expect([...useFleetSummaryStore.getState().servers.get('desktop:alpha')?.sessions.values() ?? []].map((session) => session.sessionId)).toEqual(['ses_2']);
   });
+
+  test('records truncation when the server may hold sessions beyond the limit', () => {
+    useFleetSummaryStore.getState().replaceServerSummary('desktop:alpha', [
+      { serverId: 'desktop:alpha', sessionId: 'ses_1', title: 'One', directory: '/one', updatedAt: 100, archived: false },
+    ], 100, true);
+
+    expect(useFleetSummaryStore.getState().servers.get('desktop:alpha')?.truncated).toBe(true);
+
+    // A later fetch that proves the list is complete clears the flag.
+    useFleetSummaryStore.getState().replaceServerSummary('desktop:alpha', [
+      { serverId: 'desktop:alpha', sessionId: 'ses_1', title: 'One', directory: '/one', updatedAt: 100, archived: false },
+    ], 200, false);
+
+    const summary = useFleetSummaryStore.getState().servers.get('desktop:alpha');
+    expect(summary?.truncated).toBe(false);
+    expect(summary?.refreshedAt).toBe(200);
+  });
 });
