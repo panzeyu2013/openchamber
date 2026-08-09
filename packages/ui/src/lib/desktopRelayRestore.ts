@@ -1,7 +1,8 @@
 import { isElectronShell } from '@/lib/desktop';
-import { desktopHostProbe, desktopHostsGet, desktopHostsSet, getDesktopHostApiUrl, normalizeHostUrl } from '@/lib/desktopHosts';
+import { desktopHostProbe, desktopHostsGet, desktopHostsSet, desktopLocalClientTokenGet, getDesktopHostApiUrl, normalizeHostUrl } from '@/lib/desktopHosts';
+import { getActiveRelayTunnel } from '@/lib/relay/runtime-tunnel';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
 
 // Let the post-switch bootstrap traffic settle before the background refresh.
 const CANDIDATE_REFRESH_DELAY_MS = 5_000;
@@ -11,7 +12,34 @@ const CANDIDATE_REFRESH_DELAY_MS = 5_000;
 // longer stalls startup for the probe's full timeout.
 const DIRECT_PROBE_HEADSTART_MS = 1_500;
 
-let candidateRefreshInFlight = false;
+const candidateRefreshInFlight = new Set<string>();
+
+const runtimeOrigin = (value: string | null): string => {
+  if (!value) return '';
+  try {
+    return new URL(value).origin;
+  } catch {
+    return '';
+  }
+};
+
+export const desktopHostRuntimeNeedsRestore = ({
+  activeRuntimeKey,
+  targetRuntimeKey,
+  activeApiBaseUrl,
+  directUrl,
+  relayActive,
+}: {
+  activeRuntimeKey: string;
+  targetRuntimeKey: string;
+  activeApiBaseUrl: string;
+  directUrl: string | null;
+  relayActive: boolean;
+}): boolean => {
+  if (activeRuntimeKey !== targetRuntimeKey) return true;
+  if (relayActive) return false;
+  return !directUrl || runtimeOrigin(activeApiBaseUrl) !== runtimeOrigin(directUrl);
+};
 
 /**
  * Background candidate refresh for a relay-connected desktop host: ask the
@@ -28,13 +56,13 @@ let candidateRefreshInFlight = false;
  * (stable tunnel hostname) is never overwritten: the DHCP problem does not apply
  * to it and the server does not know its own public hostnames.
  */
-export const refreshDesktopHostCandidates = async (hostId: string): Promise<void> => {
-  if (!isElectronShell() || candidateRefreshInFlight) return;
+const refreshDesktopHostCandidates = async (hostId: string): Promise<void> => {
+  if (!isElectronShell() || candidateRefreshInFlight.has(hostId)) return;
   const runtimeKey = `host:${hostId}`;
   // The candidates fetch rides the active runtime's transport — only meaningful
   // while this host IS the active runtime.
   if (getRuntimeKey() !== runtimeKey) return;
-  candidateRefreshInFlight = true;
+  candidateRefreshInFlight.add(hostId);
   try {
     const config = await desktopHostsGet().catch(() => null);
     const host = config?.hosts.find((entry) => entry.id === hostId);
@@ -87,7 +115,7 @@ export const refreshDesktopHostCandidates = async (hostId: string): Promise<void
       runtimeKey,
     });
   } finally {
-    candidateRefreshInFlight = false;
+    candidateRefreshInFlight.delete(hostId);
   }
 };
 
@@ -100,13 +128,14 @@ export const scheduleDesktopHostCandidateRefresh = (hostId: string): void => {
 };
 
 /**
- * On desktop startup, reconnect a relay-capable default host. The Electron
+ * On desktop startup/reload, restore the selected desktop host. The Electron
  * shell boots the LOCAL UI for any host that carries a relay leg and defers
  * transport selection to the renderer: here we probe the direct address first
  * (cheap, preferred on the home network) and fall back to the E2EE tunnel via
  * switchRuntimeEndpoint({ relay }) — the multi-transport model mobile uses.
- * Direct-only hosts never reach this path (the shell injects their
- * apiBaseUrl/token as window globals before render).
+ * Direct-only hosts normally receive their endpoint in preload; restoring them
+ * here also repairs reloads after an in-renderer host switch, because Chromium
+ * additionalArguments are immutable for the lifetime of a window.
  *
  * Safe to call unconditionally; it is a no-op outside the Electron shell and when
  * the default host is local or already active.
@@ -117,13 +146,49 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
   if (!config) return;
   // An explicit target (a "new window for host X") wins over the default-host
   // relaunch logic.
-  const hostId = targetHostId || (config.defaultHostId !== 'local' ? config.defaultHostId : null);
+  const explicitHostId = targetHostId?.trim() || '';
+  const hostId = explicitHostId || (config.defaultHostId !== 'local' ? config.defaultHostId : null);
   if (!hostId) return;
+  if (hostId === 'local') {
+    const localOrigin = normalizeHostUrl(config.localOrigin || '');
+    if (localOrigin && (getRuntimeKey() !== 'local' || runtimeOrigin(getRuntimeApiBaseUrl()) !== runtimeOrigin(localOrigin))) {
+      const clientToken = await desktopLocalClientTokenGet().catch(() => '');
+      switchRuntimeEndpoint({ apiBaseUrl: localOrigin, clientToken: clientToken || null, runtimeKey: 'local' });
+    }
+    return;
+  }
   const host = config.hosts.find((entry) => entry.id === hostId);
-  if (!host?.relay) return;
-  // Must match runtimeKeyForHost() in DesktopHostSwitcher so switch/resolve agree.
+  if (!host) return;
   const runtimeKey = `host:${host.id}`;
-  if (getRuntimeKey() === runtimeKey) return;
+  const directUrl = host.apiUrl ? normalizeHostUrl(getDesktopHostApiUrl(host)) : null;
+  if (!desktopHostRuntimeNeedsRestore({
+    activeRuntimeKey: getRuntimeKey(),
+    targetRuntimeKey: runtimeKey,
+    activeApiBaseUrl: getRuntimeApiBaseUrl(),
+    directUrl,
+    relayActive: Boolean(getActiveRelayTunnel()),
+  })) return;
+
+  if (!host.relay) {
+    // Default direct hosts are already probed and injected by Electron boot.
+    // Only an explicit per-window identity needs reload repair here.
+    if (!explicitHostId) return;
+    if (!directUrl) return;
+    switchRuntimeEndpoint({
+      apiBaseUrl: directUrl,
+      clientToken: host.clientToken || null,
+      requestHeaders: host.requestHeaders || null,
+      runtimeKey,
+    });
+    return;
+  }
+  let cancelled = false;
+  const unsubscribeRuntime = subscribeRuntimeEndpointChanged((detail) => {
+    // A user-selected runtime change wins over this startup probe. Our own
+    // switch to the target host is allowed and late direct adoption below is
+    // additionally guarded by the stable runtime key.
+    if (detail.runtimeKey !== runtimeKey) cancelled = true;
+  });
 
   const switchToDirect = (url: string) => {
     switchRuntimeEndpoint({
@@ -146,9 +211,9 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
     scheduleDesktopHostCandidateRefresh(host.id);
   };
 
-  const directUrl = host.apiUrl ? normalizeHostUrl(getDesktopHostApiUrl(host)) : null;
   if (!directUrl) {
-    switchToRelay();
+    if (!cancelled) switchToRelay();
+    unsubscribeRuntime();
     return;
   }
 
@@ -171,18 +236,25 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
     probePromise,
     new Promise<null>((resolve) => setTimeout(() => resolve(null), DIRECT_PROBE_HEADSTART_MS)),
   ]);
+  if (cancelled) {
+    unsubscribeRuntime();
+    return;
+  }
   if (winner) {
     if (probeOk(winner)) {
       switchToDirect(directUrl);
+      unsubscribeRuntime();
       return;
     }
     switchToRelay();
+    unsubscribeRuntime();
     return;
   }
 
   // Headstart expired: connect via relay now; adopt the direct transport if the
   // still-running probe succeeds a moment later.
   switchToRelay();
+  unsubscribeRuntime();
   void probePromise.then((probe) => {
     if (!probeOk(probe)) return;
     if (getRuntimeKey() !== runtimeKey) return; // user switched away meanwhile

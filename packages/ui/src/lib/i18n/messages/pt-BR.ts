@@ -13,6 +13,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.fleet.openSession': 'Abrir {title} em {server}',
   'sessions.fleet.stale': 'Desatualizado',
   'sessions.fleet.unavailable': 'Não foi possível atualizar o último estado',
+  'sessions.fleet.questionRequired': 'Resposta necessária',
+  'sessions.fleet.moreAvailable': 'Há mais sessões disponíveis',
   'terminalView.actions.attachSelection': 'Anexar saída selecionada',
   'terminalView.actions.restart': 'Reiniciar terminal',
   'chat.message.terminalContext': '{terminal}, linhas {start}-{end}',

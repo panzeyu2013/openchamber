@@ -13,6 +13,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.fleet.openSession': '{server}에서 {title} 열기',
   'sessions.fleet.stale': '오래됨',
   'sessions.fleet.unavailable': '마지막 상태를 새로 고칠 수 없습니다',
+  'sessions.fleet.questionRequired': '답변이 필요합니다',
+  'sessions.fleet.moreAvailable': '더 많은 세션이 있습니다',
   'terminalView.actions.attachSelection': '선택한 출력 첨부',
   'terminalView.actions.restart': '터미널 다시 시작',
   'chat.message.terminalContext': '{terminal}, {start}-{end}행',

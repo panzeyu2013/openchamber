@@ -143,7 +143,7 @@ export const useFleetStore = create<FleetState>()((set, get) => ({
     }
     // The active runtime immediately becomes the only full synchronization
     // authority. Its former Fleet hint must not survive as a competing status.
-    useFleetLiveStore.getState().clearServer(serverId);
+    useFleetLiveStore.getState().removeServer(serverId);
     set((state) => state.activeServerId === serverId ? state : { activeServerId: serverId });
     return true;
   },

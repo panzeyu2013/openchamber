@@ -32,13 +32,26 @@ const sanitizeDesktopHostId = (value) => {
 
 const readDesktopHostId = () => {
   try {
-    return sanitizeDesktopHostId(ipcRenderer.sendSync('openchamber:get-desktop-host-id'));
+    return { resolved: true, id: sanitizeDesktopHostId(ipcRenderer.sendSync('openchamber:get-desktop-host-id')) };
   } catch {
-    return '';
+    return { resolved: false, id: '' };
   }
 };
 
-const desktopHostId = readDesktopHostId() || sanitizeDesktopHostId(readArgValue('--openchamber-desktop-host-id'));
+const desktopHostIdentity = readDesktopHostId();
+const desktopHostId = desktopHostIdentity.resolved
+  ? desktopHostIdentity.id
+  : sanitizeDesktopHostId(readArgValue('--openchamber-desktop-host-id'));
+
+const readDesktopLocalUi = () => {
+  try {
+    return ipcRenderer.sendSync('openchamber:is-local-desktop-page') === true;
+  } catch {
+    return false;
+  }
+};
+
+const isTrustedDesktopLocalUi = readDesktopLocalUi();
 
 // Preload re-executes on every cross-origin navigation (we run with
 // sandbox:false, per-document). Two separate concerns to balance:
@@ -60,7 +73,8 @@ const currentOrigin = (() => {
 })();
 const isLocalPage = currentOrigin !== 'null'
   && (currentOrigin === `${uiProtocol}://app`
-  || (localOrigin && currentOrigin === localOrigin));
+  || (localOrigin && currentOrigin === localOrigin)
+  || isTrustedDesktopLocalUi);
 
 const sameOrigin = (left, right) => {
   if (!left || !right) return false;
@@ -108,6 +122,10 @@ if (desktopHostId) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_DESKTOP_HOST_ID__', desktopHostId);
 }
 
+if (isTrustedDesktopLocalUi) {
+  contextBridge.exposeInMainWorld('__OPENCHAMBER_DESKTOP_LOCAL_UI__', true);
+}
+
 if (clientToken && isLocalPage) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_CLIENT_TOKEN__', clientToken);
 }
@@ -115,7 +133,17 @@ if (clientToken && isLocalPage) {
 // Which saved host this window should connect to over the relay-capable path
 // (direct probe first, E2EE tunnel fallback). Local pages only — the id is
 // only useful together with the desktop IPC channel anyway.
-const relayHostId = readArgValue('--openchamber-relay-host-id');
+const readDesktopRelayHostId = () => {
+  try {
+    return { resolved: true, id: sanitizeDesktopHostId(ipcRenderer.sendSync('openchamber:get-desktop-relay-host-id')) };
+  } catch {
+    return { resolved: false, id: '' };
+  }
+};
+const desktopRelayHostIdentity = readDesktopRelayHostId();
+const relayHostId = desktopRelayHostIdentity.resolved
+  ? desktopRelayHostIdentity.id
+  : sanitizeDesktopHostId(readArgValue('--openchamber-relay-host-id'));
 if (relayHostId && isLocalPage) {
   contextBridge.exposeInMainWorld('__OPENCHAMBER_RELAY_HOST_ID__', relayHostId);
 }
@@ -209,9 +237,16 @@ const setVibrancyReady = (ready) => {
   }
 };
 
-// Main-process events are read-only notifications (update progress,
-// window focus, etc.) — safe to deliver to any page rendered in this
-// webContents. The events themselves don't grant capability.
+// Most main-process events contain local paths, saved-host state, installed
+// apps, or SSH tunnel metadata. Remote documents get only presentation and
+// lifecycle signals with no machine-specific payload.
+const REMOTE_SAFE_NATIVE_EVENTS = new Set([
+  'openchamber:vibrancy-ready',
+  'openchamber:update-progress',
+  'openchamber:window-maximized-changed',
+  'openchamber:system-resume',
+]);
+
 ipcRenderer.on('openchamber:emit', (_evt, payload) => {
   if (!payload || typeof payload !== 'object') {
     return;
@@ -219,6 +254,9 @@ ipcRenderer.on('openchamber:emit', (_evt, payload) => {
 
   const event = typeof payload.event === 'string' ? payload.event : '';
   if (!event) {
+    return;
+  }
+  if (!isLocalPage && !REMOTE_SAFE_NATIVE_EVENTS.has(event)) {
     return;
   }
 

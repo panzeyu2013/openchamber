@@ -98,7 +98,10 @@ describe('desktop host runtime headers', () => {
         hosts: [{ id: 'remote-1', label: 'Remote', url: 'https://remote.example', requestHeaders }],
         defaultHostId: 'remote-1',
       });
-      const probe = await desktopHostProbe('https://remote.example', { requestHeaders });
+      const probe = await desktopHostProbe('https://remote.example', {
+        requestHeaders,
+        expectedServerId: 'server-1',
+      });
       expect(probe).toEqual({ status: 'ok', latencyMs: 7 });
     });
 
@@ -117,6 +120,7 @@ describe('desktop host runtime headers', () => {
       args: {
         url: 'https://remote.example',
         requestHeaders: { 'CF-Access-Client-Id': 'client-id' },
+        expectedServerId: 'server-1',
       },
     });
   });

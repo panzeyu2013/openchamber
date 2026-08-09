@@ -15,6 +15,7 @@ import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { resolveStartupUrlProbePlan, shouldIgnoreLoopbackConnectionLimit } from './startup-url-selection.mjs';
 import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
+import { probeServerIdentityMatches } from './ipc-security.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterChannel } from './updater-channel.mjs';
@@ -681,7 +682,9 @@ const buildRendererRuntimeConfig = (uiUrl, runtimeConfig = {}) => {
   // live runtimeKey through `desktop_set_runtime_config` whenever its Active
   // Runtime changes in place; host windows keep the creation-time host key
   // (they cannot update it: the command is gated to local senders).
-  const runtimeKey = desktopHostId ? `host:${desktopHostId}` : '';
+  const runtimeKey = desktopHostId === LOCAL_HOST_ID
+    ? LOCAL_HOST_ID
+    : desktopHostId ? `host:${desktopHostId}` : '';
   if (shouldUseSameOriginDevProxy(uiUrl, apiBaseUrl)) {
     return { apiBaseUrl: '', clientToken: '', requestHeaders: {}, relayHostId, desktopHostId, runtimeKey };
   }
@@ -970,23 +973,28 @@ const probeHostWithTimeout = async (url, timeoutMs, clientToken = '', requestHea
   // Identity gate for learned/untrusted addresses: verify the UNAUTHENTICATED
   // /health identity before the token-carrying version fetch, so the bearer
   // token is never sent to a re-assigned address that now belongs to a
-  // different machine. Older servers omit serverId from /health; only an
-  // explicit mismatch rejects.
+  // different machine. Missing or mismatched identity must fail closed: it is
+  // never safe to send credentials to an address that cannot prove the pinned
+  // server identity.
   if (typeof expectedServerId === 'string' && expectedServerId.trim()) {
     const healthUrl = buildHealthUrl(url);
-    if (healthUrl) {
-      try {
-        const response = await fetch(healthUrl, { signal: AbortSignal.timeout(timeoutMs), headers: { Accept: 'application/json' } });
-        if (response.ok) {
-          const payload = await response.json().catch(() => null);
-          const reported = typeof payload?.serverId === 'string' ? payload.serverId.trim() : '';
-          if (reported && reported !== expectedServerId.trim()) {
-            return { status: 'wrong-service', latencyMs: Date.now() - started };
-          }
-        }
-      } catch {
-        // Unreachable/timeout surfaces in the version fetch below.
+    if (!healthUrl) {
+      return { status: 'wrong-service', latencyMs: Date.now() - started };
+    }
+    try {
+      const response = await fetchVersionPayload(healthUrl, {
+        headers: { Accept: 'application/json' },
+        timeoutMs,
+      });
+      if (!response.ok) {
+        return { status: 'unreachable', latencyMs: Date.now() - started };
       }
+      const payload = await response.json().catch(() => null);
+      if (!probeServerIdentityMatches(payload, expectedServerId)) {
+        return { status: 'wrong-service', latencyMs: Date.now() - started };
+      }
+    } catch {
+      return { status: 'unreachable', latencyMs: Date.now() - started };
     }
   }
 
@@ -4479,12 +4487,20 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const runtimeKey = typeof args.runtimeKey === 'string' ? args.runtimeKey.trim() : '';
       const clientToken = typeof args.clientToken === 'string' ? args.clientToken : '';
       const requestHeaders = sanitizeRuntimeRequestHeaders(args.requestHeaders || {});
+      const desktopHostId = runtimeKey === LOCAL_HOST_ID
+        ? LOCAL_HOST_ID
+        : runtimeKey.startsWith('host:') ? runtimeKey.slice('host:'.length).trim() : '';
+      const savedHost = desktopHostId && desktopHostId !== LOCAL_HOST_ID
+        ? readDesktopHostsConfig().hosts.find((host) => host.id === desktopHostId)
+        : null;
       browserWindow.__ocRuntimeConfig = {
         ...(browserWindow.__ocRuntimeConfig || {}),
         apiBaseUrl,
         clientToken,
         requestHeaders,
         runtimeKey,
+        desktopHostId,
+        relayHostId: !apiBaseUrl && savedHost?.relay ? desktopHostId : '',
       };
       return null;
     }
@@ -4960,7 +4976,25 @@ const resolveDesktopHostIdForUrl = (targetUrl) => {
 };
 
 ipcMain.on('openchamber:get-desktop-host-id', (event) => {
-  event.returnValue = resolveDesktopHostIdForUrl(event.sender?.getURL?.());
+  const browserWindow = BrowserWindow.fromWebContents(event.sender);
+  const configured = typeof browserWindow?.__ocRuntimeConfig?.desktopHostId === 'string'
+    ? browserWindow.__ocRuntimeConfig.desktopHostId.trim()
+    : '';
+  event.returnValue = /^[a-zA-Z0-9._:-]+$/.test(configured)
+    ? configured
+    : resolveDesktopHostIdForUrl(event.sender?.getURL?.());
+});
+
+ipcMain.on('openchamber:get-desktop-relay-host-id', (event) => {
+  const browserWindow = BrowserWindow.fromWebContents(event.sender);
+  const configured = typeof browserWindow?.__ocRuntimeConfig?.relayHostId === 'string'
+    ? browserWindow.__ocRuntimeConfig.relayHostId.trim()
+    : '';
+  event.returnValue = /^[a-zA-Z0-9._:-]+$/.test(configured) ? configured : '';
+});
+
+ipcMain.on('openchamber:is-local-desktop-page', (event) => {
+  event.returnValue = isLocalSender(event.sender);
 });
 
 ipcMain.handle('openchamber:invoke', async (event, command, args) => {

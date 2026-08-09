@@ -23,6 +23,8 @@ export const dict = {
   'sessions.fleet.openSession': 'Open {title} on {server}',
   'sessions.fleet.stale': 'Stale',
   'sessions.fleet.unavailable': 'Last update could not be refreshed',
+  'sessions.fleet.questionRequired': 'Answer required',
+  'sessions.fleet.moreAvailable': 'More sessions available',
   'common.language.english': 'English',
   'common.language.german': 'German',
   'common.language.french': 'French',

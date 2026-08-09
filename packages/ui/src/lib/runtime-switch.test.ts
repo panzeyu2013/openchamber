@@ -233,7 +233,23 @@ describe('runtime endpoint switching', () => {
     });
   });
 
-  test('drops stale explicit loopback API base and runtime key on remote page', async () => {
+  test('treats an explicit local desktop window identity as local', async () => {
+    await withWindow({
+      location: {
+        origin: 'openchamber-ui://app',
+        href: 'openchamber-ui://app/index.html',
+        protocol: 'openchamber-ui:',
+      },
+      dispatchEvent: () => true,
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:5173',
+      __OPENCHAMBER_DESKTOP_HOST_ID__: 'local',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      expect(runtimeSwitch.getRuntimeKey()).toBe('local');
+    });
+  });
+
+  test('honors an explicit switch between distinct loopback runtimes', async () => {
     await withWindow({
       location: {
         origin: 'http://127.0.0.1:49932',
@@ -250,8 +266,49 @@ describe('runtime endpoint switching', () => {
         runtimeKey: 'url:http://127.0.0.1:65500',
       });
 
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('http://127.0.0.1:65500');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('url:http://127.0.0.1:65500');
+      const { getRuntimeUrlResolver } = await import('./runtime-url');
+      expect(getRuntimeUrlResolver().api('/api/version')).toBe('http://127.0.0.1:65500/api/version');
+    });
+  });
+
+  test('classifies a main-process-verified Electron HMR page as local', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:5173',
+        href: 'http://127.0.0.1:5173/index',
+        protocol: 'http:',
+      },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+      __OPENCHAMBER_API_BASE_URL__: '',
+      __OPENCHAMBER_DESKTOP_LOCAL_UI__: true,
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+
       expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('');
-      expect(runtimeSwitch.getRuntimeKey()).toBe('url:http://127.0.0.1:49932');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('local');
+    });
+  });
+
+  test('allows an explicit switch from a remote loopback page to the authoritative local runtime', async () => {
+    await withWindow({
+      location: {
+        origin: 'http://127.0.0.1:49932',
+        href: 'http://127.0.0.1:49932/index',
+        protocol: 'http:',
+      },
+      dispatchEvent: () => true,
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+    }, async () => {
+      const runtimeSwitch = await importFreshRuntimeSwitch();
+      runtimeSwitch.switchRuntimeEndpoint({
+        apiBaseUrl: 'http://127.0.0.1:3901',
+        runtimeKey: 'local',
+      });
+
+      expect(runtimeSwitch.getRuntimeApiBaseUrl()).toBe('http://127.0.0.1:3901');
+      expect(runtimeSwitch.getRuntimeKey()).toBe('local');
     });
   });
 });

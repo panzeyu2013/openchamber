@@ -43,7 +43,7 @@ export const useFleetSummaryStore = create<FleetSummaryState>()((set) => ({
     const previous = state.servers.get(serverId);
     const next: FleetServerSummary = previous
       ? { ...previous, complete: false, errorMessage }
-      : { serverId, sessions: new Map(), complete: false, errorMessage };
+      : { serverId, sessions: new Map(), complete: false, truncated: false, errorMessage };
     if (previous === next) return state;
     const servers = new Map(state.servers);
     servers.set(serverId, next);

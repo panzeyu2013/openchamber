@@ -13,6 +13,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.fleet.openSession': '在 {server} 打开 {title}',
   'sessions.fleet.stale': '已过期',
   'sessions.fleet.unavailable': '无法刷新上一次状态',
+  'sessions.fleet.questionRequired': '需要回答',
+  'sessions.fleet.moreAvailable': '还有更多会话',
   'terminalView.actions.attachSelection': '附加所选输出',
   'terminalView.actions.restart': '重启终端',
   'chat.message.terminalContext': '{terminal}，第 {start}-{end} 行',

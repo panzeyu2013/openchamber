@@ -1733,7 +1733,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const topContent = React.useMemo(
     () => (
       <>
-        <FleetSidebarSection />
+        {!hasSessionSearchQuery ? <FleetSidebarSection /> : null}
         {!isVSCode && showRecentSection && !hasSessionSearchQuery ? (
           <SidebarActivitySections
             sections={activitySections}

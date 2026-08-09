@@ -13,6 +13,8 @@ export interface RuntimeUrlConfig {
   apiBaseUrl?: string | null;
   realtimeBaseUrl?: string | null;
   currentHref?: () => string;
+  /** Runtime-switch selections are authoritative; boot/injected values remain stale-loopback sanitized. */
+  source?: 'boot' | 'runtime-selection';
 }
 
 export interface RuntimeUrlResolver {
@@ -159,8 +161,21 @@ export const createRuntimeUrlResolver = (config: RuntimeUrlConfig = {}): Runtime
   const configuredApiBaseUrl = config.apiBaseUrl;
   const configuredRealtimeBaseUrl = config.realtimeBaseUrl;
 
-  const apiBaseUrl = (): string => sanitizeConfiguredApiBaseUrl(configuredApiBaseUrl, config) || readInjectedApiBaseUrl();
-  const realtimeBaseUrl = (): string => sanitizeConfiguredApiBaseUrl(configuredRealtimeBaseUrl, config) || apiBaseUrl();
+  const resolveConfiguredBaseUrl = (value: string | null | undefined): string => (
+    config.source === 'runtime-selection'
+      ? normalizeRuntimeBaseUrl(value)
+      : sanitizeConfiguredApiBaseUrl(value, config)
+  );
+  const apiBaseUrl = (): string => {
+    const configured = resolveConfiguredBaseUrl(configuredApiBaseUrl);
+    return config.source === 'runtime-selection' ? configured : configured || readInjectedApiBaseUrl();
+  };
+  const realtimeBaseUrl = (): string => {
+    const configured = resolveConfiguredBaseUrl(configuredRealtimeBaseUrl);
+    return config.source === 'runtime-selection'
+      ? (configuredRealtimeBaseUrl === undefined ? apiBaseUrl() : configured)
+      : configured || apiBaseUrl();
+  };
 
   const http = (path: string, query?: RuntimeUrlQuery): string => buildHttpUrl(apiBaseUrl(), path, query);
   const realtime = (path: string, query?: RuntimeUrlQuery): string => buildHttpUrl(realtimeBaseUrl(), path, query);

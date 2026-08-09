@@ -1,6 +1,7 @@
-import { refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
+import { refreshRuntimeUrlAuthToken, setRuntimeAuthApiBaseUrl, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
 import { configureRuntimeUrlResolver } from '@/lib/runtime-url';
 import {
+  normalizeRuntimeBaseUrl,
   readInjectedDesktopHostId,
   readWindowRuntimeOriginContext,
   sanitizeRuntimeApiBaseUrl,
@@ -116,6 +117,7 @@ let cachedActiveApiBaseUrl: string | null = null;
 let cachedRawApiBaseUrl: string | undefined;
 let cachedRawLocalOrigin: string | undefined;
 let cachedRawDesktopHostId = '';
+let cachedDesktopLocalUi = false;
 let cachedCurrentOrigin = '';
 
 const readRawRuntimeGlobal = (key: '__OPENCHAMBER_API_BASE_URL__' | '__OPENCHAMBER_LOCAL_ORIGIN__'): string | undefined => {
@@ -133,12 +135,15 @@ export const getRuntimeKey = (): string => {
   const rawApiBaseUrl = readRawRuntimeGlobal('__OPENCHAMBER_API_BASE_URL__');
   const rawLocalOrigin = readRawRuntimeGlobal('__OPENCHAMBER_LOCAL_ORIGIN__');
   const rawDesktopHostId = readInjectedDesktopHostId();
+  const desktopLocalUi = typeof window !== 'undefined'
+    && (window as typeof window & { __OPENCHAMBER_DESKTOP_LOCAL_UI__?: boolean }).__OPENCHAMBER_DESKTOP_LOCAL_UI__ === true;
   const currentOrigin = getCurrentOrigin();
   if (
     cachedActiveApiBaseUrl === activeApiBaseUrl
     && cachedRawApiBaseUrl === rawApiBaseUrl
     && cachedRawLocalOrigin === rawLocalOrigin
     && cachedRawDesktopHostId === rawDesktopHostId
+    && cachedDesktopLocalUi === desktopLocalUi
     && cachedCurrentOrigin === currentOrigin
   ) {
     return cachedRuntimeKey;
@@ -149,13 +154,16 @@ export const getRuntimeKey = (): string => {
     ? (sameRuntimeOrigin(apiBaseUrl, readInjectedLocalOrigin())
       ? 'local'
       : normalizeRuntimeUrlKey(apiBaseUrl))
-    : (rawDesktopHostId
-      ? `host:${rawDesktopHostId}`
+    : (rawDesktopHostId === 'local' || desktopLocalUi
+      ? 'local'
+      : rawDesktopHostId
+        ? `host:${rawDesktopHostId}`
       : `url:${currentOrigin || 'default'}`);
   cachedActiveApiBaseUrl = activeApiBaseUrl;
   cachedRawApiBaseUrl = rawApiBaseUrl;
   cachedRawLocalOrigin = rawLocalOrigin;
   cachedRawDesktopHostId = rawDesktopHostId;
+  cachedDesktopLocalUi = desktopLocalUi;
   cachedCurrentOrigin = currentOrigin;
   return cachedRuntimeKey;
 };
@@ -182,16 +190,18 @@ export const initializeRuntimeEndpoint = (options: { apiBaseUrl?: string | null;
 
 export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken?: string | null; runtimeKey?: string | null; requestHeaders?: Record<string, string> | null; relay?: RelayRuntimeDescriptor | null }): void => {
   const context = readWindowRuntimeOriginContext();
-  // A stale loopback target (another SSH tunnel or an old local server) is
-  // dropped outright: the page's own origin is the only trustworthy endpoint,
-  // and any explicit key tied to the stale base goes with it.
-  const apiBaseUrl = sanitizeRuntimeApiBaseUrl(options.apiBaseUrl, context);
+  // Runtime switches are explicit user/application selections. Unlike boot
+  // globals, a distinct loopback endpoint here is authoritative (for example
+  // switching between two SSH forwards in the same renderer).
+  const apiBaseUrl = normalizeRuntimeBaseUrl(options.apiBaseUrl);
   const previousApiBaseUrl = getRuntimeApiBaseUrl();
   const previousRuntimeKey = getRuntimeKey();
   const runtimeKey = apiBaseUrl
     ? (options.runtimeKey?.trim() || normalizeRuntimeUrlKey(apiBaseUrl))
-    : (readInjectedDesktopHostId()
-      ? `host:${readInjectedDesktopHostId()}`
+    : (readInjectedDesktopHostId() === 'local'
+      ? 'local'
+      : readInjectedDesktopHostId()
+        ? `host:${readInjectedDesktopHostId()}`
       : `url:${context.currentOrigin || 'default'}`);
   const detail = { apiBaseUrl, previousApiBaseUrl, runtimeKey, previousRuntimeKey };
   if (typeof window !== 'undefined') {
@@ -199,6 +209,7 @@ export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken
   }
   activeApiBaseUrl = apiBaseUrl;
   activeRuntimeKey = runtimeKey;
+  setRuntimeAuthApiBaseUrl(apiBaseUrl, true);
   if (typeof window !== 'undefined') {
     const runtimeWindow = window as typeof window & {
       __OPENCHAMBER_API_BASE_URL__?: string;
@@ -209,7 +220,7 @@ export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken
     setWindowRuntimeValue(runtimeWindow, '__OPENCHAMBER_CLIENT_TOKEN__', options.clientToken || undefined);
     setWindowRuntimeValue(runtimeWindow, '__OPENCHAMBER_RUNTIME_HEADERS__', options.requestHeaders || undefined);
   }
-  configureRuntimeUrlResolver({ apiBaseUrl, realtimeBaseUrl: apiBaseUrl });
+  configureRuntimeUrlResolver({ apiBaseUrl, realtimeBaseUrl: apiBaseUrl, source: 'runtime-selection' });
   setRuntimeExtraHeaders(options.requestHeaders || null);
   setRuntimeBearerToken(options.clientToken || null);
   // Relay mode routes runtime HTTP/WS through an E2EE tunnel instead of the

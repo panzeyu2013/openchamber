@@ -203,6 +203,22 @@ describe('createRuntimeUrlResolver', () => {
     }
   });
 
+  test('keeps an authoritative runtime selection across distinct loopback origins', async () => {
+    await withWindow({
+      location: { origin: 'http://127.0.0.1:49932', href: 'http://127.0.0.1:49932/index' },
+      __OPENCHAMBER_LOCAL_ORIGIN__: 'http://127.0.0.1:3901',
+    }, () => {
+      const urls = createRuntimeUrlResolver({
+        apiBaseUrl: 'http://127.0.0.1:65500',
+        realtimeBaseUrl: 'http://127.0.0.1:65500',
+        source: 'runtime-selection',
+      });
+
+      expect(urls.api('/api/version')).toBe('http://127.0.0.1:65500/api/version');
+      expect(urls.websocket('/api/global/event/ws')).toBe('ws://127.0.0.1:65500/api/global/event/ws');
+    });
+  });
+
   test('adds short-lived URL auth query to realtime and authenticated asset URLs only', () => {
     setRuntimeBearerToken('oc_client_secret');
     setRuntimeUrlAuthToken('oc_url_secret', Date.now() + 60_000);

@@ -149,7 +149,10 @@ export const useDesktopSshStore = create<DesktopSshState>((set, get) => ({
   },
 
   removeInstance: async (id) => {
-    await desktopSshDisconnect(id).catch(() => undefined);
+    // Do not delete the only management record while its tunnel may still be
+    // alive. The main process makes disconnect idempotent and waits for an
+    // in-flight connection before returning.
+    await desktopSshDisconnect(id);
     const next = get().instances.filter((item) => item.id !== id);
     await get().setInstances(next);
     set((state) => {

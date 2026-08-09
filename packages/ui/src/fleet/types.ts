@@ -18,6 +18,48 @@ export type FleetRuntimeDescriptor = {
   relay?: RelayRuntimeDescriptor;
 };
 
+const stringRecordsEqual = (left?: Record<string, string>, right?: Record<string, string>): boolean => {
+  if (left === right) return true;
+  const leftEntries = Object.entries(left || {});
+  if (leftEntries.length !== Object.keys(right || {}).length) return false;
+  return leftEntries.every(([key, value]) => right?.[key] === value);
+};
+
+const jsonValuesEqual = (left: unknown, right: unknown): boolean => {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left)
+      && Array.isArray(right)
+      && left.length === right.length
+      && left.every((value, index) => jsonValuesEqual(value, right[index]));
+  }
+  if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const leftKeys = Object.keys(leftRecord);
+  return leftKeys.length === Object.keys(rightRecord).length
+    && leftKeys.every((key) => Object.prototype.hasOwnProperty.call(rightRecord, key) && jsonValuesEqual(leftRecord[key], rightRecord[key]));
+};
+
+export const fleetRuntimeDescriptorsEqual = (left: FleetRuntimeDescriptor, right: FleetRuntimeDescriptor): boolean => {
+  if (left === right) return true;
+  const leftRelay = left.relay;
+  const rightRelay = right.relay;
+  const relayEqual = leftRelay === rightRelay || Boolean(
+    leftRelay
+    && rightRelay
+    && leftRelay.relayUrl === rightRelay.relayUrl
+    && leftRelay.serverId === rightRelay.serverId
+    && leftRelay.grant === rightRelay.grant
+    && jsonValuesEqual(leftRelay.hostEncPubJwk, rightRelay.hostEncPubJwk),
+  );
+  return left.apiBaseUrl === right.apiBaseUrl
+    && left.runtimeKey === right.runtimeKey
+    && left.clientToken === right.clientToken
+    && stringRecordsEqual(left.requestHeaders, right.requestHeaders)
+    && relayEqual;
+};
+
 export type FleetServer = {
   id: string;
   label: string;
@@ -40,6 +82,8 @@ export type FleetLiveSessionState = {
   hasPendingPermission: boolean;
   hasPendingQuestion: boolean;
   updatedAt: number;
+  activityUpdatedAt: number;
+  pendingUpdatedAt: number;
   stale: boolean;
 };
 
@@ -61,11 +105,7 @@ export type FleetServerSummary = {
   serverId: string;
   sessions: Map<string, FleetSessionSummary>;
   complete: boolean;
+  truncated: boolean;
   refreshedAt?: number;
   errorMessage?: string;
-  /**
-   * True when the summary fetch returned exactly the server's limit, so the
-   * list may not cover every session. Never rendered as an exact count.
-   */
-  truncated?: boolean;
 };

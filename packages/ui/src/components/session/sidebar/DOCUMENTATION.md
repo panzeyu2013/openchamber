@@ -32,7 +32,15 @@
 - `FleetSidebarSection.tsx`: Compact read-only projection of inactive saved
   desktop hosts. It reads Fleet summaries/live state only; opening a row first
   switches the one Active Runtime and then delegates selection to the normal
-  session UI store.
+  session UI store. Blocking/active rows sort ahead of idle rows, each host
+  renders at most eight rows plus a truthful remaining/truncation indicator,
+  and the Fleet projection is hidden while global session search is active so
+  it cannot show unfiltered
+  results. Each session button exposes activity, pending permission/question,
+  and stale state through its accessible description rather than leaving those
+  indicators visual-only. Each card subscribes to one O(1) per-host live
+  revision; an event for one host does not allocate or scan session arrays for
+  every other card.
 - `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
 - `SidebarProjectsList.tsx`: Main scrollable renderer for project zones and their flat/archived groups plus empty/search states; owns project drag-to-reorder.
 - `SessionGroupSection.tsx`: Renders one flat (or archived) group: sessions first, then flat folder entries with path labels, show-more batching, and explicit loading/error/retry state for empty groups. Archived buckets (VS Code) virtualize past 50 rows.

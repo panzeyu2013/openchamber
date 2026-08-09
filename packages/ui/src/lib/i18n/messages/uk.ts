@@ -13,6 +13,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.fleet.openSession': 'Відкрити {title} на {server}',
   'sessions.fleet.stale': 'Застаріло',
   'sessions.fleet.unavailable': 'Не вдалося оновити останній стан',
+  'sessions.fleet.questionRequired': 'Потрібна відповідь',
+  'sessions.fleet.moreAvailable': 'Доступні інші сеанси',
   'terminalView.actions.attachSelection': 'Прикріпити вибраний вивід',
   'terminalView.actions.restart': 'Перезапустити термінал',
   'chat.message.terminalContext': '{terminal}, рядки {start}-{end}',

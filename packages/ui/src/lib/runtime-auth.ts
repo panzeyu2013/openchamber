@@ -1,5 +1,5 @@
 import { getActiveRelayTunnel } from '@/lib/relay/runtime-tunnel';
-import { readWindowRuntimeOriginContext, sanitizeRuntimeApiBaseUrl } from '@/lib/runtime-origin';
+import { normalizeRuntimeBaseUrl, readWindowRuntimeOriginContext, sanitizeRuntimeApiBaseUrl } from '@/lib/runtime-origin';
 
 type RuntimeAuthCredential =
   | { type: 'bearer'; token: string }
@@ -20,6 +20,8 @@ let localRuntimeUrlAuthRefreshPromise: Promise<string> | null = null;
 let localRuntimeUrlAuthRefreshOrigin = '';
 let localRuntimeUrlAuthGeneration = 0;
 let runtimeAuthGeneration = 0;
+let runtimeApiBaseUrl = '';
+let runtimeApiBaseUrlIsAuthoritative = false;
 
 const URL_AUTH_REFRESH_SKEW_MS = 10_000;
 
@@ -61,18 +63,30 @@ const readInjectedApiBaseUrl = (): string => {
 };
 
 const buildAuthUrl = (apiBaseUrl: string | null | undefined, path: string): string => {
-  const base = typeof apiBaseUrl === 'string' && apiBaseUrl.trim()
+  const hasRequestedBase = typeof apiBaseUrl === 'string';
+  const requestedBase = hasRequestedBase
     ? apiBaseUrl.trim()
     : readInjectedApiBaseUrl();
-  // A stale loopback base (another SSH tunnel or an old local server) must not
-  // receive the mint: the page's own origin serves the auth route instead.
-  const sanitized = sanitizeRuntimeApiBaseUrl(base, readWindowRuntimeOriginContext());
-  if (!sanitized) return path;
+  const normalizedRequestedBase = normalizeRuntimeBaseUrl(requestedBase);
+  const useAuthoritativeBase = runtimeApiBaseUrlIsAuthoritative
+    && (!hasRequestedBase || normalizedRequestedBase === runtimeApiBaseUrl);
+  const base = useAuthoritativeBase
+    ? runtimeApiBaseUrl
+    : sanitizeRuntimeApiBaseUrl(requestedBase, readWindowRuntimeOriginContext());
+  if (!base) return path;
   try {
-    return new URL(path, `${sanitized.replace(/\/+$/, '')}/`).toString();
+    return new URL(path, `${base.replace(/\/+$/, '')}/`).toString();
   } catch {
     return path;
   }
+};
+
+export const setRuntimeAuthApiBaseUrl = (
+  apiBaseUrl: string | null | undefined,
+  authoritative: boolean,
+): void => {
+  runtimeApiBaseUrl = normalizeRuntimeBaseUrl(apiBaseUrl);
+  runtimeApiBaseUrlIsAuthoritative = authoritative;
 };
 
 const normalizeOrigin = (value: string): string => {

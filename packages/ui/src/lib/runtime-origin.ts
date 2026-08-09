@@ -8,7 +8,7 @@ export const normalizeRuntimeBaseUrl = (value: string | null | undefined): strin
   return value.trim().replace(/\/+$/, '');
 };
 
-export const getRuntimeOrigin = (value: string | null | undefined): string => {
+const getRuntimeOrigin = (value: string | null | undefined): string => {
   const normalized = normalizeRuntimeBaseUrl(value);
   if (!normalized) return '';
   try {
@@ -24,7 +24,7 @@ export const sameRuntimeOrigin = (left: string | null | undefined, right: string
   return Boolean(leftOrigin && rightOrigin && leftOrigin === rightOrigin);
 };
 
-export const isLoopbackRuntimeUrl = (value: string | null | undefined): boolean => {
+const isLoopbackRuntimeUrl = (value: string | null | undefined): boolean => {
   try {
     const hostname = new URL(normalizeRuntimeBaseUrl(value)).hostname.toLowerCase();
     return hostname === 'localhost'
@@ -65,6 +65,7 @@ export const shouldIgnoreRuntimeApiBaseUrl = (
   if (!normalizedApiBaseUrl || !currentOrigin) return false;
   if (sameRuntimeOrigin(currentOrigin, normalizedApiBaseUrl)) return false;
   const localOrigin = normalizeRuntimeBaseUrl(context.localOrigin);
+  if (localOrigin && sameRuntimeOrigin(normalizedApiBaseUrl, localOrigin)) return false;
   if (localOrigin && sameRuntimeOrigin(currentOrigin, localOrigin)) return false;
   return isLoopbackRuntimeUrl(currentOrigin) && isLoopbackRuntimeUrl(normalizedApiBaseUrl);
 };

@@ -13,6 +13,8 @@ export const dict: Record<I18nKey, string> = {
   'sessions.fleet.openSession': '{server} で {title} を開く',
   'sessions.fleet.stale': '古い状態',
   'sessions.fleet.unavailable': '前回の状態を更新できませんでした',
+  'sessions.fleet.questionRequired': '回答が必要です',
+  'sessions.fleet.moreAvailable': 'ほかにもセッションがあります',
   'terminalView.actions.attachSelection': '選択した出力を添付',
   'terminalView.actions.restart': 'ターミナルを再起動',
   'chat.message.terminalContext': '{terminal}、{start}〜{end}行',

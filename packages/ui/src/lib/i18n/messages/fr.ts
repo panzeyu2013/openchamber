@@ -12,6 +12,8 @@ export const dict = {
   'sessions.fleet.openSession': 'Ouvrir {title} sur {server}',
   'sessions.fleet.stale': 'Obsolète',
   'sessions.fleet.unavailable': 'La dernière mise à jour a échoué',
+  'sessions.fleet.questionRequired': 'Réponse requise',
+  'sessions.fleet.moreAvailable': 'D’autres sessions sont disponibles',
   'terminalView.actions.attachSelection': 'Joindre la sortie sélectionnée',
   'terminalView.actions.restart': 'Redémarrer le terminal',
   'chat.message.terminalContext': '{terminal}, lignes {start}-{end}',

@@ -94,6 +94,24 @@ describe('live aggregate', () => {
     )).toBe(false)
   })
 
+  it('publishes immediate retry metadata changes without returning a stale cached object', () => {
+    const first = aggregateLiveSessionStatuses([{
+      session: [session('ses-1', '/a', 10)],
+      session_status: {
+        'ses-1': { type: 'retry', message: 'first', attempt: 1, next: 100 },
+      },
+    }])
+    const second = aggregateLiveSessionStatuses([{
+      session: [session('ses-1', '/a', 10)],
+      session_status: {
+        'ses-1': { type: 'retry', message: 'second', attempt: 1, next: 200 },
+      },
+    }])
+
+    expect(second).not.toBe(first)
+    expect(second['ses-1']).toEqual({ type: 'retry', message: 'second', attempt: 1, next: 200 })
+  })
+
   it('derives recent sessions from the 48h window, excluding archived/subtasks', () => {
     const now = 1_000_000_000
     const sessions = [
@@ -104,7 +122,7 @@ describe('live aggregate', () => {
       session('ses-5', '/e', now - RECENT_SESSION_MAX_AGE_MS - 1),
     ]
 
-    const recent = deriveRecentSessions(sessions, now)
+    const recent = deriveRecentSessions(sessions, new Set(), now)
 
     // ses-3 archived, ses-4 subtask, ses-5 older than 48h -> excluded; rest newest-first
     expect(recent.map((item) => item.id)).toEqual(['ses-2', 'ses-1'])

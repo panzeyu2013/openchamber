@@ -272,10 +272,11 @@ describe('ElectronSshManager', () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-test-'));
     tempDirs.push(tempDir);
     const settingsFilePath = path.join(tempDir, 'settings.json');
+    const emittedEvents = [];
     const manager = new ElectronSshManager({
       settingsFilePath,
       appVersion: '0.0.0-test',
-      emit: () => undefined,
+      emit: (event) => emittedEvents.push(event),
     });
 
     const token = await manager.issueClientToken(localUrl, 'ui-secret');
@@ -288,5 +289,142 @@ describe('ElectronSshManager', () => {
       issueClientToken: true,
     });
     expect(settings.desktopHosts).toEqual([{ id: 'ssh-1', label: 'SSH Host', url: localUrl, apiUrl: localUrl, clientToken: 'ssh-client-token' }]);
+    expect(emittedEvents).toContain('openchamber:desktop-hosts-changed');
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(settingsFilePath).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test('serializes concurrent settings mutations without losing sibling fields', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-settings-test-'));
+    tempDirs.push(tempDir);
+    const settingsFilePath = path.join(tempDir, 'settings.json');
+    fs.writeFileSync(settingsFilePath, JSON.stringify({ preservedSetting: true }));
+    const manager = new ElectronSshManager({
+      settingsFilePath,
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+    });
+    const instance = {
+      id: 'ssh-1',
+      nickname: 'SSH Host',
+      sshCommand: 'ssh example.com',
+      remoteOpenchamber: { mode: 'managed', keepRunning: true, installMethod: 'bun' },
+      localForward: { bindHost: '127.0.0.1' },
+      auth: {},
+      portForwards: [],
+    };
+
+    await Promise.all([
+      manager.setInstances({ instances: [instance] }),
+      manager.updateHostRuntime('ssh-1', 'SSH Host', 'http://127.0.0.1:60123', 'ssh-token'),
+    ]);
+
+    const settings = JSON.parse(fs.readFileSync(settingsFilePath, 'utf8'));
+    expect(settings.preservedSetting).toBe(true);
+    expect(settings.desktopSshInstances).toHaveLength(1);
+    expect(settings.desktopHosts).toEqual([expect.objectContaining({
+      id: 'ssh-1',
+      apiUrl: 'http://127.0.0.1:60123',
+      clientToken: 'ssh-token',
+    })]);
+  });
+
+  test('does not replace malformed settings with an authoritative empty root', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-malformed-test-'));
+    tempDirs.push(tempDir);
+    const settingsFilePath = path.join(tempDir, 'settings.json');
+    const malformed = '{"desktopHosts":[';
+    fs.writeFileSync(settingsFilePath, malformed);
+    const manager = new ElectronSshManager({
+      settingsFilePath,
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+    });
+
+    await expect(manager.updateHostRuntime('ssh-1', 'SSH Host', 'http://127.0.0.1:60123')).rejects.toThrow();
+    expect(fs.readFileSync(settingsFilePath, 'utf8')).toBe(malformed);
+  });
+
+  test('preserves a failed connection status until an explicit disconnect publishes idle', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-status-test-'));
+    tempDirs.push(tempDir);
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(tempDir, 'settings.json'),
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+    });
+    manager.readInstances = () => ({
+      instances: [{
+        id: 'ssh-1',
+        sshCommand: 'ssh example.com',
+        remoteOpenchamber: { mode: 'managed', keepRunning: true, installMethod: 'bun' },
+        localForward: { bindHost: '127.0.0.1' },
+        auth: {},
+        portForwards: [],
+      }],
+    });
+    manager.connectBlocking = async () => {
+      throw new Error('authentication failed');
+    };
+
+    await expect(manager.connect('ssh-1')).rejects.toThrow('authentication failed');
+    expect((await manager.statusesWithDefaults('ssh-1'))[0]).toMatchObject({
+      id: 'ssh-1',
+      phase: 'error',
+      detail: 'authentication failed',
+      requiresUserAction: true,
+    });
+
+    await manager.disconnect('ssh-1');
+    expect((await manager.statusesWithDefaults('ssh-1'))[0]).toMatchObject({
+      id: 'ssh-1',
+      phase: 'idle',
+      requiresUserAction: false,
+    });
+  });
+
+  test('waits for an in-flight connection before completing disconnect cleanup', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-disconnect-test-'));
+    tempDirs.push(tempDir);
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(tempDir, 'settings.json'),
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+    });
+    manager.readInstances = () => ({
+      instances: [{
+        id: 'ssh-1',
+        sshCommand: 'ssh example.com',
+        remoteOpenchamber: { mode: 'managed', keepRunning: true, installMethod: 'bun' },
+        localForward: { bindHost: '127.0.0.1' },
+        auth: {},
+        portForwards: [],
+      }],
+    });
+    let releaseConnection;
+    const connectionGate = new Promise((resolve) => {
+      releaseConnection = resolve;
+    });
+    manager.connectBlocking = async () => connectionGate;
+    let cleanupCalls = 0;
+    manager.disconnectInternal = async () => {
+      cleanupCalls += 1;
+    };
+
+    const connecting = manager.connect('ssh-1');
+    await Promise.resolve();
+    let disconnected = false;
+    const disconnecting = manager.disconnect('ssh-1').then(() => {
+      disconnected = true;
+    });
+    await Promise.resolve();
+
+    expect(disconnected).toBe(false);
+    expect(cleanupCalls).toBe(1);
+    releaseConnection();
+    await Promise.all([connecting, disconnecting]);
+    expect(cleanupCalls).toBe(2);
+    expect((await manager.statusesWithDefaults('ssh-1'))[0]?.phase).toBe('idle');
   });
 });
