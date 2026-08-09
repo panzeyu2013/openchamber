@@ -268,9 +268,9 @@ ipcRenderer.on('openchamber:emit', (_evt, payload) => {
 });
 
 // The desktop bridge is exposed on all pages; the main-process gate in
-// ipcMain.handle('openchamber:invoke') decides per-command what is safe
-// for non-local callers (window/host-switcher ops yes, file/shell ops
-// no). See COMMANDS_SAFE_FOR_REMOTE in main.mjs.
+// ipcMain.handle('openchamber:invoke') limits non-local callers to operations
+// on their own native window. Host, network, file, and app-global capabilities
+// remain local-only.
 contextBridge.exposeInMainWorld('__OPENCHAMBER_DESKTOP__', {
   invoke: (cmd, args) => ipcRenderer.invoke('openchamber:invoke', cmd, args || {}),
   openDialog: (options) => ipcRenderer.invoke('openchamber:dialog:open', options || {}),

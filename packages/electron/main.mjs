@@ -15,7 +15,7 @@ import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { resolveStartupUrlProbePlan, shouldIgnoreLoopbackConnectionLimit } from './startup-url-selection.mjs';
 import { sanitizeRuntimeRequestHeaders } from './runtime-request-headers.mjs';
-import { probeServerIdentityMatches } from './ipc-security.mjs';
+import { isDesktopCommandAllowed, probeServerIdentityMatches } from './ipc-security.mjs';
 import { assertUpdaterCapability } from './updater-capability.mjs';
 import { checkForDesktopUpdate } from './updater-check.mjs';
 import { resolveUpdaterChannel } from './updater-channel.mjs';
@@ -537,12 +537,6 @@ const settingsFilePath = () => {
   return path.join(os.homedir(), '.config', 'openchamber', 'settings.json');
 };
 
-const sshManager = new ElectronSshManager({
-  settingsFilePath: settingsFilePath(),
-  appVersion: APP_VERSION,
-  emit: (event, detail) => emitToAllWindows(event, detail),
-});
-
 const readJsonFile = (filePath) => {
   try {
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -574,6 +568,19 @@ const readSettingsRoot = () => {
   return root && typeof root === 'object' && !Array.isArray(root) ? root : {};
 };
 
+const readSettingsRootForMutation = () => {
+  try {
+    const root = JSON.parse(fs.readFileSync(settingsFilePath(), 'utf8'));
+    if (!root || typeof root !== 'object' || Array.isArray(root)) {
+      throw new Error('Settings root must be a JSON object');
+    }
+    return root;
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return {};
+    throw error;
+  }
+};
+
 // Serializes read-modify-write of the settings file within this process.
 // Multiple call sites (spawnLocalServer, writeDesktopHostsConfig, theme
 // preference saves, ssh manager imports, etc.) would otherwise have their
@@ -582,7 +589,7 @@ const readSettingsRoot = () => {
 let settingsMutationChain = Promise.resolve();
 const mutateSettingsRoot = (mutator) => {
   const next = settingsMutationChain.then(async () => {
-    const current = readSettingsRoot();
+    const current = readSettingsRootForMutation();
     const result = await mutator(current);
     const nextRoot = result ?? current;
     await writeJsonFile(settingsFilePath(), nextRoot);
@@ -591,6 +598,13 @@ const mutateSettingsRoot = (mutator) => {
   settingsMutationChain = next.catch(() => {});
   return next;
 };
+
+const sshManager = new ElectronSshManager({
+  settingsFilePath: settingsFilePath(),
+  appVersion: APP_VERSION,
+  emit: (event, detail) => emitToAllWindows(event, detail),
+  mutateSettingsRoot,
+});
 
 const writeSettingsRoot = async (root) => writeJsonFile(settingsFilePath(), root);
 
@@ -4877,16 +4891,11 @@ app.on('web-contents-created', (_event, contents) => {
 // user switches to via DesktopHostSwitcher. Without a gate, a malicious
 // remote page could read arbitrary local files, open arbitrary apps, etc.
 //
-// Strategy: commands fall into two buckets by capability, not by origin.
-// Window/host-switcher operations (probe a URL, open a new window, set
-// title, read the hosts list) are safe for any renderer. Filesystem,
-// shell.openPath, installed-app scans, app relaunch, file dialogs, and the
-// global tray/dock snapshot are gated to local senders — even the user's
-// own remote UI shouldn't need them, and a compromised remote can't use
-// them either. The tray menu (including its approval rows) and the dock
-// badge are app-level surfaces; a remote page must not be able to forge
-// system-level approval prompts or route tray clicks onto another window's
-// active runtime.
+// Trust the packaged/local UI for host, network, filesystem, shell, and
+// app-global operations. A remote runtime page receives only capabilities for
+// its own native window; command authorization remains in the main process so
+// a compromised renderer cannot turn Electron into a local-network oracle or
+// control another runtime's windows.
 const isLocalSender = (webContents) => {
   try {
     const raw = typeof webContents?.getURL === 'function' ? webContents.getURL() : '';
@@ -4916,25 +4925,6 @@ const isLocalSender = (webContents) => {
     return false;
   }
 };
-
-const COMMANDS_SAFE_FOR_REMOTE = new Set([
-  'desktop_hosts_get',
-  'desktop_host_probe',
-  'desktop_new_window',
-  'desktop_new_window_at_url',
-  'desktop_new_window_for_host',
-  'desktop_set_window_title',
-  'desktop_set_window_theme',
-  'desktop_is_window_fullscreen',
-  'desktop_start_window_drag',
-  'desktop_minimize_current_window',
-  'desktop_toggle_current_window_maximized',
-  'desktop_close_current_window',
-  'desktop_get_current_window_state',
-  'desktop_get_app_version',
-  'desktop_get_lan_address',
-  'desktop_capture_page_rect',
-]);
 
 // Resolve which saved host (desktop host or SSH instance) the current page
 // belongs to, so the renderer can derive a stable runtime key for navigated
@@ -4998,7 +4988,7 @@ ipcMain.on('openchamber:is-local-desktop-page', (event) => {
 });
 
 ipcMain.handle('openchamber:invoke', async (event, command, args) => {
-  if (!isLocalSender(event.sender) && !COMMANDS_SAFE_FOR_REMOTE.has(command)) {
+  if (!isDesktopCommandAllowed(command, isLocalSender(event.sender))) {
     log.warn(`[ipc] rejected ${command} from non-local origin: ${event.sender?.getURL?.() || '(unknown)'}`);
     throw new Error('IPC not available for this origin');
   }
