@@ -29,8 +29,10 @@ const sanitizeRuntimeExtraHeaders = (headers: Record<string, string> | null | un
   const next: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers || {})) {
     const name = key.trim();
-    const headerValue = value.trim();
-    if (name && headerValue && !isReservedRuntimeExtraHeaderName(name)) next[name] = headerValue;
+    const headerValue = typeof value === 'string' ? value.trim() : '';
+    if (!name || !headerValue || /[\r\n:]/.test(name) || /[\r\n]/.test(headerValue)) continue;
+    if (isReservedRuntimeExtraHeaderName(name)) continue;
+    next[name] = headerValue;
   }
   return next;
 };

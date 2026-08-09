@@ -10,7 +10,7 @@ let probeCallCount = 0;
 // touches the real @/lib/desktopHosts or @/lib/desktop modules that other
 // test files exercise.
 mock.module('@/fleet/fleet-probe', () => ({
-  probeFleetServer: async () => { probeCallCount += 1; return probeResult ?? { status: 'unreachable', latencyMs: 0 }; },
+  probeFleetServer: async () => { probeCallCount += 1; return probeResult; },
 }));
 
 const upsertRemoteServer = (status: 'connected' | 'disconnected' | 'degraded' | 'error') => {
@@ -96,6 +96,52 @@ describe('Fleet activation', () => {
     expect(await useFleetStore.getState().probeAndActivateServer('desktop:alpha')).toBe(false);
     expect(useFleetStore.getState().activeServerId).toBe('local');
     expect(useFleetStore.getState().servers.get('desktop:alpha')?.status).toBe('error');
+    expect(useFleetStore.getState().servers.get('desktop:alpha')?.errorMessage).toBe('Unable to verify the server');
+  });
+
+  test('a disconnected SSH row must activate through the SSH connect flow', async () => {
+    useFleetStore.getState().upsertServer({
+      id: 'desktop:ssh-1', label: 'SSH', kind: 'ssh', status: 'disconnected',
+      descriptor: { apiBaseUrl: '', runtimeKey: 'desktop-host:ssh-1' },
+    });
+
+    expect(await useFleetStore.getState().probeAndActivateServer('desktop:ssh-1')).toBe(false);
+    expect(probeCallCount).toBe(0);
+    expect(useFleetStore.getState().activeServerId).toBe('local');
+  });
+
+  test('a probe completing for a replaced descriptor never switches', async () => {
+    useFleetStore.getState().upsertServer({
+      id: 'desktop:alpha', label: 'Alpha', kind: 'remote-url', status: 'disconnected',
+      descriptor: { apiBaseUrl: 'http://alpha.test', runtimeKey: 'desktop-host:alpha' },
+    });
+    // The probe starts against the OLD descriptor...
+    const inFlight = useFleetStore.getState().probeAndActivateServer('desktop:alpha');
+    // ...and the registry re-registers the server (new endpoint) while it is
+    // pending. The probe result only certifies the OLD descriptor.
+    useFleetStore.getState().upsertServer({
+      id: 'desktop:alpha', label: 'Alpha', kind: 'remote-url', status: 'disconnected',
+      descriptor: { apiBaseUrl: 'http://beta.test', runtimeKey: 'desktop-host:alpha' },
+    });
+
+    expect(await inFlight).toBe(false);
+    expect(useFleetStore.getState().activeServerId).toBe('local');
+  });
+
+  test('an activation that finishes after another server was activated is abandoned', async () => {
+    upsertRemoteServer('disconnected');
+    useFleetStore.getState().upsertServer({
+      id: 'desktop:beta', label: 'Beta', kind: 'remote-url', status: 'connected',
+      descriptor: { apiBaseUrl: 'http://beta.test', runtimeKey: 'desktop-host:beta' },
+    });
+    // Alpha's probe is in flight (awaiting the mock) when Beta activates;
+    // when alpha's probe completes it must not override the later click.
+    const alphaProbe = useFleetStore.getState().probeAndActivateServer('desktop:alpha');
+
+    expect(await useFleetStore.getState().probeAndActivateServer('desktop:beta')).toBe(true);
+    expect(useFleetStore.getState().activeServerId).toBe('desktop:beta');
+    expect(await alphaProbe).toBe(false);
+    expect(useFleetStore.getState().activeServerId).toBe('desktop:beta');
   });
 
   test('a probe already in flight ignores repeat clicks', async () => {

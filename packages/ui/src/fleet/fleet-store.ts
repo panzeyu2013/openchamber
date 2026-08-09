@@ -30,6 +30,21 @@ const sameServer = (left: FleetServer, right: FleetServer): boolean =>
     && left.descriptor.relay === right.descriptor.relay
   );
 
+// Endpoint identity, not object identity: two descriptor objects describe the
+// same server when their transport fields agree. Used to detect registry
+// re-registration between probe start and probe completion.
+const sameFleetDescriptor = (
+  left: FleetServer['descriptor'],
+  right: FleetServer['descriptor'],
+): boolean => (
+  left.apiBaseUrl === right.apiBaseUrl
+  && left.runtimeKey === right.runtimeKey
+  && left.clientToken === right.clientToken
+  && left.requestHeaders === right.requestHeaders
+  && left.relay?.relayUrl === right.relay?.relayUrl
+  && left.relay?.serverId === right.relay?.serverId
+);
+
 /**
  * Fleet is intentionally separate from the Active Runtime sync stores. It
  * owns only server descriptors/lifecycle state; selecting a server delegates
@@ -89,12 +104,23 @@ export const useFleetStore = create<FleetState>()((set, get) => ({
     if (!server) return false;
     if (get().activeServerId === serverId) return true;
     if (server.status === 'connecting') return false;
+    // SSH rows are activated through the SSH connect flow (connectFleetSshServer)
+    // once their tunnel is up; a disconnected SSH row has no endpoint to probe.
+    if (server.kind === 'ssh' && server.status !== 'connected') return false;
+    const activeServerIdAtStart = get().activeServerId;
 
     if (server.status !== 'connected') {
       get().updateServerStatus(serverId, 'connecting');
       const probe = await probeFleetServer(server).catch(() => null);
       const current = get().servers.get(serverId);
       if (!current) return false;
+      // The descriptor may have been replaced while the probe ran (registry
+      // re-registration). A successful probe only certifies the descriptor it
+      // was run against — never switch to a different, unverified endpoint.
+      if (!sameFleetDescriptor(current.descriptor, server.descriptor)) return false;
+      // The user may have activated another server while this probe was in
+      // flight; the latest click wins.
+      if (get().activeServerId !== activeServerIdAtStart) return false;
       if (!probe) {
         get().updateServerStatus(serverId, 'error', 'Unable to verify the server');
         return false;

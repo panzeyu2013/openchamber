@@ -35,6 +35,9 @@ export const FleetSummaryBridge: React.FC = () => {
         if (eligible.has(serverId)) continue;
         stop();
         observers.delete(serverId);
+        // The per-server SSE tunnel must not outlive the observation it
+        // serves (server removed, deactivated, or runtime switched).
+        transport.removeServer(serverId);
       }
       for (const serverId of eligible) {
         if (observers.has(serverId)) continue;
@@ -110,6 +113,9 @@ export const FleetSummaryBridge: React.FC = () => {
           }
           const result = await transport.fetchServerSummary(server.id, server.descriptor, controller.signal);
           if (stopped) return;
+          // The server may have been removed while the fetch was in flight; a
+          // late poll must not resurrect its summary/live entries.
+          if (!useFleetStore.getState().servers.has(server.id)) return;
           useFleetSummaryStore.getState().replaceServerSummary(server.id, result.sessions, Date.now(), result.truncated);
           const now = Date.now();
           const liveById = useFleetLiveStore.getState().sessions;
@@ -146,7 +152,17 @@ export const FleetSummaryBridge: React.FC = () => {
             useFleetSummaryStore.getState().markServerFailed(server.id, message);
             useFleetLiveStore.getState().markServerStale(server.id);
             if (server.kind !== 'ssh') {
-              useFleetStore.getState().updateServerStatus(server.id, 'degraded', message);
+              // A hard timeout is not evidence the server is down: a slow but
+              // healthy server must not be downgraded from connected on every
+              // poll cycle — only the observation is stale.
+              if (controller.signal.aborted) {
+                const current = useFleetStore.getState().servers.get(server.id);
+                if (current?.status !== 'connected') {
+                  useFleetStore.getState().updateServerStatus(server.id, 'degraded', message);
+                }
+              } else {
+                useFleetStore.getState().updateServerStatus(server.id, 'degraded', message);
+              }
             }
           }
         } finally {

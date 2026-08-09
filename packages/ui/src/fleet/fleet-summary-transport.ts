@@ -162,7 +162,9 @@ export class FleetSummaryTransport {
         // churn) resets the backoff; short connect/EOF loops keep growing it.
         consecutiveFailures = Date.now() - acquiredAt >= HEALTHY_STREAM_MS ? 0 : consecutiveFailures + 1;
         const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-        const baseDelay = Math.min(1_000 * (2 ** consecutiveFailures), 60_000);
+        // 1s, 2s, 4s, … capped at 60s. consecutiveFailures is 0 right after a
+        // healthy stream, so the first reconnect stays at the 1s base.
+        const baseDelay = Math.min(1_000 * (2 ** Math.max(0, consecutiveFailures - 1)), 60_000);
         await wait(hidden ? baseDelay : Math.min(baseDelay, 10_000));
       }
     })();

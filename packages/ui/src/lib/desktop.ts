@@ -320,16 +320,19 @@ export const invokeDesktop = async <T = unknown>(command: string, args?: Record<
  * new desktop window (e.g. Mini Chat). Runtime switching only updates the
  * renderer's in-memory runtime; the main process's per-window config stays at
  * its creation-time value, so window-opening commands must carry the live
- * endpoint, bearer token, and custom request headers explicitly.
+ * endpoint, bearer token, custom request headers, and runtime identity
+ * explicitly.
  */
 export const getDesktopRuntimeEndpointArgs = (): {
   apiBaseUrl: string;
   clientToken: string;
   requestHeaders: Record<string, string>;
+  runtimeKey: string;
 } => ({
   apiBaseUrl: getRuntimeApiBaseUrl(),
   clientToken: getRuntimeBearerTokenSync(),
   requestHeaders: getRuntimeExtraHeadersSync(),
+  runtimeKey: getRuntimeKey(),
 });
 
 type LaunchAtLoginStatus = {
