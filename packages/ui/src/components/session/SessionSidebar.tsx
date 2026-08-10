@@ -38,7 +38,7 @@ import { ProjectEditDialog } from '@/components/layout/ProjectEditDialog';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
 import { SessionGroupSection } from './sidebar/SessionGroupSection';
 import { SidebarHeader } from './sidebar/SidebarHeader';
-import { FleetSidebarSection } from './sidebar/FleetSidebarSection';
+import { WorkspaceSessionsSection } from './sidebar/WorkspaceSessionsSection';
 import { SidebarNav } from './sidebar/SidebarNav';
 import { SidebarActivitySections } from './sidebar/SidebarActivitySections';
 import { SidebarFooter } from './sidebar/SidebarFooter';
@@ -1733,7 +1733,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const topContent = React.useMemo(
     () => (
       <>
-        {!hasSessionSearchQuery ? <FleetSidebarSection /> : null}
+        {!hasSessionSearchQuery ? <WorkspaceSessionsSection /> : null}
         {!isVSCode && showRecentSection && !hasSessionSearchQuery ? (
           <SidebarActivitySections
             sections={activitySections}

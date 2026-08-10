@@ -15,6 +15,8 @@ import { useFleetSummaryStore } from '@/fleet/fleet-summary-store';
 import { FleetSummaryBridge } from '@/fleet/FleetSummaryBridge';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { openWorkspaceSessionEventStream } from '@/workspaces/session-index-client';
 import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
@@ -178,6 +180,31 @@ const WorkspaceCatalogBridge: React.FC = () => {
   return null;
 };
 
+// Session Index bridge: hydrates the cross-connection lightweight session
+// index, subscribes to the incremental event stream, and recovers from a
+// revision gap by re-fetching the snapshot. One SSE connection serves the
+// whole client; the server keeps at most one upstream stream per connection.
+const SessionIndexBridge: React.FC = () => {
+  React.useEffect(() => {
+    const store = useWorkspaceSessionIndexStore.getState();
+    void store.refresh().catch(() => undefined);
+    const stop = openWorkspaceSessionEventStream((event) => {
+      useWorkspaceSessionIndexStore.getState().applyEvent(event);
+      if (useWorkspaceSessionIndexStore.getState().consumeRevisionGap()) {
+        void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
+      }
+    }, new AbortController().signal);
+    const unsubscribe = subscribeRuntimeEndpointChanged(() => {
+      void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
+    });
+    return () => {
+      stop();
+      unsubscribe();
+    };
+  }, []);
+  return null;
+};
+
 export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
@@ -193,6 +220,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
       <FleetRegistryBridge />
       <FleetSummaryBridge />
       <WorkspaceCatalogBridge />
+      <SessionIndexBridge />
     </>
   );
 }

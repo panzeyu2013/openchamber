@@ -29,18 +29,14 @@
 - `SidebarHeader.tsx`: Top header UI for add-project, session search, selection mode, project sort, and the display menu (recent toggle, collapse/expand all).
 - `SidebarNav.tsx`: Text navigation rows above the tree (New session, Scheduled, Multi-run, Archive); hidden in VS Code.
 - `SidebarActivitySections.tsx`: Global top section renderer; currently used for the `recent` section only, styled as a zone header.
-- `FleetSidebarSection.tsx`: Compact read-only projection of inactive saved
-  desktop hosts. It reads Fleet summaries/live state only; opening a row first
-  switches the one Active Runtime and then delegates selection to the normal
-  session UI store. Blocking/active rows sort ahead of idle rows, each host
-  renders at most eight rows plus a truthful remaining/truncation indicator,
-  and the Fleet projection is hidden while global session search is active so
-  it cannot show unfiltered
-  results. Each session button exposes activity, pending permission/question,
-  and stale state through its accessible description rather than leaving those
-  indicators visual-only. Each card subscribes to one O(1) per-host live
-  revision; an event for one host does not allocate or scan session arrays for
-  every other card.
+- `WorkspaceSessionsSection.tsx`: Unified workspace/session tree fed by the
+  Workspace Catalog and the server-side Session Index (Phase 4). One flat
+  list of workspaces with their sessions; connection labels appear only as
+  secondary disambiguation; per-connection freshness is textual (stale /
+  error / loading — never color-only). Local sessions open through the normal
+  selection path; remote rows render full offline/stale semantics and their
+  click path never switches the global runtime endpoint. The former
+  `FleetSidebarSection` (inactive-server cards) was removed with this module.
 - `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
 - `SidebarProjectsList.tsx`: Main scrollable renderer for project zones and their flat/archived groups plus empty/search states; owns project drag-to-reorder.
 - `SessionGroupSection.tsx`: Renders one flat (or archived) group: sessions first, then flat folder entries with path labels, show-more batching, and explicit loading/error/retry state for empty groups. Archived buckets (VS Code) virtualize past 50 rows.
