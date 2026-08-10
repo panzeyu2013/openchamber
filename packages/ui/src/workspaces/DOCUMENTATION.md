@@ -28,6 +28,8 @@ Workspace flow. Server mirror: `packages/web/server/lib/workspaces/`.
 | `workspace-runtime-fetch.ts` | Pure workspace-prefix path rewriting; mirrors the server proxy contract. |
 | `workspace-runtime-registry.ts` | Per-workspace handles (SDK client on the control-plane workspace base URL + scope key + URL resolver) with lease/retain and bounded LRU; no global endpoint mutation. |
 | `WorkspaceRuntimeProvider.tsx` | Provides the current workspace's handle to the full-sync surface; retains while mounted. |
+| `session-index-client.ts` | Snapshot/create/bind API calls plus the SSE events stream (revision-carrying incremental events, exponential backoff with healthy-stream reset). |
+| `session-index-store.ts` | Renderer Session Index: revision-gap detection (gap → re-fetch snapshot), clone-on-write event reducers, per-connection freshness; failure never empties a prior snapshot. |
 
 ## Navigation invariants
 

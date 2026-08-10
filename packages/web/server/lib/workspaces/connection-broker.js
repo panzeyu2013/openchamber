@@ -49,6 +49,21 @@ export const createConnectionBroker = (dependencies = {}) => {
 
   const getAdapter = (connectionId) => adapters.get(connectionId) ?? null;
 
+  /** Removes a connection adapter (profile deleted). Pending idle timers are
+   * cleared; a lease count above zero forces disposal of the adapter state. */
+  const unregisterAdapter = async (connectionId) => {
+    const adapter = adapters.get(connectionId);
+    if (!adapter) return false;
+    const entry = lifecycle.get(connectionId);
+    clearIdleTimer(connectionId);
+    if (entry && entry.leaseCount > 0 && adapter?.dispose) {
+      await adapter.dispose().catch((error) => log('dispose failed', `${connectionId}: ${error?.message ?? error}`));
+    }
+    adapters.delete(connectionId);
+    lifecycle.delete(connectionId);
+    return true;
+  };
+
   const clearIdleTimer = (connectionId) => {
     const entry = lifecycle.get(connectionId);
     if (entry?.idleTimer) {
@@ -123,6 +138,7 @@ export const createConnectionBroker = (dependencies = {}) => {
 
   return {
     registerAdapter,
+    unregisterAdapter,
     listConnectionIds,
     hasAdapter,
     getAdapter,

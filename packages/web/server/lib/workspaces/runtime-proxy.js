@@ -52,6 +52,7 @@ export const registerWorkspaceRuntimeProxyRoutes = (app, dependencies) => {
   const {
     catalogStore,
     connectionBroker,
+    credentialProvider = null,
     logger = null,
   } = dependencies;
 
@@ -63,14 +64,14 @@ export const registerWorkspaceRuntimeProxyRoutes = (app, dependencies) => {
       error.code = 'catalog_workspace_not_found';
       throw error;
     }
-    const adapter = connectionBroker.getAdapter(workspace.connectionId);
-    if (!adapter) {
+    const resolved = await connectionBroker.resolveConnection(workspace.connectionId);
+    if (!resolved) {
       const error = new Error('Connection is not available');
       error.status = 404;
       error.code = 'catalog_connection_not_found';
       throw error;
     }
-    return { workspace, adapter };
+    return { workspace, profile: resolved.profile, adapter: resolved.adapter };
   };
 
   const handleForward = (req, res) => {
@@ -101,6 +102,8 @@ export const registerWorkspaceRuntimeProxyRoutes = (app, dependencies) => {
         const upstream = await context.adapter.fetch({
           workspace: context.workspace,
           canonicalPath: context.workspace.canonicalPath,
+          profile: context.profile,
+          credentialProvider: context.credentialProvider,
         }, req, parsed.restPath);
         if (!upstream || typeof upstream.status !== 'number') {
           return sendJsonError(res, 502, 'Upstream returned an invalid response', 'catalog_runtime_bad_upstream');

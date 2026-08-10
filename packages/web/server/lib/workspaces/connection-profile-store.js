@@ -27,6 +27,12 @@ const validateTarget = (target) => {
       ...(typeof target.credentialRef === 'string' && target.credentialRef.length > 0
         ? { credentialRef: target.credentialRef }
         : {}),
+      ...(typeof target.clientToken === 'string' && target.clientToken.length > 0
+        ? { clientToken: target.clientToken }
+        : {}),
+      ...(Array.isArray(target.allowRedirectHosts)
+        ? { allowRedirectHosts: target.allowRedirectHosts.filter((host) => typeof host === 'string' && host.length > 0) }
+        : {}),
     };
   }
   if (target.kind === 'relay') {

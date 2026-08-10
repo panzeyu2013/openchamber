@@ -1708,6 +1708,12 @@ async function main(options = {}) {
   void workspacesRuntime.migrate().catch((error) => {
     console.error('[workspaces] legacy migration failed:', error?.message ?? error);
   });
+  // Session index: one snapshot pass + one event stream per saved connection.
+  // Started after route registration so a fast client cannot race the
+  // initial snapshot; failures are per-connection and non-fatal.
+  void workspacesRuntime.startSessionIndex().catch((error) => {
+    console.error('[workspaces] session index start failed:', error?.message ?? error);
+  });
 
   const previewProxyRuntime = createPreviewProxyRuntime({
     crypto,

@@ -104,6 +104,51 @@ export const deleteWorkspace = async (workspaceId: string, ifMatchRevision: numb
   return revision;
 };
 
+export interface ConnectionCreateInput {
+  label: string;
+  baseUrl: string;
+  clientToken?: string;
+}
+
+export interface ConnectionUpdateInput {
+  label?: string;
+  baseUrl?: string;
+  clientToken?: string;
+}
+
+export const createConnection = async (input: ConnectionCreateInput): Promise<ConnectionProfileSummary> => {
+  const body = await jsonRequest('/api/connections', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+  const connection = body && typeof body === 'object' ? (body as { connection?: ConnectionProfileSummary }).connection : null;
+  if (!connection) {
+    throw new CatalogClientError('Create connection response has an invalid shape', 500, 'catalog_invalid_response');
+  }
+  return connection;
+};
+
+export const updateConnection = async (
+  connectionId: string,
+  patch: ConnectionUpdateInput,
+): Promise<ConnectionProfileSummary> => {
+  const body = await jsonRequest(`/api/connections/${encodeURIComponent(connectionId)}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  const connection = body && typeof body === 'object' ? (body as { connection?: ConnectionProfileSummary }).connection : null;
+  if (!connection) {
+    throw new CatalogClientError('Update connection response has an invalid shape', 500, 'catalog_invalid_response');
+  }
+  return connection;
+};
+
+export const deleteConnection = async (connectionId: string): Promise<void> => {
+  await jsonRequest(`/api/connections/${encodeURIComponent(connectionId)}`, { method: 'DELETE' });
+};
+
 export interface WorkspaceProbeResult {
   ok: boolean;
   canonicalPath: string | null;

@@ -306,7 +306,9 @@ const isUrlAuthReadableHttpPath = (pathname) => {
     // used by mini-chat/tray surfaces that may only hold a URL token.
     || pathname === '/api/workspaces'
     || /^\/api\/workspaces\/[^/]+\/children$/.test(pathname)
-    || pathname === '/api/connections';
+    || pathname === '/api/connections'
+    || pathname === '/api/workspace-sessions/snapshot'
+    || pathname === '/api/workspace-sessions/events';
 };
 
 const isUrlAuthWebSocketPath = (pathname) => {

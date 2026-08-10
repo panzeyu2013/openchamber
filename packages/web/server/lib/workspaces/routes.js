@@ -1,4 +1,5 @@
 import { validateCreateWorkspaceInput, validateUpdateWorkspaceInput, toConnectionSummary } from './catalog-schema.js';
+import { createSafeUpstreamValidator } from './direct-adapter.js';
 
 /**
  * Workspace Catalog API routes.
@@ -25,11 +26,48 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     catalogStore,
     connectionBroker,
     profileStore,
+    credentialProvider = null,
+    onConnectionsChanged = null,
+    // Inject for tests; defaults to the real DNS-resolving validator.
+    safeUpstreamValidator = createSafeUpstreamValidator({}),
   } = dependencies;
+
+  const { assertSafeUpstreamUrl } = safeUpstreamValidator;
 
   const resolveAdapter = (connectionId) => {
     const adapter = connectionBroker.getAdapter(connectionId);
     return adapter ?? null;
+  };
+
+  const validateDirectTargetInput = async (input, existingProfile) => {
+    const label = typeof input?.label === 'string' ? input.label.trim() : '';
+    if (!label) throw connectionInputError('label is required');
+    const baseUrl = typeof input?.baseUrl === 'string' ? input.baseUrl.trim() : '';
+    if (!baseUrl) throw connectionInputError('baseUrl is required');
+    let normalizedUrl;
+    try {
+      normalizedUrl = new URL(baseUrl);
+      if (normalizedUrl.protocol !== 'http:' && normalizedUrl.protocol !== 'https:') throw new Error('unsupported protocol');
+    } catch {
+      throw connectionInputError('baseUrl must be a valid http(s) URL');
+    }
+    try {
+      await assertSafeUpstreamUrl(baseUrl);
+    } catch (error) {
+      throw connectionInputError(error.message);
+    }
+    const clientToken = typeof input?.clientToken === 'string' && input.clientToken.length > 0
+      ? input.clientToken
+      : (existingProfile?.target?.clientToken ?? '');
+    const allowRedirectHosts = Array.isArray(input?.allowRedirectHosts)
+      ? input.allowRedirectHosts.filter((host) => typeof host === 'string' && host.trim().length > 0).map((host) => host.trim())
+      : (existingProfile?.target?.allowRedirectHosts ?? []);
+    return {
+      kind: 'direct',
+      baseUrl: normalizedUrl.origin + normalizedUrl.pathname.replace(/\/+$/, ''),
+      ...(clientToken ? { clientToken } : {}),
+      ...(allowRedirectHosts.length > 0 ? { allowRedirectHosts } : {}),
+    };
   };
 
   app.get('/api/workspaces', async (_req, res) => {
@@ -40,7 +78,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
         const records = await profileStore.listPrivateRecords();
         for (const record of records) {
           const adapter = resolveAdapter(record.id);
-          const capabilities = adapter?.capabilities ?? localAdapterCapabilities(record.id);
+          const capabilities = adapter?.capabilities ?? localAdapterCapabilities(record);
           const summary = toConnectionSummary(record, capabilities);
           if (summary) connections.push(summary);
         }
@@ -134,7 +172,8 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
       return sendError(res, 404, 'Unknown connection', 'catalog_connection_not_found');
     }
     try {
-      const probe = await adapter.probe({}, workspace.canonicalPath);
+      const profile = profileStore ? await profileStore.getPrivateRecord(workspace.connectionId) : null;
+      const probe = await adapter.probe({ profile }, workspace.canonicalPath);
       res.json(probe);
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : 'Probe failed');
@@ -171,7 +210,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
       const records = await profileStore.listPrivateRecords();
       const connections = records.map((record) => {
         const adapter = resolveAdapter(record.id);
-        return toConnectionSummary(record, adapter?.capabilities ?? localAdapterCapabilities(record.id));
+        return toConnectionSummary(record, adapter?.capabilities ?? localAdapterCapabilities(record));
       }).filter(Boolean);
       res.json({ connections });
     } catch (error) {
@@ -185,7 +224,8 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
       return sendError(res, 404, 'Unknown connection', 'catalog_connection_not_found');
     }
     try {
-      const probe = await adapter.probe({}, null);
+      const profile = profileStore ? await profileStore.getPrivateRecord(req.params.connectionId) : null;
+      const probe = await adapter.probe({ profile }, null);
       res.json(probe);
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : 'Probe failed');
@@ -207,12 +247,104 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
       ? req.query.path
       : (typeof req.query.path === 'string' ? req.query.path : '/');
     try {
-      const result = await adapter.listChildren({}, directory);
+      const result = await adapter.listChildren({ profile: await profileStore.getPrivateRecord(req.params.connectionId) }, directory);
       res.json(result);
     } catch (error) {
       sendError(res, error.status ?? 400, error.message, error.code);
     }
   });
+
+  // ---- Connection profile CRUD (Phase 3: direct connections) ----
+  // Private connection details (baseUrl, clientToken, redirect allowlist)
+  // are stored ONLY in the server-side profile store; public responses go
+  // through toConnectionSummary and never contain them.
+
+  const profileToSummary = async (record) => {
+    const adapter = resolveAdapter(record.id);
+    return toConnectionSummary(record, adapter?.capabilities ?? localAdapterCapabilities(record));
+  };
+
+  const withConnectionsChanged = async (res, action) => {
+    try {
+      const record = await action();
+      if (onConnectionsChanged) await onConnectionsChanged();
+      res.status(200).json({ connection: await profileToSummary(record) });
+    } catch (error) {
+      if (error?.status) return sendError(res, error.status, error.message, error.code);
+      sendError(res, 500, error instanceof Error ? error.message : 'Failed to update connections');
+    }
+  };
+
+  app.post('/api/connections', async (req, res) => {
+    if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
+    let target;
+    try {
+      target = await validateDirectTargetInput(req.body, null);
+    } catch (error) {
+      return sendError(res, error.status ?? 400, error.message, error.code);
+    }
+    return withConnectionsChanged(res, async () => {
+      const record = await profileStore.upsertConnection({
+        id: '',
+        label: typeof req.body?.label === 'string' ? req.body.label.trim() : '',
+        target,
+      });
+      return record;
+    });
+  });
+
+  app.patch('/api/connections/:connectionId', async (req, res) => {
+    if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
+    const existing = await profileStore.getPrivateRecord(req.params.connectionId);
+    if (!existing) return sendError(res, 404, 'Unknown connection', 'catalog_connection_not_found');
+    if (existing.target?.kind !== 'direct') {
+      return sendError(res, 400, 'Only direct connections can be edited', 'catalog_connection_not_editable');
+    }
+    let target;
+    try {
+      target = await validateDirectTargetInput(req.body, existing);
+    } catch (error) {
+      return sendError(res, error.status ?? 400, error.message, error.code);
+    }
+    return withConnectionsChanged(res, async () => {
+      const record = await profileStore.upsertConnection({
+        ...existing,
+        label: typeof req.body?.label === 'string' ? req.body.label.trim() : existing.label,
+        target,
+      });
+      return record;
+    });
+  });
+
+  app.delete('/api/connections/:connectionId', async (req, res) => {
+    if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
+    const connectionId = req.params.connectionId;
+    if (connectionId === 'local') {
+      return sendError(res, 400, 'The local connection cannot be deleted', 'catalog_connection_not_deletable');
+    }
+    const existing = await profileStore.getPrivateRecord(connectionId);
+    if (!existing) return sendError(res, 404, 'Unknown connection', 'catalog_connection_not_found');
+    const snapshot = await catalogStore.getSnapshot();
+    const referencing = snapshot.workspaces.filter((workspace) => workspace.connectionId === connectionId);
+    if (referencing.length > 0) {
+      return sendError(res, 409, `Connection is used by ${referencing.length} workspace(s)`, 'catalog_connection_in_use');
+    }
+    try {
+      await profileStore.deleteConnection(connectionId);
+      if (onConnectionsChanged) await onConnectionsChanged();
+      res.json({ deleted: true });
+    } catch (error) {
+      if (error?.status) return sendError(res, error.status, error.message, error.code);
+      sendError(res, 500, error instanceof Error ? error.message : 'Failed to delete connection');
+    }
+  });
+};
+
+const connectionInputError = (message) => {
+  const error = new Error(message);
+  error.status = 400;
+  error.code = 'catalog_invalid_input';
+  return error;
 };
 
 const findWorkspace = async (catalogStore, workspaceId, res) => {
@@ -248,10 +380,14 @@ const basenameOf = (canonicalPath) => {
   return parts.length > 0 ? parts[parts.length - 1] : canonicalPath;
 };
 
-/** Phase 1: only the local adapter is registered, so any profile whose
- * adapter is missing reports conservative capabilities. */
-const localAdapterCapabilities = (connectionId) => (
-  connectionId === 'local'
-    ? { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true }
-    : { pathBrowse: false, terminal: false, files: false, git: false, eventStream: false }
-);
+/** Capabilities fallback when no adapter is registered yet (boot race or a
+ * kind whose adapter is injected later, e.g. Electron SSH). Local and direct
+ * connections are full-capability by construction; other kinds stay
+ * conservative until their adapter registers. */
+const localAdapterCapabilities = (record) => {
+  const kind = record?.target?.kind;
+  if (kind === 'local' || kind === 'direct') {
+    return { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true };
+  }
+  return { pathBrowse: false, terminal: false, files: false, git: false, eventStream: false };
+};

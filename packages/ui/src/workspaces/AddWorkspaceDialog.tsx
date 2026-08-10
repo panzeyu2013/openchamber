@@ -15,7 +15,7 @@ import { toast } from '@/components/ui';
 import { Icon } from '@/components/icon/Icon';
 import { useDeviceInfo } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
-import { listConnectionChildren, type BrowseChild } from './catalog-client';
+import { createConnection, listConnectionChildren, type BrowseChild } from './catalog-client';
 import { useWorkspaceCatalogStore } from './catalog-store';
 import type { ConnectionProfileSummary, WorkspaceDescriptor } from './types';
 
@@ -72,6 +72,12 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
   const [browseEntries, setBrowseEntries] = React.useState<BrowseChild[]>([]);
   const [browseError, setBrowseError] = React.useState<string | null>(null);
   const [isBrowseLoading, setIsBrowseLoading] = React.useState(false);
+  const [isAddingServer, setIsAddingServer] = React.useState(false);
+  const [serverLabel, setServerLabel] = React.useState('');
+  const [serverBaseUrl, setServerBaseUrl] = React.useState('');
+  const [serverToken, setServerToken] = React.useState('');
+  const [serverError, setServerError] = React.useState<string | null>(null);
+  const [isServerSubmitting, setIsServerSubmitting] = React.useState(false);
 
   const selectedConnection: ConnectionProfileSummary | null =
     connections.find((connection) => connection.id === selectedConnectionId) ?? localConnection;
@@ -115,6 +121,32 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
       setIsBrowseLoading(false);
     }
   }, [selectedConnection, t]);
+
+  const handleAddServer = React.useCallback(async () => {
+    setServerError(null);
+    if (!serverLabel.trim() || !serverBaseUrl.trim()) {
+      setServerError(t('workspaces.dialog.server.error.required'));
+      return;
+    }
+    setIsServerSubmitting(true);
+    try {
+      const connection = await createConnection({
+        label: serverLabel.trim(),
+        baseUrl: serverBaseUrl.trim(),
+        ...(serverToken.trim() ? { clientToken: serverToken.trim() } : {}),
+      });
+      await catalogRefresh();
+      setSelectedConnectionId(connection.id);
+      setIsAddingServer(false);
+      setServerLabel('');
+      setServerBaseUrl('');
+      setServerToken('');
+    } catch (serverFailure) {
+      setServerError(serverFailure instanceof Error ? serverFailure.message : t('workspaces.dialog.server.error.createFailed'));
+    } finally {
+      setIsServerSubmitting(false);
+    }
+  }, [catalogRefresh, serverBaseUrl, serverLabel, serverToken, t]);
 
   const openBrowser = React.useCallback(() => {
     setIsBrowsing(true);
@@ -180,6 +212,59 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
               ))}
             </SelectContent>
           </Select>
+          {!isAddingServer ? (
+            <button
+              type="button"
+              className="self-start text-sm text-foreground/70 underline-offset-2 hover:underline"
+              onClick={() => setIsAddingServer(true)}
+            >
+              {t('workspaces.dialog.server.add')}
+            </button>
+          ) : (
+            <div className="flex flex-col gap-2 rounded-md border p-3">
+              <label className="text-sm font-medium" htmlFor="server-label">{t('workspaces.dialog.server.form.label')}</label>
+              <Input
+                id="server-label"
+                value={serverLabel}
+                onChange={(event) => setServerLabel(event.target.value)}
+                placeholder={t('workspaces.dialog.server.form.labelPlaceholder')}
+              />
+              <label className="text-sm font-medium" htmlFor="server-url">{t('workspaces.dialog.server.form.url')}</label>
+              <Input
+                id="server-url"
+                value={serverBaseUrl}
+                onChange={(event) => setServerBaseUrl(event.target.value)}
+                placeholder="https://example.com"
+              />
+              <label className="text-sm font-medium" htmlFor="server-token">{t('workspaces.dialog.server.form.token')}</label>
+              <Input
+                id="server-token"
+                type="password"
+                value={serverToken}
+                onChange={(event) => setServerToken(event.target.value)}
+                placeholder={t('workspaces.dialog.server.form.tokenPlaceholder')}
+              />
+              {serverError && <p role="alert" className="text-sm text-destructive">{serverError}</p>}
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsAddingServer(false)}
+                >
+                  {t('gitView.common.cancel')}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => void handleAddServer()}
+                  disabled={isServerSubmitting}
+                >
+                  {isServerSubmitting ? t('workspaces.dialog.server.form.saving') : t('workspaces.dialog.server.form.save')}
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-1.5">

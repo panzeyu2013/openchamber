@@ -15,6 +15,7 @@ const createAdapterStub = (fetchImpl, capabilities = { eventStream: true }) => (
 const createBrokerStub = (adapter) => ({
   getAdapter: () => adapter,
   acquireLease: () => () => {},
+  resolveConnection: async () => (adapter ? { profile: null, adapter } : null),
 });
 
 const routeApp = (dependencies) => {

@@ -145,7 +145,7 @@ describe('GET /api/workspaces', () => {
         id: 'remote-1',
         label: 'Remote',
         accentColor: '#abc',
-        capabilities: { pathBrowse: false, terminal: false, files: false, git: false, eventStream: false },
+        capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true },
       },
     ]);
 
@@ -441,7 +441,7 @@ describe('GET /api/connections', () => {
       {
         id: 'remote-1',
         label: 'Remote',
-        capabilities: { pathBrowse: false, terminal: false, files: false, git: false, eventStream: false },
+        capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true },
       },
     ]);
     const serialized = JSON.stringify(response.body);
