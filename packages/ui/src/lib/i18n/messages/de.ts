@@ -1495,6 +1495,7 @@ export const dict = {
   'workspaces.sidebar.stale': 'Veraltet',
   'workspaces.sidebar.serverOf': 'auf {server}',
   'workspaces.sidebar.moreAvailable': 'Weitere Sitzungen verfügbar',
+  'workspaces.sidebar.serverHasMoreSessions': 'Weitere Sitzungen auf diesem Server verfügbar',
   'workspaces.sidebar.openSessionAria': '{title} in {workspace} öffnen',
   'workspaces.sidebar.remoteNotWired': 'Das Öffnen von Sitzungen auf anderen Servern folgt mit der Sync-Migration.',
   'workspaces.dialog.description': 'Wähle einen Server und einen Pfad darauf. Arbeitsbereiche aller Server stehen in einer Liste.',

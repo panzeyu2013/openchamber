@@ -84,6 +84,7 @@ export const createConnectionProfileStore = (dependencies) => {
   } = dependencies;
 
   let records = null;
+  let recoveryState = null; // { recovered: true, reason: string } | null
 
   const load = async () => {
     let raw;
@@ -104,6 +105,7 @@ export const createConnectionProfileStore = (dependencies) => {
       // empty profile set that could silently orphan catalog workspaces; the
       // local connection is rebuilt but the failure is surfaced to callers.
       records = ensureLocalConnection([]);
+      recoveryState = { recovered: true, reason: 'connection profiles file is corrupt' };
       const error = new Error('connection profile store is corrupt');
       error.code = 'connection_profiles_corrupt';
       error.recovered = true;
@@ -114,11 +116,27 @@ export const createConnectionProfileStore = (dependencies) => {
       : [];
     const seenIds = new Set();
     const validated = [];
+    let dropped = 0;
     for (const entry of input) {
       const record = validatePrivateRecord(entry, seenIds);
       if (record) validated.push(record);
+      else dropped += 1;
     }
     records = ensureLocalConnection(validated);
+    if (dropped > 0) {
+      // Dropping invalid records silently would orphan catalog workspaces
+      // that reference them; surface the shrink as an explicit recovery
+      // state and a loud config failure instead.
+      recoveryState = {
+        recovered: true,
+        reason: `connection profiles contained ${dropped} invalid record(s); loaded the valid subset`,
+      };
+      const error = new Error(`connection profile store contains ${dropped} invalid record(s)`);
+      error.code = 'connection_profiles_corrupt';
+      error.recovered = true;
+      error.dropped = dropped;
+      throw error;
+    }
     return records;
   };
 
@@ -188,6 +206,7 @@ export const createConnectionProfileStore = (dependencies) => {
 
   const getDiagnostics = async () => ({
     connectionCount: (await readRecords()).length,
+    recoveryState,
   });
 
   return {

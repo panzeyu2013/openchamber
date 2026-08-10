@@ -1630,6 +1630,7 @@ export const dict: Record<I18nKey, string> = {
   "workspaces.sidebar.stale": "Застаріло",
   "workspaces.sidebar.serverOf": "на {server}",
   "workspaces.sidebar.moreAvailable": "Доступно більше сесій",
+  "workspaces.sidebar.serverHasMoreSessions": "На цьому сервері доступно більше сесій",
   "workspaces.sidebar.openSessionAria": "Відкрити {title} у {workspace}",
   "workspaces.sidebar.remoteNotWired": "Відкриття сесій з іншого сервера з'явиться з міграцією синхронізації.",
   "workspaces.dialog.description": "Виберіть сервер і шлях на ньому. Робочі простори з усіх серверів розміщуються в одному списку.",

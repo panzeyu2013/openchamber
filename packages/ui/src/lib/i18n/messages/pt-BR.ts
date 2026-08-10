@@ -1630,6 +1630,7 @@ export const dict: Record<I18nKey, string> = {
   "workspaces.sidebar.stale": "Desatualizado",
   "workspaces.sidebar.serverOf": "em {server}",
   "workspaces.sidebar.moreAvailable": "Mais sessões disponíveis",
+  "workspaces.sidebar.serverHasMoreSessions": "Mais sessões disponíveis neste servidor",
   "workspaces.sidebar.openSessionAria": "Abrir {title} em {workspace}",
   "workspaces.sidebar.remoteNotWired": "Abrir sessões de outro servidor chega com a migração de sincronização.",
   "workspaces.dialog.description": "Escolha um servidor e um caminho nele. Espaços de trabalho de todos os servidores ficam em uma única lista.",

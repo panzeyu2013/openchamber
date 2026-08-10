@@ -259,6 +259,51 @@ describe('direct adapter', () => {
     ]);
   });
 
+  it('rejects directory hints outside the workspace boundary before forwarding', async () => {
+    let calls = 0;
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response('ok', { status: 200 });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = { ...createContext(), canonicalPath: '/remote/proj' };
+    for (const headers of [
+      { 'x-opencode-directory': '/etc' },
+      { 'x-openchamber-directory': '/remote/proj/../secret' },
+    ]) {
+      await expect(adapter.fetch(context, { method: 'GET', headers }, '/api/session')).rejects.toMatchObject({
+        code: 'catalog_path_outside_workspace',
+        status: 403,
+      });
+    }
+    await expect(
+      adapter.fetch(context, { method: 'GET', headers: new Headers(), query: { directory: '/remote/other' } }, '/api/session'),
+    ).rejects.toMatchObject({ code: 'catalog_path_outside_workspace', status: 403 });
+    expect(calls).toBe(0);
+  });
+
+  it('overwrites the directory headers with the canonical path on forward', async () => {
+    let captured;
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async (_url, init) => {
+        captured = init;
+        return new Response('ok', { status: 200 });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    await adapter.fetch(
+      { ...createContext(), canonicalPath: '/remote/proj' },
+      { method: 'GET', headers: new Headers({ 'x-opencode-directory': '/remote/proj/sub' }) },
+      '/api/session',
+    );
+    expect(captured.headers.get('x-opencode-directory')).toBe('/remote/proj');
+    expect(captured.headers.get('x-openchamber-directory')).toBe('/remote/proj');
+  });
+
   it('openEventStream streams SSE responses and rejects non-ok upstreams', async () => {
     const body = Readable.from(['data: {"a":1}\n\n']);
     const adapter = createDirectWorkspaceAdapter({

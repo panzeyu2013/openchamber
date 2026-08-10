@@ -79,8 +79,9 @@ const WorkspaceGroup: React.FC<{
   connection: ConnectionProfileSummary | null;
   sessions: WorkspaceSessionSummary[];
   truncated: boolean;
+  connectionTruncated: boolean;
   isLocalConnection: boolean;
-}> = React.memo(({ workspace, connection, sessions, truncated, isLocalConnection }) => {
+}> = React.memo(({ workspace, connection, sessions, truncated, connectionTruncated, isLocalConnection }) => {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = React.useState(false);
   const needsServerDisambiguation = !isLocalConnection && Boolean(connection);
@@ -119,6 +120,9 @@ const WorkspaceGroup: React.FC<{
           ))}
           {truncated ? (
             <p className="px-1.5 py-0.5 text-[11px] text-muted-foreground">{t('workspaces.sidebar.moreAvailable')}</p>
+          ) : null}
+          {connectionTruncated ? (
+            <p className="px-1.5 py-0.5 text-[11px] text-muted-foreground">{t('workspaces.sidebar.serverHasMoreSessions')}</p>
           ) : null}
         </div>
       ) : null}
@@ -159,6 +163,7 @@ export const WorkspaceSessionsSection: React.FC = () => {
           connection: connectionsById.get(workspace.connectionId) ?? null,
           sessions,
           truncated: sessions.length > RENDER_SESSION_LIMIT,
+          connectionTruncated: sessionSnapshot.truncatedByConnection?.[workspace.connectionId] === true,
           freshness,
           isLocalConnection: workspace.connectionId === 'local',
         };
@@ -191,6 +196,7 @@ export const WorkspaceSessionsSection: React.FC = () => {
             connection={group.connection}
             sessions={group.sessions}
             truncated={group.truncated}
+            connectionTruncated={group.connectionTruncated}
             isLocalConnection={group.isLocalConnection}
           />
         ))}

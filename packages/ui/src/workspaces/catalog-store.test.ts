@@ -152,11 +152,10 @@ describe('workspace catalog store', () => {
     expect(state.snapshot?.workspaces[0]).toEqual(makeDescriptor('ws-1', { label: 'Server label', updatedAt: 2000 }));
   });
 
-  test('updateWorkspace rolls back to the captured snapshot on failure', async () => {
+  test('updateWorkspace reverts only the affected descriptor on failure', async () => {
     const workspace = makeDescriptor('ws-1');
     fetchSnapshotImpl = async () => makeSnapshot(1, [workspace]);
     await useWorkspaceCatalogStore.getState().refresh();
-    const previous = useWorkspaceCatalogStore.getState().snapshot;
 
     updateImpl = async () => {
       throw new Error('update exploded');
@@ -164,10 +163,61 @@ describe('workspace catalog store', () => {
     await expect(useWorkspaceCatalogStore.getState().updateWorkspace('ws-1', { label: 'Nope' })).rejects.toThrow('update exploded');
 
     const state = useWorkspaceCatalogStore.getState();
-    expect(state.snapshot).toBe(previous);
     expect(state.snapshot).toEqual(makeSnapshot(1, [workspace]));
     expect(state.status).toBe('ready');
     expect(state.lastError).toBe('update exploded');
+  });
+
+  test('updateWorkspace failure does not wipe concurrent changes to other workspaces', async () => {
+    fetchSnapshotImpl = async () => makeSnapshot(1, [makeDescriptor('ws-1'), makeDescriptor('ws-2')]);
+    await useWorkspaceCatalogStore.getState().refresh();
+
+    // A concurrent successful update lands while the failing update is in flight.
+    let resolveUpdate: (value: { workspace: WorkspaceDescriptor; revision: number }) => void = () => {};
+    updateImpl = (workspaceId) => {
+      if (workspaceId === 'ws-1') {
+        return new Promise((_resolve, reject) => {
+          setTimeout(() => reject(new Error('update exploded')), 5);
+        });
+      }
+      return new Promise((resolve) => { resolveUpdate = resolve; });
+    };
+    const pending = useWorkspaceCatalogStore.getState().updateWorkspace('ws-2', { label: 'Concurrent' });
+    resolveUpdate({ workspace: makeDescriptor('ws-2', { label: 'Concurrent', updatedAt: 2000 }), revision: 4 });
+    await pending;
+    expect(useWorkspaceCatalogStore.getState().snapshot?.workspaces[1]?.label).toBe('Concurrent');
+
+    await expect(useWorkspaceCatalogStore.getState().updateWorkspace('ws-1', { label: 'Nope' })).rejects.toThrow('update exploded');
+
+    const state = useWorkspaceCatalogStore.getState();
+    const byId = new Map(state.snapshot?.workspaces.map((entry) => [entry.id, entry]));
+    expect(byId.get('ws-1')?.label).toBe('Workspace ws-1');
+    // The concurrent success survives the rollback.
+    expect(byId.get('ws-2')?.label).toBe('Concurrent');
+    expect(state.snapshot?.revision).toBe(4);
+  });
+
+  test('updateWorkspace replays after a 409 revision conflict', async () => {
+    fetchSnapshotImpl = async () => makeSnapshot(1, [makeDescriptor('ws-1')]);
+    await useWorkspaceCatalogStore.getState().refresh();
+
+    let updateCalls = 0;
+    updateImpl = async (workspaceId, _patch, ifMatchRevision) => {
+      updateCalls += 1;
+      if (updateCalls === 1) {
+        throw new CatalogClientError('Catalog revision conflict', 409, 'catalog_revision_conflict');
+      }
+      expect(ifMatchRevision).toBe(7);
+      return { workspace: makeDescriptor('ws-1', { label: 'Replayed', updatedAt: 3000 }), revision: 8 };
+    };
+    fetchSnapshotImpl = async () => makeSnapshot(7, [makeDescriptor('ws-1')]);
+
+    const result = await useWorkspaceCatalogStore.getState().updateWorkspace('ws-1', { label: 'Replayed' });
+    expect(updateCalls).toBe(2);
+    expect(result.label).toBe('Replayed');
+    const state = useWorkspaceCatalogStore.getState();
+    expect(state.snapshot?.revision).toBe(8);
+    expect(state.snapshot?.workspaces[0]?.label).toBe('Replayed');
   });
 
   test('deleteWorkspace removes the workspace optimistically and updates the revision', async () => {
@@ -188,10 +238,9 @@ describe('workspace catalog store', () => {
     expect(state.snapshot?.workspaces.map((entry) => entry.id)).toEqual(['ws-2']);
   });
 
-  test('deleteWorkspace rolls back the optimistic removal on failure', async () => {
+  test('deleteWorkspace re-inserts the removed descriptor on failure', async () => {
     fetchSnapshotImpl = async () => makeSnapshot(1, [makeDescriptor('ws-1'), makeDescriptor('ws-2')]);
     await useWorkspaceCatalogStore.getState().refresh();
-    const previous = useWorkspaceCatalogStore.getState().snapshot;
 
     deleteImpl = async () => {
       throw new Error('delete exploded');
@@ -199,10 +248,54 @@ describe('workspace catalog store', () => {
     await expect(useWorkspaceCatalogStore.getState().deleteWorkspace('ws-1')).rejects.toThrow('delete exploded');
 
     const state = useWorkspaceCatalogStore.getState();
-    expect(state.snapshot).toBe(previous);
     expect(state.snapshot?.workspaces.map((entry) => entry.id)).toEqual(['ws-1', 'ws-2']);
     expect(state.status).toBe('ready');
     expect(state.lastError).toBe('delete exploded');
+  });
+
+  test('deleteWorkspace replays after a 409 revision conflict', async () => {
+    fetchSnapshotImpl = async () => makeSnapshot(1, [makeDescriptor('ws-1')]);
+    await useWorkspaceCatalogStore.getState().refresh();
+
+    let deleteCalls = 0;
+    deleteImpl = async (_workspaceId, ifMatchRevision) => {
+      deleteCalls += 1;
+      if (deleteCalls === 1) {
+        throw new CatalogClientError('Catalog revision conflict', 409, 'catalog_revision_conflict');
+      }
+      expect(ifMatchRevision).toBe(9);
+      return 10;
+    };
+    fetchSnapshotImpl = async () => makeSnapshot(9, [makeDescriptor('ws-1')]);
+
+    await useWorkspaceCatalogStore.getState().deleteWorkspace('ws-1');
+    expect(deleteCalls).toBe(2);
+    const state = useWorkspaceCatalogStore.getState();
+    expect(state.snapshot?.revision).toBe(10);
+    expect(state.snapshot?.workspaces).toEqual([]);
+  });
+
+  test('a stale refresh response cannot clobber a newer snapshot', async () => {
+    const newer = makeSnapshot(5, [makeDescriptor('ws-1', { label: 'Newer' })]);
+    fetchSnapshotImpl = async () => newer;
+    await useWorkspaceCatalogStore.getState().refresh();
+
+    // First refresh starts but resolves SLOWLY with an older revision.
+    let resolveSlow: (value: WorkspaceCatalogSnapshot) => void = () => {};
+    const slowSnapshot = makeSnapshot(2, [makeDescriptor('ws-1', { label: 'Stale' })]);
+    fetchSnapshotImpl = () => new Promise((resolve) => { resolveSlow = resolve; });
+    const slowRefresh = useWorkspaceCatalogStore.getState().refresh();
+
+    // A second, faster refresh applies the authoritative newer snapshot.
+    fetchSnapshotImpl = async () => newer;
+    await useWorkspaceCatalogStore.getState().refresh();
+    expect(useWorkspaceCatalogStore.getState().snapshot?.revision).toBe(5);
+
+    // The stale response arrives late and must be dropped.
+    resolveSlow(slowSnapshot);
+    await slowRefresh;
+    expect(useWorkspaceCatalogStore.getState().snapshot?.revision).toBe(5);
+    expect(useWorkspaceCatalogStore.getState().snapshot?.workspaces[0]?.label).toBe('Newer');
   });
 
   test('require returns the descriptor for a known workspace and throws otherwise', async () => {

@@ -254,6 +254,45 @@ describe('createCatalogStore', () => {
     await expect(store.load()).rejects.toThrow('catalog file is corrupt and no parseable backup exists');
   });
 
+  it('loads the valid subset but reports dropped entries as recovery', async () => {
+    const filePath = path.join(tempDir, 'workspace-catalog.json');
+    fs.writeFileSync(filePath, JSON.stringify({
+      schemaVersion: 1,
+      revision: 5,
+      connections: [
+        { id: 'ok-1', label: 'OK', capabilities: { pathBrowse: true } },
+        { id: '', label: 'Bad id' },
+        { id: 'ok-1', label: 'Duplicate' },
+      ],
+      workspaces: [
+        {
+          id: 'ws-1', connectionId: 'ok-1', path: '/a', canonicalPath: '/a', label: 'A',
+          orderKey: '', createdAt: 1, updatedAt: 1,
+        },
+        { id: 'ws-2', connectionId: 'ok-1', path: '', canonicalPath: '/b', label: 'B' },
+      ],
+      migration: { legacyProjectsImported: true, pendingConnectionIds: [] },
+    }));
+
+    const store = createStore();
+    const snapshot = await store.load();
+    expect(snapshot.connections.map((entry) => entry.id)).toEqual(['ok-1']);
+    expect(snapshot.workspaces.map((entry) => entry.id)).toEqual(['ws-1']);
+    // The shrink is surfaced explicitly — never a silent clean load.
+    const diagnostics = await store.getDiagnostics();
+    expect(diagnostics.recoveryState).toEqual({
+      recovered: true,
+      reason: 'catalog file contained 2 invalid connection(s) and 1 invalid workspace(s); loaded the valid subset',
+    });
+    // The mutation queue still works on the loaded subset.
+    const created = await store.createWorkspace({
+      connectionId: 'ok-1', canonicalPath: '/c', path: '/c', label: 'C',
+    });
+    expect(created.created).toBe(true);
+    // A later mutation clears the recovery state (the file is whole again).
+    expect((await store.getDiagnostics()).recoveryState).toBeNull();
+  });
+
   it('survives a restart on the same file', async () => {
     const first = createStore();
     await first.createWorkspace(createWorkspaceInput({ label: 'Alpha' }));

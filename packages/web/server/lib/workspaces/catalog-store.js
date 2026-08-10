@@ -65,15 +65,31 @@ export const createCatalogStore = (dependencies) => {
       return { corrupt: true };
     }
     const validated = validateCatalogDocument(parsed);
-    return validated ? { document: validated } : { corrupt: true };
+    if (!validated) return { corrupt: true };
+    const dropped = validated.dropped;
+    return dropped ? { document: validated, dropped } : { document: validated };
   };
 
   /** Loads the catalog once; a corrupt primary falls back to the backup and
-   * reports recovery. Missing files initialize an empty catalog. */
+   * reports recovery. A primary whose validation dropped invalid/duplicate
+   * entries is loaded from its valid subset but enters an EXPLICIT recovery
+   * state (never a silent clean load). Missing files initialize an empty
+   * catalog. */
   const load = async () => {
     const primary = await loadFromFile(filePath);
     if (primary === null) {
       snapshot = emptyDocument(0);
+      return snapshot;
+    }
+    if (primary.document) {
+      if (primary.dropped) {
+        recoveryState = {
+          recovered: true,
+          reason: `catalog file contained ${primary.dropped.connections} invalid connection(s) and ${primary.dropped.workspaces} invalid workspace(s); loaded the valid subset`,
+        };
+      }
+      snapshot = primary.document;
+      backupSnapshot = primary.document;
       return snapshot;
     }
     if (primary.corrupt || primary.document === undefined) {

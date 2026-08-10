@@ -110,7 +110,7 @@ describe('createConnectionProfileStore', () => {
     expect(records).toEqual([localRecord]);
   });
 
-  it('drops invalid records from a readable file instead of failing the store', async () => {
+  it('surfaces invalid records as an explicit recovery failure instead of silently shrinking', async () => {
     fs.writeFileSync(filePath, JSON.stringify({
       schemaVersion: 1,
       connections: [
@@ -122,8 +122,27 @@ describe('createConnectionProfileStore', () => {
     }));
 
     const store = createStore();
+    let error = null;
+    try {
+      await store.load();
+    } catch (caught) {
+      error = caught;
+    }
+    // The shrink is a configuration failure, never a silent clean load: the
+    // valid subset is kept (so surviving connections keep working) but the
+    // caller must see the recovery signal.
+    expect(error).toBeInstanceOf(Error);
+    expect(error.code).toBe('connection_profiles_corrupt');
+    expect(error.recovered).toBe(true);
+    expect(error.dropped).toBe(3);
+
     const records = await store.listPrivateRecords();
     expect(records.map((entry) => entry.id)).toEqual(['local', 'ok-1']);
+    const diagnostics = await store.getDiagnostics();
+    expect(diagnostics.recoveryState).toEqual({
+      recovered: true,
+      reason: 'connection profiles contained 3 invalid record(s); loaded the valid subset',
+    });
   });
 
   it('persists upserts across a restart', async () => {
@@ -181,8 +200,8 @@ describe('createConnectionProfileStore', () => {
 
   it('reports diagnostics', async () => {
     const store = createStore();
-    expect(await store.getDiagnostics()).toEqual({ connectionCount: 1 });
+    expect(await store.getDiagnostics()).toEqual({ connectionCount: 1, recoveryState: null });
     await store.upsertConnection({ id: 'conn-1', label: 'Remote', target: { kind: 'ssh', sshInstanceId: 'i-9' } });
-    expect(await store.getDiagnostics()).toEqual({ connectionCount: 2 });
+    expect(await store.getDiagnostics()).toEqual({ connectionCount: 2, recoveryState: null });
   });
 });

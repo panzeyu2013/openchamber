@@ -57,6 +57,7 @@ export interface WorkspaceCatalogSnapshot {
 export interface WorkspaceSessionSummary {
   key: WorkspaceSessionKey;
   workspaceId: WorkspaceId;
+  connectionId: ConnectionId;
   upstreamSessionId: string;
   directory: string;
   title: string;
@@ -76,6 +77,10 @@ export interface WorkspaceSessionSnapshot {
   revision: number;
   sessions: WorkspaceSessionSummary[];
   freshnessByConnection: Record<ConnectionId, SourceFreshness>;
+  /** Per-connection flag: the upstream session list hit the server's
+   * snapshot limit, so `sessions` is a partial view and must never be
+   * treated as the authoritative full set. */
+  truncatedByConnection?: Record<ConnectionId, boolean>;
 }
 
 export type WorkspaceSessionEvent = {

@@ -154,6 +154,7 @@ export const createSessionIndex = (dependencies) => {
       const previous = state.sessions.get(key);
       next.set(key, {
         key,
+        connectionId,
         workspaceId,
         upstreamSessionId: session.id,
         directory: normalizePath(session.directory ?? ''),
@@ -406,15 +407,18 @@ export const createSessionIndex = (dependencies) => {
     const records = await profileStore.listPrivateRecords();
     const sessions = [];
     const freshnessByConnection = {};
+    const truncatedByConnection = {};
     for (const record of records) {
       const state = getConnectionState(record.id);
       freshnessByConnection[record.id] = { ...state.freshness };
+      truncatedByConnection[record.id] = state.truncated;
       for (const session of state.sessions.values()) sessions.push({ ...session });
     }
     return {
       revision: globalRevision,
       sessions: sessions.sort((left, right) => right.updatedAt - left.updatedAt),
       freshnessByConnection,
+      truncatedByConnection,
     };
   };
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { WorkspaceDescriptor } from './types';
 
 interface FakeSdk {
@@ -10,13 +10,11 @@ interface FakeSdk {
 let sdkCalls: Array<{ baseUrl: string; directory: string | undefined }> = [];
 let sdkCounter = 0;
 
-mock.module('@/lib/opencode/client', () => ({
-  createWorkspaceOpencodeClient: (config: { baseUrl: string; directory?: string }): FakeSdk => {
-    sdkCalls.push({ baseUrl: config.baseUrl, directory: config.directory });
-    sdkCounter += 1;
-    return { id: sdkCounter, baseUrl: config.baseUrl, directory: config.directory };
-  },
-}));
+const fakeCreateSdkClient = (config: { baseUrl: string; directory: string }): FakeSdk => {
+  sdkCalls.push({ baseUrl: config.baseUrl, directory: config.directory });
+  sdkCounter += 1;
+  return { id: sdkCounter, baseUrl: config.baseUrl, directory: config.directory };
+};
 
 const { createWorkspaceRuntimeRegistry } = await import('./workspace-runtime-registry');
 
@@ -47,7 +45,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('get() creates a handle with workspace-scoped identity and sdk', () => {
-    registry = createWorkspaceRuntimeRegistry();
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
     const handle = registry.get(descriptor('ws-1', { canonicalPath: '/projects/alpha' }));
     expect(handle.scopeKey).toBe('workspace:ws-1');
     expect(handle.directory).toBe('/projects/alpha');
@@ -55,7 +53,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('get() with the same id returns the same handle without a new sdk', () => {
-    registry = createWorkspaceRuntimeRegistry();
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
     const first = registry.get(descriptor('ws-1'));
     const second = registry.get(descriptor('ws-1', { canonicalPath: '/elsewhere' }));
     expect(second).toBe(first);
@@ -65,7 +63,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('a handle survives the grace window while retained, then is evicted after release', async () => {
-    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 5 });
+    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 5, createSdkClient: fakeCreateSdkClient });
     const handle = registry.get(descriptor('ws-1'));
     const release = handle.retain();
     await sleep(20);
@@ -79,7 +77,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('release() is idempotent', async () => {
-    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 5 });
+    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 5, createSdkClient: fakeCreateSdkClient });
     const handle = registry.get(descriptor('ws-1'));
     const release = handle.retain();
     release();
@@ -90,7 +88,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('re-acquiring a lease during the grace period cancels disposal', async () => {
-    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 20 });
+    registry = createWorkspaceRuntimeRegistry({ disposeGraceMs: 20, createSdkClient: fakeCreateSdkClient });
     const handle = registry.get(descriptor('ws-1'));
     handle.retain()();
     await sleep(10);
@@ -103,7 +101,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('invalidate() disposes the handle immediately', () => {
-    registry = createWorkspaceRuntimeRegistry();
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
     const first = registry.get(descriptor('ws-1'));
     registry.invalidate('ws-1');
     const second = registry.get(descriptor('ws-1'));
@@ -112,7 +110,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('dispose() clears every handle', () => {
-    registry = createWorkspaceRuntimeRegistry();
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
     const first = registry.get(descriptor('ws-1'));
     const other = registry.get(descriptor('ws-2'));
     registry.dispose();
@@ -122,7 +120,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('LRU eviction drops a released handle when over maxRetained', async () => {
-    registry = createWorkspaceRuntimeRegistry({ maxRetained: 2 });
+    registry = createWorkspaceRuntimeRegistry({ maxRetained: 2, createSdkClient: fakeCreateSdkClient });
     const first = registry.get(descriptor('ws-1'));
     first.retain()();
     const second = registry.get(descriptor('ws-2'));
@@ -135,7 +133,7 @@ describe('workspace runtime registry', () => {
   });
 
   test('LRU eviction also drops never-retained handles when over maxRetained', async () => {
-    registry = createWorkspaceRuntimeRegistry({ maxRetained: 2 });
+    registry = createWorkspaceRuntimeRegistry({ maxRetained: 2, createSdkClient: fakeCreateSdkClient });
     const first = registry.get(descriptor('ws-1'));
     const second = registry.get(descriptor('ws-2'));
     const third = registry.get(descriptor('ws-3'));

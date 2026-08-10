@@ -86,6 +86,13 @@ const validateWorkspaceDescriptor = (value, seenIds, seenLocations) => {
  * or null when the document is unusable (missing core fields, wrong schema
  * version). Corrupt documents must never be treated as an empty catalog and
  * must never crash the process.
+ *
+ * Entries that fail validation (invalid or duplicate connections/workspaces)
+ * are dropped from the returned document — but the drop is NOT silent: the
+ * returned document carries a non-enumerable `dropped` counter
+ * ({ connections, workspaces }) that the store must surface as an explicit
+ * recovery state. A silently shrunk catalog must never be treated as an
+ * authoritative clean load.
  */
 export const validateCatalogDocument = (value) => {
   if (!value || typeof value !== 'object') return null;
@@ -96,24 +103,28 @@ export const validateCatalogDocument = (value) => {
 
   const seenConnectionIds = new Set();
   const connections = [];
+  let droppedConnections = 0;
   for (const entry of candidate.connections) {
     const normalized = validateConnectionSummary(entry, seenConnectionIds);
     if (normalized) connections.push(normalized);
+    else droppedConnections += 1;
   }
 
   const seenWorkspaceIds = new Set();
   const seenLocations = new Set();
   const workspaces = [];
+  let droppedWorkspaces = 0;
   for (const entry of candidate.workspaces) {
     const normalized = validateWorkspaceDescriptor(entry, seenWorkspaceIds, seenLocations);
     if (normalized) workspaces.push(normalized);
+    else droppedWorkspaces += 1;
   }
 
   const migration = candidate.migration && typeof candidate.migration === 'object'
     ? candidate.migration
     : {};
 
-  return {
+  const document = {
     schemaVersion: CATALOG_SCHEMA_VERSION,
     revision: candidate.revision,
     connections,
@@ -125,6 +136,13 @@ export const validateCatalogDocument = (value) => {
         : [],
     },
   };
+  if (droppedConnections > 0 || droppedWorkspaces > 0) {
+    Object.defineProperty(document, 'dropped', {
+      value: { connections: droppedConnections, workspaces: droppedWorkspaces },
+      enumerable: false,
+    });
+  }
+  return document;
 };
 
 /**

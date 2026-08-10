@@ -1,12 +1,15 @@
-import { runtimeFetch } from '@/lib/runtime-fetch';
+import { createControlPlaneFetch } from './control-plane-fetch';
 import { CatalogClientError, type WorkspaceSessionEvent, type WorkspaceSessionSnapshot } from './types';
 
 /**
- * Session Index client (renderer). All requests go to the CURRENT CONTROL
- * PLANE through runtimeFetch; the server resolves connections into adapters
- * server-side. The event stream is plain SSE (bearer-header auth), so it
- * works unchanged through the relay tunnel.
+ * Session Index client (renderer). All requests go to the LOCAL CONTROL PLANE
+ * through a control-plane-pinned fetch (never the Active Runtime, never a
+ * remote URL); the server resolves connections into adapters server-side.
+ * The event stream is plain SSE (bearer-header auth), so it works unchanged
+ * through the relay tunnel.
  */
+
+const controlPlaneFetch = createControlPlaneFetch();
 
 const isJsonOk = async (response: Response): Promise<unknown> => {
   if (!response.ok) {
@@ -27,7 +30,7 @@ const isJsonOk = async (response: Response): Promise<unknown> => {
 };
 
 const jsonRequest = async (path: string, init?: RequestInit): Promise<unknown> => {
-  const response = await runtimeFetch(path, init);
+  const response = await controlPlaneFetch(path, init);
   return isJsonOk(response);
 };
 
@@ -40,6 +43,12 @@ export const fetchWorkspaceSessionSnapshot = async (): Promise<WorkspaceSessionS
     || !Array.isArray(snapshot.sessions)
     || !snapshot.freshnessByConnection
     || typeof snapshot.freshnessByConnection !== 'object'
+  ) {
+    throw new CatalogClientError('Session index response has an invalid shape', 500, 'session_index_invalid_response');
+  }
+  if (
+    snapshot.truncatedByConnection !== undefined
+    && (typeof snapshot.truncatedByConnection !== 'object' || snapshot.truncatedByConnection === null)
   ) {
     throw new CatalogClientError('Session index response has an invalid shape', 500, 'session_index_invalid_response');
   }
@@ -148,7 +157,7 @@ export const openWorkspaceSessionEventStream = (
     while (!abort.signal.aborted) {
       const acquiredAt = Date.now();
       try {
-        const response = await runtimeFetch('/api/workspace-sessions/events', {
+        const response = await controlPlaneFetch('/api/workspace-sessions/events', {
           headers: { accept: 'text/event-stream' },
           signal: abort.signal,
         });

@@ -42,6 +42,33 @@ const basenameOf = (pathValue: string): string => {
   return parts.length > 0 ? parts[parts.length - 1] : pathValue;
 };
 
+/** True for path roots that have no parent: POSIX `/`, drive roots (`C:\`,
+ * `C:/`), UNC server roots (`\\server`) and share roots (`\\server\share`). */
+const isPathRoot = (pathValue: string): boolean => {
+  const trimmed = pathValue.trim();
+  if (trimmed === '/' || trimmed === '') return true;
+  if (/^[A-Za-z]:[\\/]?$/.test(trimmed)) return true;
+  if (/^\\\\[^\\/]+$/.test(trimmed)) return true;
+  if (/^\\\\[^\\/]+\\[^\\/]+$/.test(trimmed)) return true;
+  return false;
+};
+
+/** Parent of a browse path under POSIX, Windows drive and UNC semantics.
+ * `/home/user` -> `/home`; `C:\Users\pan` -> `C:\Users`; `C:\Users` ->
+ * `C:\`; `\\server\share\sub` -> `\\server\share`. Roots return themselves. */
+const parentPathOf = (pathValue: string): string => {
+  const trimmed = pathValue.replace(/[\\/]+$/, '');
+  if (!trimmed) return pathValue;
+  if (isPathRoot(trimmed)) return pathValue;
+  const lastSeparator = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+  if (lastSeparator < 0) return '';
+  const parent = trimmed.slice(0, lastSeparator);
+  const separator = trimmed[lastSeparator];
+  if (!parent) return '/';
+  if (/^[A-Za-z]:$/.test(parent)) return `${parent}${separator}`;
+  return parent;
+};
+
 export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
   open,
   onOpenChange,
@@ -78,6 +105,9 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
   const [serverToken, setServerToken] = React.useState('');
   const [serverError, setServerError] = React.useState<string | null>(null);
   const [isServerSubmitting, setIsServerSubmitting] = React.useState(false);
+  // Browse generation: a slow server response for an earlier directory must
+  // never overwrite the entries of a newer selection.
+  const browseGenerationRef = React.useRef(0);
 
   const selectedConnection: ConnectionProfileSummary | null =
     connections.find((connection) => connection.id === selectedConnectionId) ?? localConnection;
@@ -108,17 +138,22 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
 
   const loadBrowse = React.useCallback(async (directory: string) => {
     if (!selectedConnection) return;
+    const generation = ++browseGenerationRef.current;
     setIsBrowseLoading(true);
     setBrowseError(null);
     try {
       const result = await listConnectionChildren(selectedConnection.id, directory);
+      if (generation !== browseGenerationRef.current) return;
       setBrowsePath(result.directory);
       setBrowseEntries(result.children);
     } catch (browseFailure) {
+      if (generation !== browseGenerationRef.current) return;
       setBrowseError(browseFailure instanceof Error ? browseFailure.message : t('workspaces.dialog.browse.loadFailed'));
       setBrowseEntries([]);
     } finally {
-      setIsBrowseLoading(false);
+      if (generation === browseGenerationRef.current) {
+        setIsBrowseLoading(false);
+      }
     }
   }, [selectedConnection, t]);
 
@@ -195,6 +230,8 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
             value={selectedConnectionId}
             onValueChange={(value) => {
               setSelectedConnectionId(value);
+              // Invalidate any in-flight browse for the previous connection.
+              browseGenerationRef.current += 1;
               setBrowseEntries([]);
               setBrowseError(null);
             }}
@@ -299,8 +336,8 @@ export const AddWorkspaceDialog: React.FC<AddWorkspaceDialogProps> = ({
                 variant="ghost"
                 size="sm"
                 className="h-6 px-1"
-                onClick={() => void loadBrowse(browsePath === '/' ? '/' : (browsePath.split('/').slice(0, -1).join('/') || '/'))}
-                disabled={browsePath === '/' || isBrowseLoading}
+                onClick={() => void loadBrowse(parentPathOf(browsePath))}
+                disabled={isPathRoot(browsePath) || isBrowseLoading}
                 aria-label={t('workspaces.dialog.browse.upAria')}
               >
                 <Icon name="arrow-up" className="h-3.5 w-3.5" />

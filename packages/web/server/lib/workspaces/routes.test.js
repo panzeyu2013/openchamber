@@ -409,6 +409,24 @@ describe('GET /api/workspaces/:workspaceId/children', () => {
     }
   });
 
+  it('403s parent-traversal paths instead of listing them', async () => {
+    const created = await createWorkspaceViaApi();
+    for (const traversal of [
+      path.join(workspaceDir, '..', 'secret'),
+      `${workspaceDir}/../secret`,
+      `${workspaceDir}%2F..%2Fsecret`,
+    ]) {
+      const response = createMockResponse();
+      await getRoute('GET', '/api/workspaces/:workspaceId/children')(createMockRequest({
+        params: { workspaceId: created.body.workspace.id },
+        query: { path: traversal },
+      }), response);
+
+      expect(response.statusCode).toBe(403);
+      expect(response.body).toEqual({ error: 'Path is outside the workspace', code: 'catalog_path_outside_workspace' });
+    }
+  });
+
   it('404s an unknown workspace', async () => {
     const response = createMockResponse();
     await getRoute('GET', '/api/workspaces/:workspaceId/children')(createMockRequest({

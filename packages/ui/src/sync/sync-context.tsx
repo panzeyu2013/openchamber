@@ -1895,6 +1895,14 @@ const dispatchOpenCodeUpdateAvailable = (payload: { version: string }) => {
 export function SyncProvider(props: {
   sdk: OpencodeClient
   directory: string
+  /** Optional workspace-bound handle: when present, the sync runs against the
+   * handle's workspace-scoped SDK and directory (the CURRENT control plane
+   * through the workspace runtime proxy), so opening a workspace session
+   * never touches the global runtime endpoint and never reads another
+   * workspace's state. The SDK identity changes per workspace, which forces
+   * the message loader to rebuild — stale in-flight responses from a previous
+   * workspace cannot land in the new one. */
+  workspaceHandle?: import('@/workspaces/workspace-runtime-registry').WorkspaceRuntimeHandle | null
   children: React.ReactNode
 }) {
   // Capacitor apps were previously locked to SSE because Android WebSocket
@@ -1904,6 +1912,8 @@ export function SyncProvider(props: {
   // 403. With the origin allowlisted, mobile uses the same transport
   // selection as everywhere else ('auto' falls back to SSE on WS failure).
   const messageStreamTransport = useConfigStore((state) => state.settingsMessageStreamTransport)
+  const boundSdk = props.workspaceHandle?.sdk ?? props.sdk
+  const boundDirectory = props.workspaceHandle?.directory ?? props.directory
   const childStoresRef = useRef<ChildStoreManager | null>(null)
   if (!childStoresRef.current) childStoresRef.current = new ChildStoreManager()
   const childStores = childStoresRef.current
@@ -1911,18 +1921,18 @@ export function SyncProvider(props: {
   const messageLoaderRef = useRef<SessionMessageLoader | null>(null)
   if (!messageLoaderRef.current) {
     messageLoaderRef.current = new SessionMessageLoader(childStores, {
-      sdk: props.sdk,
+      sdk: boundSdk,
       runtimeKey,
     })
   }
   const messageLoader = messageLoaderRef.current
   const messageLoaderDisposalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  messageLoader.configure({ sdk: props.sdk, runtimeKey })
+  messageLoader.configure({ sdk: boundSdk, runtimeKey })
   const routingIndexRef = useRef<EventRoutingIndex | null>(null)
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
   const routingIndex = routingIndexRef.current
-  const currentDirectoryRef = useRef(props.directory)
-  currentDirectoryRef.current = props.directory
+  const currentDirectoryRef = useRef(boundDirectory)
+  currentDirectoryRef.current = boundDirectory
   const lastStreamActivityAtRef = useRef(0)
   const lastStatusPollAtByDirectoryRef = useRef(new Map<string, number>())
   const lastFullResyncAtByDirectoryRef = useRef(new Map<string, number>())
@@ -1938,10 +1948,10 @@ export function SyncProvider(props: {
       childStores,
       messageLoader,
       runtimeKey,
-      sdk: props.sdk,
-      directory: props.directory,
+      sdk: boundSdk,
+      directory: boundDirectory,
     }),
-    [childStores, messageLoader, props.sdk, props.directory, runtimeKey],
+    [childStores, messageLoader, boundSdk, boundDirectory, runtimeKey],
   )
 
   const triggerDirectoryResync = useCallback((directory: string, reason: SessionMaterializationReason) => {
@@ -1964,7 +1974,7 @@ export function SyncProvider(props: {
   // Configure child store manager
   useEffect(() => {
     void usePermissionStore.getState().hydrate().catch(() => undefined)
-  }, [props.sdk])
+  }, [boundSdk])
 
   useEffect(() => {
     return childStores.configure({
@@ -1979,7 +1989,7 @@ export function SyncProvider(props: {
           const globalState = useGlobalSyncStore.getState()
           const result = await bootstrapDirectory({
             directory,
-            sdk: props.sdk,
+            sdk: boundSdk,
             getState: () => store.getState(),
             set: (patch) => {
               if (!context.isCurrent()) return
@@ -1999,7 +2009,7 @@ export function SyncProvider(props: {
             loadSessions: (dir) => retry(async () => {
               if (!context.isCurrent()) return
               const baselineRevision = store.getState().sessionRevision ?? 0
-              const rootSessions = (await listGlobalSessionPages(props.sdk, {
+              const rootSessions = (await listGlobalSessionPages(boundSdk, {
                 directory: dir,
                 archived: false,
                 roots: true,
@@ -2012,7 +2022,7 @@ export function SyncProvider(props: {
               // so pending questions can scope to them immediately after restart.
               let allSessions: typeof rootSessions | null = null
               try {
-                allSessions = await listGlobalSessionPages(props.sdk, {
+                allSessions = await listGlobalSessionPages(boundSdk, {
                   directory: dir,
                   archived: false,
                   roots: false,
@@ -2103,7 +2113,7 @@ export function SyncProvider(props: {
       },
       isLoadingSessions: () => false,
     })
-  }, [childStores, messageLoader, props.sdk, routingIndex])
+  }, [childStores, messageLoader, boundSdk, routingIndex])
 
   // Bootstrap global state — set bootingRoot/bootedAt to suppress
   // redundant refresh events during startup
@@ -2111,7 +2121,7 @@ export function SyncProvider(props: {
     const generation = ++globalBootstrapGeneration
     bootingRoot = true
     const globalActions = useGlobalSyncStore.getState().actions
-    bootstrapGlobal(props.sdk, (patch) => {
+    bootstrapGlobal(boundSdk, (patch) => {
       if (globalBootstrapGeneration === generation) {
         globalActions.set(patch)
       }
@@ -2131,13 +2141,13 @@ export function SyncProvider(props: {
         bootingRoot = false
       }
     }
-  }, [props.sdk])
+  }, [boundSdk])
 
   // Event pipeline — created once per mount. No class, no start/stop.
   // Abort controller owned by the pipeline closure. Cleanup aborts + flushes.
   useEffect(() => {
     const pipeline = createEventPipeline({
-      sdk: props.sdk,
+      sdk: boundSdk,
       transport: messageStreamTransport,
       routeDirectory: (directory, payload) => {
         return resolveDirectoryFromRoutingIndex(routingIndex, directory, payload, childStores)
@@ -2217,7 +2227,7 @@ export function SyncProvider(props: {
       }
       pipeline.cleanup()
     }
-  }, [props.sdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
+  }, [boundSdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
 
   useEffect(() => {
     let stopped = false
@@ -2350,12 +2360,12 @@ export function SyncProvider(props: {
   // Ensure current directory's child store exists
   useEffect(() => {
     let seedExpiryTimer: ReturnType<typeof setTimeout> | undefined
-    if (props.directory) {
-      const store = childStores.ensureChild(props.directory, {
+    if (boundDirectory) {
+      const store = childStores.ensureChild(boundDirectory, {
         priority: "selected",
         reason: "current-directory",
       })
-      const statusSeed = getRuntimeLiveStatusSeed(getRuntimeKey(), props.directory)
+      const statusSeed = getRuntimeLiveStatusSeed(getRuntimeKey(), boundDirectory)
       if (statusSeed) {
         store.setState((state: DirectoryStore) => ({
           session_status: {
@@ -2377,23 +2387,23 @@ export function SyncProvider(props: {
           })
         }, LIVE_STATUS_TTL_MS)
       }
-      ingestDirectoryStateIntoRoutingIndex(routingIndex, props.directory, store.getState())
+      ingestDirectoryStateIntoRoutingIndex(routingIndex, boundDirectory, store.getState())
     }
     return () => {
       if (seedExpiryTimer) clearTimeout(seedExpiryTimer)
     }
-  }, [props.directory, childStores, routingIndex])
+  }, [boundDirectory, childStores, routingIndex])
 
   // Set refs so non-React code (session-actions, session-ui-store) can access sync state
   useEffect(() => {
     setImperativeSessionMessageLoader(messageLoader)
-    setSyncRefs(props.sdk, childStores, props.directory, (sessionID, dir) => {
+    setSyncRefs(boundSdk, childStores, boundDirectory, (sessionID, dir) => {
       setIndexedSessionDirectory(routingIndex, sessionID, dir)
     })
     setActionRefs(
-      props.sdk,
+      boundSdk,
       childStores,
-      () => opencodeClient.getDirectory() || props.directory,
+      () => opencodeClient.getDirectory() || boundDirectory,
       (directory, sessionID, messageID) => {
         enqueueSessionMaterialization(directory, sessionID, childStores, {
           reason: "settled-running-tool",
@@ -2406,7 +2416,7 @@ export function SyncProvider(props: {
         setImperativeSessionMessageLoader(null)
       }
     }
-  }, [props.sdk, props.directory, childStores, messageLoader, routingIndex])
+  }, [boundSdk, boundDirectory, childStores, messageLoader, routingIndex])
 
   useEffect(() => {
     if (messageLoaderDisposalTimerRef.current) {
@@ -2428,15 +2438,15 @@ export function SyncProvider(props: {
 
   // Subscribe to child store for streaming state derivation
   useEffect(() => {
-    if (!props.directory) return
-    const store = childStores.getChild(props.directory)
+    if (!boundDirectory) return
+    const store = childStores.getChild(boundDirectory)
     if (!store) return
     updateStreamingState(store.getState())
     const unsubscribe = store.subscribe((state, previous) => {
       updateChangedStreamingSessions(state, previous)
     })
     return unsubscribe
-  }, [props.directory, childStores])
+  }, [boundDirectory, childStores])
 
   return <SyncContext.Provider value={system}>{props.children}</SyncContext.Provider>
 }

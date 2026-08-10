@@ -40,6 +40,9 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { resumeAutoReviewRun } from '@/lib/reviewFlow';
 import { SyncProvider } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
+import { WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { AboutDialog } from '@/components/ui/AboutDialog';
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
@@ -205,6 +208,31 @@ const EmbeddedSessionChatContent: React.FC<{
   );
 };
 
+// Full-sync mount for the CURRENT workspace: when a workspace session is
+// selected, the sync runs against the workspace-bound runtime handle (SDK on
+// the control-plane workspace prefix + workspace directory) and the tree is
+// keyed by workspaceId, so switching workspaces remounts the sync WITHOUT a
+// global runtime switch and without touching other workspaces' state. With no
+// workspace selected the legacy ambient-runtime path is preserved exactly.
+const WorkspaceSyncMount: React.FC<{
+  runtimeEndpointEpoch: number;
+  directory: string;
+  children: React.ReactNode;
+}> = ({ runtimeEndpointEpoch, directory, children }) => {
+  const { handle } = useWorkspaceRuntime();
+  const workspaceId = handle?.workspaceId ?? null;
+  return (
+    <SyncProvider
+      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
+      sdk={opencodeClient.getSdkClient()}
+      directory={directory}
+      workspaceHandle={handle}
+    >
+      {children}
+    </SyncProvider>
+  );
+};
+
 function App({ apis }: AppProps) {
   React.useEffect(() => {
     markStartupTrace('App:mounted');
@@ -225,6 +253,7 @@ function App({ apis }: AppProps) {
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const setDirectory = useDirectoryStore((state) => state.setDirectory);
   const isSwitchingDirectory = useDirectoryStore((state) => state.isSwitchingDirectory);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const [showMemoryDebug, setShowMemoryDebug] = React.useState(false);
   const refreshGitHubAuthStatus = useGitHubAuthStore((state) => state.refreshStatus);
   const [isVSCodeRuntime, setIsVSCodeRuntime] = React.useState<boolean>(() => apis.runtime.isVSCode);
@@ -922,29 +951,31 @@ function App({ apis }: AppProps) {
 
   return (
     <ErrorBoundary>
-      <SyncProvider key={runtimeEndpointEpoch} sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
-        <RuntimeAPIProvider apis={apis}>
-          <FireworksProvider>
-              <TooltipProvider delayDuration={300} skipDelayDuration={150}>
-                <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
-                  <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
-                  <OpenCodeUpdateToast />
-                  <MainLayout />
-                  <Toaster />
-                  {!isBootShell && (
-                    <>
-                      <ConfigUpdateOverlay />
-                      <AboutDialogWrapper />
-                      {showMemoryDebug && (
-                        <MemoryDebugPanel onClose={() => setShowMemoryDebug(false)} />
-                      )}
-                    </>
-                  )}
-                </div>
-              </TooltipProvider>
-          </FireworksProvider>
-        </RuntimeAPIProvider>
-      </SyncProvider>
+      <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
+        <WorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch} directory={currentDirectory || ''}>
+          <RuntimeAPIProvider apis={apis}>
+            <FireworksProvider>
+                <TooltipProvider delayDuration={300} skipDelayDuration={150}>
+                  <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
+                    <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                    <OpenCodeUpdateToast />
+                    <MainLayout />
+                    <Toaster />
+                    {!isBootShell && (
+                      <>
+                        <ConfigUpdateOverlay />
+                        <AboutDialogWrapper />
+                        {showMemoryDebug && (
+                          <MemoryDebugPanel onClose={() => setShowMemoryDebug(false)} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                </TooltipProvider>
+            </FireworksProvider>
+          </RuntimeAPIProvider>
+        </WorkspaceSyncMount>
+      </WorkspaceRuntimeProvider>
     </ErrorBoundary>
   );
 }

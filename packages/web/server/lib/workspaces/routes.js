@@ -1,5 +1,6 @@
 import { validateCreateWorkspaceInput, validateUpdateWorkspaceInput, toConnectionSummary } from './catalog-schema.js';
 import { createSafeUpstreamValidator } from './direct-adapter.js';
+import { isPathWithinRoot } from './path-boundary.js';
 
 /**
  * Workspace Catalog API routes.
@@ -193,11 +194,14 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     const directory = typeof req.query.path === 'string' && req.query.path.length > 0
       ? req.query.path
       : workspace.canonicalPath;
-    if (!isWithinPath(directory, workspace.canonicalPath)) {
+    // Lexical boundary first (blocks `..` traversal for every adapter); the
+    // adapter additionally enforces the boundary under its own path semantics
+    // (the local adapter resolves symlinks) via the canonicalPath context.
+    if (!isPathWithinRoot(workspace.canonicalPath, directory)) {
       return sendError(res, 403, 'Path is outside the workspace', 'catalog_path_outside_workspace');
     }
     try {
-      const result = await adapter.listChildren({}, directory);
+      const result = await adapter.listChildren({ canonicalPath: workspace.canonicalPath }, directory);
       res.json(result);
     } catch (error) {
       sendError(res, error.status ?? 400, error.message, error.code);
@@ -368,11 +372,6 @@ const readIfMatch = (req) => {
     if (Number.isInteger(parsed) && parsed >= 0) return parsed;
   }
   return undefined;
-};
-
-const isWithinPath = (candidate, root) => {
-  const rootWithSeparator = root.endsWith('/') ? root : `${root}/`;
-  return candidate === root || candidate.startsWith(rootWithSeparator);
 };
 
 const basenameOf = (canonicalPath) => {

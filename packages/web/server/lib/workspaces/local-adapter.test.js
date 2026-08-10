@@ -170,6 +170,40 @@ describe('createLocalWorkspaceAdapter', () => {
       await expectTypedError(adapter.listChildren({}, ''), 'catalog_invalid_path', 400);
       await expectTypedError(adapter.listChildren({}, undefined), 'catalog_invalid_path', 400);
     });
+
+    it('rejects parent traversal out of the workspace boundary', async () => {
+      const workspaceDir = path.join(tempDir, 'workspace');
+      fs.mkdirSync(workspaceDir);
+      const adapter = createAdapter();
+      await expectTypedError(
+        adapter.listChildren({ canonicalPath: workspaceDir }, path.join(workspaceDir, '..', 'secret')),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('rejects a symlink that escapes the workspace boundary', async () => {
+      const outsideDir = path.join(tempDir, 'outside');
+      const workspaceDir = path.join(tempDir, 'workspace');
+      fs.mkdirSync(outsideDir);
+      fs.mkdirSync(workspaceDir);
+      fs.symlinkSync(outsideDir, path.join(workspaceDir, 'escape'));
+      const adapter = createAdapter();
+      await expectTypedError(
+        adapter.listChildren({ canonicalPath: workspaceDir }, path.join(workspaceDir, 'escape')),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('allows listing the workspace root and real descendants', async () => {
+      const workspaceDir = path.join(tempDir, 'workspace');
+      const subDir = path.join(workspaceDir, 'sub');
+      fs.mkdirSync(subDir, { recursive: true });
+      const adapter = createAdapter();
+      expect((await adapter.listChildren({ canonicalPath: workspaceDir }, workspaceDir)).directory).toBe(workspaceDir);
+      expect((await adapter.listChildren({ canonicalPath: workspaceDir }, subDir)).directory).toBe(subDir);
+    });
   });
 
   it('stubs Phase 2 forwarding with capability_unavailable', async () => {
@@ -184,5 +218,122 @@ describe('createLocalWorkspaceAdapter', () => {
       expect(error.code).toBe('capability_unavailable');
       expect(error.status).toBe(501);
     }
+  });
+
+  describe('fetch directory boundary enforcement', () => {
+    const workspaceDir = () => {
+      const dir = path.join(tempDir, 'workspace');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+
+    const createForwardingAdapter = (dependencies = {}) => createLocalWorkspaceAdapter({
+      fs: fsPromises,
+      path,
+      buildOpenCodeUrl: (restPath) => `http://opencode.test${restPath}`,
+      getOpenCodeAuthHeaders: async () => ({ 'x-openchamber-runtime-auth': 'secret' }),
+      fetchImpl: async (url, init) => ({ url, init, status: 200, ok: true, headers: new Headers(), body: null }),
+      ...dependencies,
+    });
+
+    const createRequest = (overrides = {}) => ({
+      method: 'GET',
+      headers: {},
+      query: {},
+      body: null,
+      ...overrides,
+    });
+
+    it('injects the workspace directory when the request carries no hint', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest(),
+        '/api/session',
+      );
+      expect(forwarded.init.headers.get('x-opencode-directory')).toBe(workspaceDir());
+      expect(forwarded.init.headers.get('x-openchamber-runtime-auth')).toBe('secret');
+    });
+
+    it('overwrites a client-supplied directory header inside the workspace', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest({ headers: { 'x-opencode-directory': path.join(workspaceDir(), 'sub') } }),
+        '/api/session',
+      );
+      expect(forwarded.init.headers.get('x-opencode-directory')).toBe(workspaceDir());
+    });
+
+    it('rejects a client-supplied directory header outside the workspace', async () => {
+      const adapter = createForwardingAdapter();
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: workspaceDir() },
+          createRequest({ headers: { 'x-opencode-directory': '/etc' } }),
+          '/api/session',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: workspaceDir() },
+          createRequest({ headers: { 'x-opencode-directory': path.join(workspaceDir(), '..', 'secret') } }),
+          '/api/session',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('rejects a directory query parameter outside the workspace', async () => {
+      const adapter = createForwardingAdapter();
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: workspaceDir() },
+          createRequest({ query: { directory: '/etc' } }),
+          '/api/session',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('rejects a directory body field outside the workspace', async () => {
+      const adapter = createForwardingAdapter();
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: workspaceDir() },
+          createRequest({ method: 'POST', body: { directory: '/etc', prompt: 'hi' } }),
+          '/api/session',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('rejects a symlink that escapes through the directory hint', async () => {
+      const outsideDir = path.join(tempDir, 'outside');
+      fs.mkdirSync(outsideDir);
+      const root = workspaceDir();
+      fs.symlinkSync(outsideDir, path.join(root, 'escape'));
+      const adapter = createForwardingAdapter();
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: root },
+          createRequest({ headers: { 'x-opencode-directory': path.join(root, 'escape') } }),
+          '/api/session',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('does not enforce a boundary when no workspace path is in context', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch({}, createRequest(), '/api/session');
+      expect(forwarded.init.headers.get('x-opencode-directory')).toBeNull();
+    });
   });
 });

@@ -1648,6 +1648,7 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.stale': '古い情報です',
   'workspaces.sidebar.serverOf': '{server} 上',
   'workspaces.sidebar.moreAvailable': 'ほかにもセッションがあります',
+  'workspaces.sidebar.serverHasMoreSessions': 'このサーバーには他にもセッションがあります',
   'workspaces.sidebar.openSessionAria': '{workspace} で {title} を開く',
   'workspaces.sidebar.remoteNotWired': '他のサーバーのセッションを開く機能は同期マイグレーションで提供されます。',
   'workspaces.dialog.description': 'サーバーとその上のパスを選択します。すべてのサーバーのワークスペースが1つのリストに表示されます。',

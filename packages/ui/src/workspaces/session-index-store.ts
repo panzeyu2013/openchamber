@@ -88,13 +88,48 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
     set({ status: 'loading' });
     try {
       const snapshot = await fetchWorkspaceSessionSnapshot();
-      set({
-        snapshot,
-        status: 'ready',
-        lastError: null,
-        lastAppliedRevision: snapshot.revision,
-        sessionKeys: new Set(snapshot.sessions.map((session) => session.key)),
-        revisionGap: false,
+      set((state) => {
+        const base = {
+          status: 'ready' as const,
+          lastError: null,
+          lastAppliedRevision: snapshot.revision,
+          revisionGap: false,
+        };
+        if (!state.snapshot) {
+          return {
+            ...base,
+            snapshot,
+            sessionKeys: new Set(snapshot.sessions.map((session) => session.key)),
+          };
+        }
+        // A TRUNCATED snapshot is NOT an authoritative full state for the
+        // affected connections: sessions beyond the server's enumeration
+        // limit still exist upstream, so they must not be dropped as if
+        // deleted. Preserve prior sessions of truncated connections that the
+        // new snapshot cannot enumerate; untruncated connections stay fully
+        // authoritative.
+        const truncatedConnections = new Set(
+          Object.entries(snapshot.truncatedByConnection ?? {})
+            .filter(([, truncated]) => truncated === true)
+            .map(([connectionId]) => connectionId),
+        );
+        if (truncatedConnections.size === 0) {
+          return {
+            ...base,
+            snapshot,
+            sessionKeys: new Set(snapshot.sessions.map((session) => session.key)),
+          };
+        }
+        const newKeys = new Set(snapshot.sessions.map((session) => session.key));
+        const preserved = state.snapshot.sessions.filter((session) => (
+          truncatedConnections.has(session.connectionId) && !newKeys.has(session.key)
+        ));
+        const mergedSessions = [...snapshot.sessions, ...preserved];
+        return {
+          ...base,
+          snapshot: { ...snapshot, sessions: mergedSessions },
+          sessionKeys: new Set(mergedSessions.map((session) => session.key)),
+        };
       });
     } catch (error) {
       // Failure is NOT empty success: keep the prior snapshot, mark error.
@@ -181,3 +216,32 @@ export const selectSessionsForWorkspace = (
 ): WorkspaceSessionSummary[] => (
   snapshot ? snapshot.sessions.filter((session) => session.workspaceId === workspaceId) : []
 );
+
+/**
+ * Resolves the ACTIVE workspace from the current session selection.
+ *
+ * The session index is authoritative for workspace-bound sessions: only
+ * sessions mapped to a workspace appear there (unassigned sessions live in a
+ * separate diagnostics bucket and never surface under a workspace). When the
+ * currently selected session is found in the index, its workspace is the
+ * active one; anything else (legacy global session list, drafts, deep links)
+ * yields null and the legacy ambient-runtime sync path stays in charge.
+ *
+ * Matching uses (upstreamSessionId, directory) — the same tuple the server
+ * binding store uses — so a session id collision across connections is
+ * disambiguated by directory.
+ */
+export const resolveActiveWorkspaceId = (
+  sessions: WorkspaceSessionSummary[] | undefined,
+  currentSessionId: string | null,
+  currentSessionDirectory: string | null,
+): WorkspaceId | null => {
+  if (!currentSessionId || !sessions) return null;
+  const matches = sessions.filter((session) => session.upstreamSessionId === currentSessionId);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0].workspaceId;
+  const byDirectory = matches.find((session) => (
+    currentSessionDirectory ? session.directory === currentSessionDirectory : true
+  ));
+  return (byDirectory ?? matches[0]).workspaceId;
+};

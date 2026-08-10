@@ -103,15 +103,14 @@ const DesktopRuntimeSyncBridge: React.FC = () => {
   return null;
 };
 
-// Hydrates the unified workspace catalog on boot and re-hydrates after a
-// runtime endpoint change (the catalog always belongs to the CURRENT control
-// plane). Reads only; mutations flow through the catalog store.
+// Hydrates the unified workspace catalog on boot. The catalog belongs to the
+// LOCAL control plane and its client is pinned to it, so a runtime endpoint
+// change (switching the active remote server) must NOT re-fetch or swap the
+// catalog — "one local unified catalog" is the whole point. Reads only;
+// mutations flow through the catalog store.
 const WorkspaceCatalogBridge: React.FC = () => {
   React.useEffect(() => {
     void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
-    return subscribeRuntimeEndpointChanged(() => {
-      void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
-    });
   }, []);
   return null;
 };
@@ -120,6 +119,8 @@ const WorkspaceCatalogBridge: React.FC = () => {
 // index, subscribes to the incremental event stream, and recovers from a
 // revision gap by re-fetching the snapshot. One SSE connection serves the
 // whole client; the server keeps at most one upstream stream per connection.
+// Like the catalog, the session index lives on the LOCAL control plane and is
+// pinned there, so runtime endpoint changes never re-fetch or swap it.
 const SessionIndexBridge: React.FC = () => {
   React.useEffect(() => {
     const store = useWorkspaceSessionIndexStore.getState();
@@ -130,12 +131,8 @@ const SessionIndexBridge: React.FC = () => {
         void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
       }
     }, new AbortController().signal);
-    const unsubscribe = subscribeRuntimeEndpointChanged(() => {
-      void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
-    });
     return () => {
       stop();
-      unsubscribe();
     };
   }, []);
   return null;

@@ -119,6 +119,66 @@ describe('createLegacyWorkspaceMigration', () => {
     });
   });
 
+  it('re-attempts pending paths on a later run once they become reachable', async () => {
+    const lateProject = path.join(tempDir, 'late-project');
+    settingsProjects.push({ path: lateProject }, { path: alphaDir });
+    const migration = createMigration();
+    const first = await migration.run();
+
+    expect(first.status).toBe('done');
+    expect(first.pendingPaths).toEqual([lateProject]);
+    expect((await catalogStore.getSnapshot()).migration).toEqual({
+      legacyProjectsImported: true,
+      pendingConnectionIds: [lateProject],
+    });
+
+    // The project appears; the next boot run must import it and clear pending.
+    fs.mkdirSync(lateProject);
+    const second = await migration.run();
+    expect(second.status).toBe('done');
+    expect(second.imported).toBe(1);
+    expect(second.pendingPaths).toEqual([]);
+
+    const snapshot = await catalogStore.getSnapshot();
+    expect(snapshot.workspaces.map((entry) => entry.label).sort()).toEqual(['alpha', 'late-project']);
+    expect(snapshot.migration).toEqual({ legacyProjectsImported: true, pendingConnectionIds: [] });
+
+    // A fully-clean state short-circuits on the next run.
+    const third = await migration.run();
+    expect(third.status).toBe('already-done');
+  });
+
+  it('keeps pending paths when they stay unreachable across runs', async () => {
+    const stillMissing = path.join(tempDir, 'still-missing');
+    settingsProjects.push({ path: stillMissing }, { path: alphaDir });
+    const migration = createMigration();
+    const first = await migration.run();
+    expect(first.pendingPaths).toEqual([stillMissing]);
+
+    const second = await migration.run();
+    expect(second.status).toBe('done');
+    expect(second.imported).toBe(0);
+    expect(second.pendingPaths).toEqual([stillMissing]);
+    expect((await catalogStore.getSnapshot()).migration).toEqual({
+      legacyProjectsImported: true,
+      pendingConnectionIds: [stillMissing],
+    });
+  });
+
+  it('does not clear pending state when settings are unreadable during a retry', async () => {
+    const missing = path.join(tempDir, 'missing-for-retry');
+    settingsProjects.push({ path: missing }, { path: alphaDir });
+    const migration = createMigration();
+    await migration.run();
+    expect((await catalogStore.getSnapshot()).migration.pendingConnectionIds).toEqual([missing]);
+
+    readSettings.mockRejectedValue(new Error('settings are encrypted'));
+    const retry = await migration.run();
+    expect(retry.status).toBe('settings-unreadable');
+    expect(retry.pendingPaths).toEqual([missing]);
+    expect((await catalogStore.getSnapshot()).migration.pendingConnectionIds).toEqual([missing]);
+  });
+
   it('commits legacyProjectsImported after a successful run', async () => {
     settingsProjects.push({ path: alphaDir });
     const migration = createMigration();

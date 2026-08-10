@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns';
+import { isPathWithinRoot, readRequestDirectoryHints } from './path-boundary.js';
 
 /**
  * Direct connection adapter.
@@ -317,6 +318,21 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       throw error;
     }
     const headers = await buildUpstreamHeaders(context, request?.headers);
+    const canonicalPath = context?.canonicalPath;
+    if (canonicalPath) {
+      // Remote paths cannot be symlink-resolved from the control plane; the
+      // lexical boundary check still blocks `..` traversal and arbitrary
+      // directories. Both directory-header conventions are overwritten with
+      // the workspace canonical path so the target server always resolves
+      // the working directory inside the workspace.
+      for (const hint of readRequestDirectoryHints(request)) {
+        if (!isPathWithinRoot(canonicalPath, hint)) {
+          throw directError('catalog_path_outside_workspace', 403, 'directory is outside the workspace');
+        }
+      }
+      headers.set('x-opencode-directory', canonicalPath);
+      headers.set('x-openchamber-directory', canonicalPath);
+    }
     const reconstructed = reconstructBody(request);
     if (reconstructed?.contentType && !headers.has('content-type')) {
       headers.set('content-type', reconstructed.contentType);

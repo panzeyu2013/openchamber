@@ -1652,6 +1652,7 @@ export const dict = {
   'workspaces.sidebar.stale': 'Out of date',
   'workspaces.sidebar.serverOf': 'on {server}',
   'workspaces.sidebar.moreAvailable': 'More sessions available',
+  'workspaces.sidebar.serverHasMoreSessions': 'More sessions available on this server',
   'workspaces.sidebar.openSessionAria': 'Open {title} in {workspace}',
   'workspaces.sidebar.remoteNotWired': 'Opening sessions from another server is coming with the sync migration.',
   'workspaces.dialog.description': 'Choose a server and a path on it. Workspaces from all servers live in one list.',

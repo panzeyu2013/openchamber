@@ -38,19 +38,21 @@ const findHandler = (app, method, path) => {
   return route.handler;
 };
 
-const createRequest = ({ path, method = 'GET', headers = {}, body = null }) => ({
+const createRequest = ({ path, method = 'GET', headers = {}, body = null, on = null }) => ({
   originalUrl: path,
   method,
   path,
   headers,
   get: (name) => headers[name] ?? undefined,
   body,
+  ...(on ? { on, removeListener: () => {} } : {}),
 });
 
 const createResponse = () => {
   let statusCode = 200;
   const chunks = [];
   const headers = new Map();
+  const listeners = new Map();
   return {
     status(code) {
       statusCode = code;
@@ -70,6 +72,17 @@ const createResponse = () => {
     end(value) {
       if (value !== undefined) chunks.push(Buffer.from(value));
       return this;
+    },
+    on(name, listener) {
+      const set = listeners.get(name) ?? new Set();
+      set.add(listener);
+      listeners.set(name, set);
+    },
+    removeListener(name, listener) {
+      listeners.get(name)?.delete(listener);
+    },
+    emit(name, ...args) {
+      for (const listener of listeners.get(name) ?? []) listener(...args);
     },
     statusCode() { return statusCode; },
     get body() { return Buffer.concat(chunks).toString('utf8'); },
@@ -130,6 +143,98 @@ describe('workspace runtime proxy', () => {
     expect(forwarded.restPath).toBe('/api/session');
     expect(response.statusCode()).toBe(200);
     expect(response.body).toBe(JSON.stringify({ ok: true }));
+  });
+
+  it('preserves the query string when forwarding', async () => {
+    let forwardedRestPath;
+    const adapter = createAdapterStub(async (_context, _request, restPath) => {
+      forwardedRestPath = restPath;
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const app = routeApp({
+      catalogStore: createCatalogStoreStub([{
+        id: 'ws-1', connectionId: 'local', canonicalPath: '/safe', path: '/safe', label: 'A', orderKey: '', createdAt: 1, updatedAt: 1,
+      }]),
+      connectionBroker: createBrokerStub(adapter),
+    });
+    const handler = findHandler(app, '*', '/api/workspaces/:workspaceId/runtime');
+    const response = createResponse();
+    await handler(createRequest({
+      path: '/api/workspaces/ws-1/runtime/api/session?limit=25&directory=%2Fsafe&cursor=abc',
+    }), response);
+
+    expect(forwardedRestPath).toBe('/api/session?limit=25&directory=%2Fsafe&cursor=abc');
+    expect(response.statusCode()).toBe(200);
+  });
+
+  it('cancels the upstream stream when the browser disconnects', async () => {
+    const closeListeners = new Set();
+    let cancelled = false;
+    const neverEnding = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('data: keepalive\n\n'));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const adapter = createAdapterStub(async () => new Response(neverEnding, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    }));
+    const app = routeApp({
+      catalogStore: createCatalogStoreStub([{
+        id: 'ws-1', connectionId: 'local', canonicalPath: '/a', path: '/a', label: 'A', orderKey: '', createdAt: 1, updatedAt: 1,
+      }]),
+      connectionBroker: createBrokerStub(adapter),
+    });
+    const handler = findHandler(app, '*', '/api/workspaces/:workspaceId/runtime');
+    const response = createResponse();
+    const request = createRequest({
+      path: '/api/workspaces/ws-1/runtime/api/global/event',
+      headers: { accept: 'text/event-stream' },
+      on: (name, listener) => {
+        if (name === 'close') closeListeners.add(listener);
+      },
+    });
+    const pending = handler(request, response);
+    // Let the upstream response arrive and the stream start.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    for (const listener of closeListeners) listener();
+    await pending;
+
+    expect(cancelled).toBe(true);
+    expect(response.statusCode()).toBe(200);
+  });
+
+  it('pauses on write backpressure and resumes on drain', async () => {
+    let writeCount = 0;
+    const chunksWritten = [];
+    const body = Readable.from(['first', ' second', ' third']);
+    const adapter = createAdapterStub(async () => new Response(body, { status: 200, headers: { 'content-type': 'text/plain' } }));
+    const app = routeApp({
+      catalogStore: createCatalogStoreStub([{
+        id: 'ws-1', connectionId: 'local', canonicalPath: '/a', path: '/a', label: 'A', orderKey: '', createdAt: 1, updatedAt: 1,
+      }]),
+      connectionBroker: createBrokerStub(adapter),
+    });
+    const handler = findHandler(app, '*', '/api/workspaces/:workspaceId/runtime');
+    const response = createResponse();
+    response.write = (chunk) => {
+      writeCount += 1;
+      chunksWritten.push(Buffer.from(chunk).toString('utf8'));
+      if (writeCount === 1) return false;
+      return true;
+    };
+    const pending = handler(createRequest({ path: '/api/workspaces/ws-1/runtime/api/session' }), response);
+
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(writeCount).toBe(1);
+    // Release the backpressure; the pipe must continue.
+    response.emit('drain');
+    await pending;
+    expect(chunksWritten.join('')).toBe('first second third');
+    expect(response.statusCode()).toBe(200);
   });
 
   it('rejects paths outside /api (no arbitrary proxying)', async () => {

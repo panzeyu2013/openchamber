@@ -1736,6 +1736,7 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.stale': 'Nieaktualne',
   'workspaces.sidebar.serverOf': 'na {server}',
   'workspaces.sidebar.moreAvailable': 'Dostępnych jest więcej sesji',
+  'workspaces.sidebar.serverHasMoreSessions': 'Na tym serwerze dostępnych jest więcej sesji',
   'workspaces.sidebar.openSessionAria': 'Otwórz {title} w {workspace}',
   'workspaces.sidebar.remoteNotWired': 'Otwieranie sesji z innego serwera pojawi się wraz z migracją synchronizacji.',
   'workspaces.dialog.description': 'Wybierz serwer i ścieżkę na nim. Obszary robocze ze wszystkich serwerów znajdują się na jednej liście.',

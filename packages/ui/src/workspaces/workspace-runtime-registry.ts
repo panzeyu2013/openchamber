@@ -1,4 +1,5 @@
 import { createWorkspaceOpencodeClient } from '@/lib/opencode/client';
+import { createControlPlaneFetch } from './control-plane-fetch';
 import { workspaceScopeKey } from './identity';
 import { workspaceSdkBaseUrl } from './workspace-runtime-fetch';
 import type { WorkspaceDescriptor, WorkspaceId } from './types';
@@ -59,14 +60,24 @@ const createWorkspaceUrlResolver = (workspaceId: WorkspaceId): RuntimeUrlResolve
 export const createWorkspaceRuntimeRegistry = (dependencies: {
   maxRetained?: number;
   disposeGraceMs?: number;
+  /** SDK factory seam for tests; defaults to the workspace-bound SDK
+   * factory on the control-plane pinned fetch. */
+  createSdkClient?: (config: { baseUrl: string; directory: string; fetch?: typeof fetch }) => unknown;
 } = {}): WorkspaceRuntimeRegistry => {
   const maxRetained = dependencies.maxRetained ?? MAX_RETAINED_HANDLES;
   const disposeGraceMs = dependencies.disposeGraceMs ?? DISPOSE_GRACE_MS;
+  const createSdkClient = dependencies.createSdkClient ?? ((config: { baseUrl: string; directory: string; fetch?: typeof fetch }) => (
+    createWorkspaceOpencodeClient(config as { baseUrl: string; directory: string })
+  ));
 
   const handles = new Map<WorkspaceId, WorkspaceRuntimeHandle>();
   const leaseCounts = new Map<WorkspaceId, number>();
   const idleTimers = new Map<WorkspaceId, ReturnType<typeof setTimeout>>();
   let evictionScheduled = false;
+  // One pinned control-plane fetch shared by every workspace SDK client: the
+  // workspace prefix is resolved against the CURRENT control plane, never the
+  // Active Runtime.
+  const controlPlaneFetch = createControlPlaneFetch();
 
   const clearIdleTimer = (workspaceId: WorkspaceId): void => {
     const timer = idleTimers.get(workspaceId);
@@ -97,10 +108,11 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
       clearIdleTimer(workspace.id);
       return existing;
     }
-    const sdk = createWorkspaceOpencodeClient({
+    const sdk = createSdkClient({
       baseUrl: workspaceSdkBaseUrl(workspace.id),
       directory: workspace.canonicalPath,
-    });
+      fetch: controlPlaneFetch,
+    }) as WorkspaceRuntimeHandle['sdk'];
     const handle: WorkspaceRuntimeHandle = {
       workspaceId: workspace.id,
       scopeKey: workspaceScopeKey(workspace.id),

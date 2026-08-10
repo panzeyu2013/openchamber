@@ -30,6 +30,7 @@ export type FetchPermissionResult =
 import { getRuntimeUrlResolver } from "@/lib/runtime-url";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { getRuntimeKey } from "@/lib/runtime-switch";
+import { createControlPlaneFetch } from "@/workspaces/control-plane-fetch";
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry";
 import { markStartupTrace } from "@/lib/startupTrace";
 import {
@@ -195,7 +196,9 @@ const createRuntimeOpencodeClient = (config: { baseUrl: string; directory?: stri
  * Explicit workspace-bound SDK factory. The baseUrl is ALWAYS a control-plane
  * workspace prefix (`/api/workspaces/:workspaceId/runtime/api`) — never a
  * remote runtime URL; the workspace registry resolves the prefix server-side.
- * New code must build clients through this factory (or the workspace runtime
+ * The fetch defaults to the control-plane-pinned fetch, so SDK calls stay on
+ * the CURRENT control plane even when a remote runtime is active. New code
+ * must build clients through this factory (or the workspace runtime
  * registry); the `opencodeClient` singleton is a migration-period facade.
  */
 export const createWorkspaceOpencodeClient = (config: {
@@ -206,7 +209,7 @@ export const createWorkspaceOpencodeClient = (config: {
   return createOpencodeClient({
     baseUrl: ensureAbsoluteBaseUrl(config.baseUrl),
     ...(config.directory ? { directory: config.directory } : {}),
-    fetch: config.fetch ?? runtimeFetch,
+    fetch: config.fetch ?? createControlPlaneFetch(),
   });
 };
 

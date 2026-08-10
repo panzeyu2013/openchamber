@@ -1622,6 +1622,7 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.stale': '已過期',
   'workspaces.sidebar.serverOf': '在 {server} 上',
   'workspaces.sidebar.moreAvailable': '還有更多會話',
+  'workspaces.sidebar.serverHasMoreSessions': '此伺服器上還有更多會話',
   'workspaces.sidebar.openSessionAria': '在 {workspace} 中開啟 {title}',
   'workspaces.sidebar.remoteNotWired': '從其他伺服器開啟會話將隨同步遷移提供。',
   'workspaces.dialog.description': '選擇伺服器及其上的路徑。所有伺服器的工作區都顯示在同一個清單中。',

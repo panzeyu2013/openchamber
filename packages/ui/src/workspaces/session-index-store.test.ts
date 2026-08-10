@@ -21,6 +21,7 @@ mock.module('@/workspaces/session-index-client', () => ({
 const makeSession = (workspaceId: string, sessionId: string, overrides: Partial<WorkspaceSessionSummary> = {}): WorkspaceSessionSummary => ({
   key: `${workspaceId}\0${sessionId}`,
   workspaceId,
+  connectionId: 'conn-1',
   upstreamSessionId: sessionId,
   directory: `/home/${workspaceId}`,
   title: `Session ${sessionId}`,
@@ -41,7 +42,13 @@ const makeSnapshot = (
   revision: number,
   sessions: WorkspaceSessionSummary[],
   freshnessByConnection: Record<string, SourceFreshness> = {},
-): WorkspaceSessionSnapshot => ({ revision, sessions, freshnessByConnection });
+  truncatedByConnection?: Record<string, boolean>,
+): WorkspaceSessionSnapshot => ({
+  revision,
+  sessions,
+  freshnessByConnection,
+  ...(truncatedByConnection ? { truncatedByConnection } : {}),
+});
 
 const makeEvent = (
   revision: number,
@@ -104,6 +111,43 @@ describe('workspace session index store', () => {
     expect(state.snapshot).toBe(previous);
     expect(state.lastAppliedRevision).toBe(4);
     expect(state.snapshot).toEqual(snapshot);
+  });
+
+  test('a truncated refresh keeps sessions of truncated connections that the server cannot enumerate', async () => {
+    const prior = makeSession('ws-1', 'ses-old', { connectionId: 'conn-1' });
+    const priorOther = makeSession('ws-2', 'ses-old-2', { connectionId: 'conn-2' });
+    fetchSnapshotImpl = async () => makeSnapshot(4, [prior, priorOther], { 'conn-1': makeFreshness(), 'conn-2': makeFreshness() });
+    await useWorkspaceSessionIndexStore.getState().refresh();
+
+    // The next snapshot is truncated for conn-1: ses-old is beyond the
+    // limit (not in the new list) but still exists upstream — it must NOT
+    // be dropped as if deleted. conn-2 is untruncated and authoritative.
+    const newer = makeSession('ws-1', 'ses-new', { connectionId: 'conn-1', updatedAt: 2000 });
+    fetchSnapshotImpl = async () => makeSnapshot(9, [newer], { 'conn-1': makeFreshness() }, { 'conn-1': true, 'conn-2': false });
+    await useWorkspaceSessionIndexStore.getState().refresh();
+
+    const state = useWorkspaceSessionIndexStore.getState();
+    const keys = new Set(state.snapshot?.sessions.map((session) => session.key));
+    expect(keys.has('ws-1\0ses-new')).toBe(true);
+    // Preserved: truncated connection's unenumerated session.
+    expect(keys.has('ws-1\0ses-old')).toBe(true);
+    // Dropped: untruncated connection's removed session is authoritative.
+    expect(keys.has('ws-2\0ses-old-2')).toBe(false);
+    expect(state.lastAppliedRevision).toBe(9);
+    expect(state.status).toBe('ready');
+  });
+
+  test('an untruncated refresh replaces the snapshot authoritatively', async () => {
+    const prior = makeSession('ws-1', 'ses-old');
+    fetchSnapshotImpl = async () => makeSnapshot(4, [prior], { 'conn-1': makeFreshness() });
+    await useWorkspaceSessionIndexStore.getState().refresh();
+
+    const newer = makeSession('ws-1', 'ses-new', { updatedAt: 2000 });
+    fetchSnapshotImpl = async () => makeSnapshot(9, [newer], { 'conn-1': makeFreshness() }, { 'conn-1': false });
+    await useWorkspaceSessionIndexStore.getState().refresh();
+
+    const state = useWorkspaceSessionIndexStore.getState();
+    expect(state.snapshot?.sessions.map((session) => session.key)).toEqual(['ws-1\0ses-new']);
   });
 
   test('applyEvent upsert inserts a new session and leaves other sessions untouched', async () => {

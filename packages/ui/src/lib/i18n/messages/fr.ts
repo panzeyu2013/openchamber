@@ -1465,6 +1465,7 @@ export const dict = {
   'workspaces.sidebar.stale': 'Obsolète',
   'workspaces.sidebar.serverOf': 'sur {server}',
   'workspaces.sidebar.moreAvailable': 'D’autres sessions sont disponibles',
+  'workspaces.sidebar.serverHasMoreSessions': 'D’autres sessions sont disponibles sur ce serveur',
   'workspaces.sidebar.openSessionAria': 'Ouvrir {title} dans {workspace}',
   'workspaces.sidebar.remoteNotWired': 'L’ouverture de sessions d’un autre serveur arrive avec la migration de synchronisation.',
   'workspaces.dialog.description': 'Choisissez un serveur et un chemin sur ce serveur. Les espaces de travail de tous les serveurs figurent dans une seule liste.',

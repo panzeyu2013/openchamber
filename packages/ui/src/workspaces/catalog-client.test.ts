@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import {
   createWorkspace,
   deleteWorkspace,
@@ -13,12 +13,22 @@ import { CatalogClientError, type WorkspaceCatalogSnapshot, type WorkspaceDescri
 let runtimeFetchImpl: (url: string, init?: RequestInit) => Promise<Response>;
 const runtimeFetchCalls: Array<{ url: string; init?: RequestInit }> = [];
 
-mock.module('@/lib/runtime-fetch', () => ({
-  runtimeFetch: async (url: string, init?: RequestInit) => {
-    runtimeFetchCalls.push({ url: String(url), init });
-    return runtimeFetchImpl(url, init);
-  },
-}));
+// The catalog client fetches through the control-plane-pinned fetch, which
+// calls the global fetch at request time; stub that instead of the module.
+const headersToObject = (headers: HeadersInit | undefined): Record<string, string> | undefined => {
+  if (!headers) return undefined;
+  const result: Record<string, string> = {};
+  new Headers(headers).forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+};
+
+globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+  const raw = url instanceof Request ? url.url : String(url);
+  runtimeFetchCalls.push({ url: raw, init: init ? { ...init, headers: headersToObject(init.headers) } : undefined });
+  return runtimeFetchImpl(raw, init);
+};
 
 const jsonResponse = (body: unknown, status = 200): Response => (
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })

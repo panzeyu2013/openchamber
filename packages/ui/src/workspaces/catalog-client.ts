@@ -1,4 +1,4 @@
-import { runtimeFetch } from '@/lib/runtime-fetch';
+import { createControlPlaneFetch } from './control-plane-fetch';
 import {
   CatalogClientError,
   type CatalogMutationResult,
@@ -10,14 +10,16 @@ import {
 } from './types';
 
 /**
- * Workspace Catalog client. All requests go to the CURRENT CONTROL PLANE
- * (never to a remote runtime URL): the control plane resolves connectionIds
- * into adapters server-side. Mutation responses carry the new catalog
- * revision; a 409 `catalog_revision_conflict` surfaces as CatalogClientError
- * so the caller can re-fetch the snapshot and replay the user action.
- *
- * Requests use the control-plane runtimeFetch, which handles UI auth.
+ * Workspace Catalog client. All requests go to the LOCAL CONTROL PLANE (the
+ * OpenChamber instance that served the UI), pinned via a control-plane fetch —
+ * NEVER to a remote runtime URL and never following the Active Runtime. The
+ * control plane resolves connectionIds into adapters server-side. Mutation
+ * responses carry the new catalog revision; a 409 `catalog_revision_conflict`
+ * surfaces as CatalogClientError so the caller can re-fetch the snapshot and
+ * replay the user action.
  */
+
+const controlPlaneFetch = createControlPlaneFetch();
 
 const isJsonOk = async (response: Response): Promise<unknown> => {
   if (!response.ok) {
@@ -38,7 +40,7 @@ const isJsonOk = async (response: Response): Promise<unknown> => {
 };
 
 const jsonRequest = async (path: string, init?: RequestInit): Promise<unknown> => {
-  const response = await runtimeFetch(path, init);
+  const response = await controlPlaneFetch(path, init);
   return isJsonOk(response);
 };
 
