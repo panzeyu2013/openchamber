@@ -30,6 +30,17 @@ Pairing v2 is implemented by `packages/web/server/lib/client-auth/pairing.js`. I
   - `ensureSessionToken(req, res)`
   - `dispose()`
 
+## URL-token capability allowlist
+
+Short-lived URL tokens (`oc_url_`, minted via `POST /auth/url-token`) are
+capability-scoped: GET-only (plus allowlisted WebSocket upgrades) on a fixed
+path allowlist. The workspace catalog read paths are token-readable
+(`/api/workspaces`, `/api/workspaces/:id/children`, `/api/connections`,
+`/api/workspace-sessions/snapshot`, `/api/workspace-sessions/events`) so
+mini-chat/tray surfaces that may only hold a token can render the unified
+tree. Catalog and session-index MUTATIONS are never token-usable; the
+security tests in `ui-auth.test.js` pin both sides of that contract.
+
 ## Public exports (ui-passkeys.js)
 - `createUiPasskeys({ passwordBinding, readSettingsFromDiskMigrated, storeFile, rpName, challengeTtlMs })`: creates passkey runtime with methods:
   - `enabled`

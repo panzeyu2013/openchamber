@@ -286,7 +286,10 @@ Transport-triggered health checks share the periodic monitor's failure accountin
   - `GET /api/config/themes`
   - `POST /api/config/reload` — applies accumulated deferred OpenCode config changes. Managed OpenCode restarts and returns `requiresReload: true`. External OpenCode returns `requiresManualRestart: true` (changes are already on disk; the connected server must be restarted outside OpenChamber).
 - `registerCommonRequestMiddleware(app, dependencies)`: registers shared request middleware stack:
-  - conditional JSON body parser behavior for `/api/*` vs non-API requests
+  - conditional JSON body parser behavior for `/api/*` vs non-API requests. The
+    parsed-prefix allowlist includes the workspace catalog/connection/session
+    paths (`/api/workspaces`, `/api/connections`, `/api/workspace-sessions/*`)
+    so their JSON bodies are parsed before the routes see them.
   - URL-encoded parser setup
   - request logging middleware
 
@@ -396,6 +399,11 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
   - Generic `/api/*` forwarding with hop-by-hop header filtering
   - Windows `/session` merge fallback path behavior
   - OpenCode readiness gate for proxied `/api` requests
+
+The generic proxy is registered LAST; workspace catalog/session-index routes
+and the workspace runtime proxy (`/api/workspaces/*`,
+`/api/workspace-sessions/*`) register BEFORE it (after the auth gate) and
+must never be captured by the fall-through.
 
 ## Public exports (watcher.js)
 - `createOpenCodeWatcherRuntime(dependencies)`: creates global event watcher runtime backed by the shared upstream SSE reader.

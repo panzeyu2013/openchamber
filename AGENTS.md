@@ -64,6 +64,8 @@ High-value anchors:
 
 - Sync: `packages/ui/src/sync/DOCUMENTATION.md`
 - Stores: `packages/ui/src/stores/DOCUMENTATION.md`
+- Workspaces (shared UI): `packages/ui/src/workspaces/DOCUMENTATION.md`
+- Workspaces (server): `packages/web/server/lib/workspaces/DOCUMENTATION.md`
 - CLI: `packages/web/bin/lib/DOCUMENTATION.md`
 - Performance measurement tooling: `scripts/perf/DOCUMENTATION.md`
 - VS Code runtime: `packages/vscode/src/DOCUMENTATION.md`

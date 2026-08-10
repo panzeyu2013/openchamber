@@ -51,6 +51,16 @@ Examples:
 
 These stores coordinate persistent project/session metadata across multiple views.
 
+Unified-workspace migration note: the Workspace Catalog
+(`packages/ui/src/workspaces/catalog-store.ts`) and the Session Index
+(`packages/ui/src/workspaces/session-index-store.ts`) are the forward
+contract for workspace/session identity; `useProjectsStore` (path-derived
+ids, API-base-URL-sliced storage), `useGlobalSessionsStore` and the
+runtime-scoped keys below remain in the compatibility period (dual read).
+New code must not add new runtime/path-scoped persistence for workspace or
+session identity — use workspace scope keys from
+`packages/ui/src/workspaces/identity.ts`.
+
 `messageQueueStore.ts` keeps a queued message until its own send resolves, so between dispatch and resolution the entry is still visible to every reader. Dispatchers must therefore mark the send (`markSending`/`clearSending`) and read `getSendableQueue()` — or filter `sendingIds` themselves — instead of dispatching straight from `queuedMessages`; otherwise a composer submit merges a message the auto-send hook is already delivering and it is sent twice (the window is seconds over a relay). `clearQueue()` retains in-flight entries for the same reason. `sendingIds` is deliberately not persisted: a restart has no in-flight sends, and a stale flag would strand a queued message.
 
 `useGlobalSessionsStore.ts` owns cold/global active and archived session coverage, including `sessionsByDirectory`. It is complementary to directory child stores: it is not the source of live busy/retry status or session messages.
