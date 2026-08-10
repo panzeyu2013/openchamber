@@ -43,7 +43,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': 'Apply & Restart',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': 'Apply 1 pending configuration change and restart OpenCode.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': 'Apply {count} pending configuration changes and restart OpenCode.',
-  'settings.view.pendingRestart.applying': 'Applying changes and restarting OpenCode…',
+  'settings.view.pendingRestart.applying': 'Restarting...',
   'settings.view.pendingRestart.applied': 'OpenCode restarted with pending configuration changes.',
   'settings.view.pendingRestart.applyFailed': 'Failed to apply configuration changes.',
   'settings.view.pendingRestart.manualRestartRequired': 'Saved on disk. Restart your connected OpenCode server to apply the changes.',

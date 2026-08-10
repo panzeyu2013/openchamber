@@ -44,7 +44,7 @@ export const settingsDict = {
   "settings.view.actions.applyAndRestartOpenCode": "Aplicar e reiniciar",
   "settings.view.actions.applyAndRestartOpenCodeTooltipSingle": "Aplicar 1 alteração de configuração pendente e reiniciar o OpenCode.",
   "settings.view.actions.applyAndRestartOpenCodeTooltipPlural": "Aplicar {count} alterações de configuração pendentes e reiniciar o OpenCode.",
-  "settings.view.pendingRestart.applying": "Aplicando alterações e reiniciando o OpenCode…",
+  "settings.view.pendingRestart.applying": "Reiniciando…",
   "settings.view.pendingRestart.applied": "OpenCode reiniciado com as alterações de configuração pendentes.",
   "settings.view.pendingRestart.applyFailed": "Falha ao aplicar as alterações de configuração.",
   "settings.view.pendingRestart.manualRestartRequired": "Salvo no disco. Reinicie o servidor OpenCode conectado para aplicar as alterações.",

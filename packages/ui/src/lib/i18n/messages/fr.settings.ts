@@ -44,7 +44,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': 'Appliquer et redémarrer',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': 'Appliquer 1 modification de configuration en attente et redémarrer OpenCode.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': 'Appliquer {count} modifications de configuration en attente et redémarrer OpenCode.',
-  'settings.view.pendingRestart.applying': 'Application des modifications et redémarrage d\'OpenCode…',
+  'settings.view.pendingRestart.applying': 'Redémarrage…',
   'settings.view.pendingRestart.applied': 'OpenCode a redémarré avec les modifications de configuration en attente.',
   'settings.view.pendingRestart.applyFailed': 'Échec de l\'application des modifications de configuration.',
   'settings.view.pendingRestart.manualRestartRequired': 'Enregistré sur le disque. Redémarrez le serveur OpenCode connecté pour appliquer les modifications.',

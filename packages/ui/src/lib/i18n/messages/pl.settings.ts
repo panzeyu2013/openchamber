@@ -1994,7 +1994,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': 'Zastosuj i uruchom ponownie',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': 'Zastosuj 1 oczekującą zmianę konfiguracji i uruchom ponownie OpenCode.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': 'Zastosuj {count} oczekujących zmian konfiguracji i uruchom ponownie OpenCode.',
-  'settings.view.pendingRestart.applying': 'Stosowanie zmian i ponowne uruchamianie OpenCode…',
+  'settings.view.pendingRestart.applying': 'Ponowne uruchamianie…',
   'settings.view.pendingRestart.applied': 'OpenCode został uruchomiony ponownie z oczekującymi zmianami konfiguracji.',
   'settings.view.pendingRestart.applyFailed': 'Nie udało się zastosować zmian konfiguracji.',
   'settings.view.pendingRestart.manualRestartRequired': 'Zapisano na dysku. Uruchom ponownie podłączony serwer OpenCode, aby zastosować zmiany.',

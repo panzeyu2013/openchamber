@@ -42,7 +42,7 @@
   'settings.view.actions.applyAndRestartOpenCode': '套用並重新啟動',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': '套用 1 項待處理的設定變更並重新啟動 OpenCode。',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': '套用 {count} 項待處理的設定變更並重新啟動 OpenCode。',
-  'settings.view.pendingRestart.applying': '正在套用變更並重新啟動 OpenCode…',
+  'settings.view.pendingRestart.applying': '正在重新啟動…',
   'settings.view.pendingRestart.applied': '已使用待處理的設定變更重新啟動 OpenCode。',
   'settings.view.pendingRestart.applyFailed': '套用設定變更失敗。',
   'settings.view.pendingRestart.manualRestartRequired': '已儲存到磁碟。請重新啟動已連線的 OpenCode 伺服器以套用變更。',

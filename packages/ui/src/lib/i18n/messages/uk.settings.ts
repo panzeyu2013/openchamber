@@ -44,7 +44,7 @@ export const settingsDict = {
   "settings.view.actions.applyAndRestartOpenCode": "Застосувати та перезапустити",
   "settings.view.actions.applyAndRestartOpenCodeTooltipSingle": "Застосувати 1 очікувану зміну конфігурації та перезапустити OpenCode.",
   "settings.view.actions.applyAndRestartOpenCodeTooltipPlural": "Застосувати {count} очікуваних змін конфігурації та перезапустити OpenCode.",
-  "settings.view.pendingRestart.applying": "Застосування змін і перезапуск OpenCode…",
+  "settings.view.pendingRestart.applying": "Перезапуск…",
   "settings.view.pendingRestart.applied": "OpenCode перезапущено з очікуваними змінами конфігурації.",
   "settings.view.pendingRestart.applyFailed": "Не вдалося застосувати зміни конфігурації.",
   "settings.view.pendingRestart.manualRestartRequired": "Збережено на диску. Перезапустіть підключений сервер OpenCode, щоб застосувати зміни.",

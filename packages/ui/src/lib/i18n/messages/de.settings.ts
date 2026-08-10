@@ -40,7 +40,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': 'Anwenden & Neu starten',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': '1 ausstehende Konfigurationsänderung anwenden und OpenCode neu starten.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': '{count} ausstehende Konfigurationsänderungen anwenden und OpenCode neu starten.',
-  'settings.view.pendingRestart.applying': 'Änderungen werden angewendet und OpenCode neu gestartet…',
+  'settings.view.pendingRestart.applying': 'Neustart…',
   'settings.view.pendingRestart.applied': 'OpenCode wurde mit ausstehenden Konfigurationsänderungen neu gestartet.',
   'settings.view.pendingRestart.applyFailed': 'Konfigurationsänderungen konnten nicht angewendet werden.',
   'settings.view.pendingRestart.manualRestartRequired': 'Auf Datenträger gespeichert. Starten Sie Ihren verbundenen OpenCode-Server neu, um die Änderungen anzuwenden.',

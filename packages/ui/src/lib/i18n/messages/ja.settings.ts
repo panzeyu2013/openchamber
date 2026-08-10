@@ -44,7 +44,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': '適用して再起動',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': '保留中の設定変更 1 件を適用して OpenCode を再起動します。',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': '保留中の設定変更 {count} 件を適用して OpenCode を再起動します。',
-  'settings.view.pendingRestart.applying': '変更を適用して OpenCode を再起動しています…',
+  'settings.view.pendingRestart.applying': '再起動しています…',
   'settings.view.pendingRestart.applied': '保留中の設定変更を適用して OpenCode を再起動しました。',
   'settings.view.pendingRestart.applyFailed': '設定変更の適用に失敗しました。',
   'settings.view.pendingRestart.manualRestartRequired': 'ディスクに保存しました。接続中の OpenCode サーバーを再起動して変更を適用してください。',

@@ -44,7 +44,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': '적용하고 다시 시작',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': '보류 중인 구성 변경 1개를 적용하고 OpenCode를 다시 시작합니다.',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': '보류 중인 구성 변경 {count}개를 적용하고 OpenCode를 다시 시작합니다.',
-  'settings.view.pendingRestart.applying': '변경 사항을 적용하고 OpenCode를 다시 시작하는 중…',
+  'settings.view.pendingRestart.applying': '다시 시작하는 중…',
   'settings.view.pendingRestart.applied': '보류 중인 구성 변경으로 OpenCode를 다시 시작했습니다.',
   'settings.view.pendingRestart.applyFailed': '구성 변경을 적용하지 못했습니다.',
   'settings.view.pendingRestart.manualRestartRequired': '디스크에 저장되었습니다. 연결된 OpenCode 서버를 다시 시작하여 변경 사항을 적용하세요.',

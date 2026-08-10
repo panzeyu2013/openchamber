@@ -44,7 +44,7 @@ export const settingsDict = {
   'settings.view.actions.applyAndRestartOpenCode': '应用并重启',
   'settings.view.actions.applyAndRestartOpenCodeTooltipSingle': '应用 1 项待处理的配置更改并重启 OpenCode。',
   'settings.view.actions.applyAndRestartOpenCodeTooltipPlural': '应用 {count} 项待处理的配置更改并重启 OpenCode。',
-  'settings.view.pendingRestart.applying': '正在应用更改并重启 OpenCode…',
+  'settings.view.pendingRestart.applying': '正在重启…',
   'settings.view.pendingRestart.applied': '已使用待处理的配置更改重启 OpenCode。',
   'settings.view.pendingRestart.applyFailed': '应用配置更改失败。',
   'settings.view.pendingRestart.manualRestartRequired': '已保存到磁盘。请重启已连接的 OpenCode 服务器以应用更改。',
