@@ -191,6 +191,25 @@ const createRuntimeOpencodeClient = (config: { baseUrl: string; directory?: stri
   });
 };
 
+/**
+ * Explicit workspace-bound SDK factory. The baseUrl is ALWAYS a control-plane
+ * workspace prefix (`/api/workspaces/:workspaceId/runtime/api`) — never a
+ * remote runtime URL; the workspace registry resolves the prefix server-side.
+ * New code must build clients through this factory (or the workspace runtime
+ * registry); the `opencodeClient` singleton is a migration-period facade.
+ */
+export const createWorkspaceOpencodeClient = (config: {
+  baseUrl: string;
+  directory?: string;
+  fetch?: typeof fetch;
+}): OpencodeClient => {
+  return createOpencodeClient({
+    baseUrl: ensureAbsoluteBaseUrl(config.baseUrl),
+    ...(config.directory ? { directory: config.directory } : {}),
+    fetch: config.fetch ?? runtimeFetch,
+  });
+};
+
 interface App {
   version?: string;
   [key: string]: unknown;

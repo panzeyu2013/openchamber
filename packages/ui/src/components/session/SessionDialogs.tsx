@@ -13,6 +13,8 @@ import {
 import { MobileOverlayPanel } from '@/components/ui/MobileOverlayPanel';
 import { Icon } from "@/components/icon/Icon";
 import { DirectoryExplorerDialog } from './DirectoryExplorerDialog';
+import { AddWorkspaceDialog } from '@/workspaces/AddWorkspaceDialog';
+import type { WorkspaceDescriptor } from '@/workspaces/types';
 import { cn, formatPathForDisplay } from '@/lib/utils';
 import type { Session } from '@opencode-ai/sdk/v2';
 import type { WorktreeMetadata } from '@/types/worktree';
@@ -51,6 +53,7 @@ type DeleteDialogState = {
 export const SessionDialogs: React.FC = () => {
     const { t } = useI18n();
     const [isDirectoryDialogOpen, setIsDirectoryDialogOpen] = React.useState(false);
+    const [isAddWorkspaceDialogOpen, setIsAddWorkspaceDialogOpen] = React.useState(false);
     const [hasShownInitialDirectoryPrompt, setHasShownInitialDirectoryPrompt] = React.useState(false);
     const [deleteDialog, setDeleteDialog] = React.useState<DeleteDialogState | null>(null);
     const [deleteDialogSummaries, setDeleteDialogSummaries] = React.useState<Array<{ session: Session; metadata: WorktreeMetadata }>>([]);
@@ -205,6 +208,24 @@ export const SessionDialogs: React.FC = () => {
         return sessionEvents.onDirectoryRequest(() => {
             setIsDirectoryDialogOpen(true);
         });
+    }, []);
+
+    React.useEffect(() => {
+        return sessionEvents.onAddWorkspaceRequest(() => {
+            setIsAddWorkspaceDialogOpen(true);
+        });
+    }, []);
+
+    // Dual-write bridge for the compatibility period: a catalog workspace on
+    // the LOCAL connection is mirrored into the legacy projects store so the
+    // existing sidebar keeps working until the unified workspace sidebar
+    // (Phase 4) replaces it. Remote workspaces never enter the local projects
+    // store — they only exist in the catalog.
+    const handleWorkspaceAddedToCatalog = React.useCallback((workspace: WorkspaceDescriptor) => {
+        if (workspace.connectionId !== 'local') {
+            return;
+        }
+        useProjectsStore.getState().addProject(workspace.canonicalPath, { label: workspace.label });
     }, []);
 
     React.useEffect(() => {
@@ -796,6 +817,12 @@ export const SessionDialogs: React.FC = () => {
             <DirectoryExplorerDialog
                 open={isDirectoryDialogOpen}
                 onOpenChange={setIsDirectoryDialogOpen}
+            />
+
+            <AddWorkspaceDialog
+                open={isAddWorkspaceDialogOpen}
+                onOpenChange={setIsAddWorkspaceDialogOpen}
+                onWorkspaceAdded={handleWorkspaceAddedToCatalog}
             />
         </>
     );

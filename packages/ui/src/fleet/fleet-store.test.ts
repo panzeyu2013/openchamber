@@ -13,6 +13,23 @@ mock.module('@/fleet/fleet-probe', () => ({
   probeFleetServer: async () => { probeCallCount += 1; return probeResult; },
 }));
 
+// The runtime switch is the single global endpoint mutation. These tests pin
+// the CURRENT behavior — activation switches the Active Runtime, and a session
+// click therefore tears down and rebuilds global sync state. Later phases must
+// flip these assertions to "no switch is called on session navigation" before
+// removing the runtime-switch path entirely.
+let switchCallCount = 0;
+const switchedKeys: string[] = [];
+mock.module('@/lib/runtime-switch', () => ({
+  getRuntimeKey: () => useFleetStore.getState().activeServerId === 'desktop:alpha'
+    ? 'desktop-host:alpha'
+    : 'local',
+  switchRuntimeEndpoint: (descriptor: { runtimeKey?: string }) => {
+    switchCallCount += 1;
+    switchedKeys.push(descriptor.runtimeKey ?? '');
+  },
+}));
+
 const upsertRemoteServer = (status: 'connected' | 'disconnected' | 'degraded' | 'error') => {
   useFleetStore.getState().upsertServer({
     id: 'desktop:alpha', label: 'Alpha', kind: 'remote-url', status,
@@ -24,6 +41,8 @@ describe('Fleet activation', () => {
   beforeEach(() => {
     probeResult = { status: 'ok', latencyMs: 5 };
     probeCallCount = 0;
+    switchCallCount = 0;
+    switchedKeys.length = 0;
     useFleetStore.setState({ servers: new Map(), activeServerId: 'local' });
     useFleetLiveStore.setState({ sessions: new Map() });
   });
@@ -149,6 +168,38 @@ describe('Fleet activation', () => {
     useFleetStore.getState().updateServerStatus('desktop:alpha', 'connecting');
 
     expect(await useFleetStore.getState().probeAndActivateServer('desktop:alpha')).toBe(false);
+    expect(useFleetStore.getState().activeServerId).toBe('local');
+  });
+
+  // ---- Reverse assertions: these pin the CURRENT "activation = global
+  // runtime switch" coupling. The unified workspace architecture replaces
+  // session navigation with workspace-scoped handles; these tests must be
+  // flipped (switch must NOT be called) before that coupling is removed. ----
+
+  test('CURRENT BEHAVIOR: activating a different server calls the global runtime switch', async () => {
+    upsertRemoteServer('connected');
+
+    expect(await useFleetStore.getState().probeAndActivateServer('desktop:alpha')).toBe(true);
+    expect(switchCallCount).toBe(1);
+    expect(switchedKeys).toEqual(['desktop-host:alpha']);
+  });
+
+  test('CURRENT BEHAVIOR: activating a server whose runtime key is already active skips the switch', async () => {
+    // A re-registration of the active server reuses its runtime key; the
+    // endpoint mutation must not fire when the target runtime is unchanged.
+    useFleetStore.setState({ activeServerId: 'desktop:alpha' });
+    upsertRemoteServer('connected');
+
+    expect(await useFleetStore.getState().probeAndActivateServer('desktop:alpha')).toBe(true);
+    expect(switchCallCount).toBe(0);
+  });
+
+  test('CURRENT BEHAVIOR: a failed probe never calls the global runtime switch', async () => {
+    upsertRemoteServer('disconnected');
+    probeResult = { status: 'unreachable', latencyMs: 10_000 };
+
+    expect(await useFleetStore.getState().probeAndActivateServer('desktop:alpha')).toBe(false);
+    expect(switchCallCount).toBe(0);
     expect(useFleetStore.getState().activeServerId).toBe('local');
   });
 });

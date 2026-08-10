@@ -14,6 +14,7 @@ import { useFleetStore } from '@/fleet/fleet-store';
 import { useFleetSummaryStore } from '@/fleet/fleet-summary-store';
 import { FleetSummaryBridge } from '@/fleet/FleetSummaryBridge';
 import { useDesktopSshStore } from '@/stores/useDesktopSshStore';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
@@ -164,6 +165,19 @@ const DesktopRuntimeSyncBridge: React.FC = () => {
   return null;
 };
 
+// Hydrates the unified workspace catalog on boot and re-hydrates after a
+// runtime endpoint change (the catalog always belongs to the CURRENT control
+// plane). Reads only; mutations flow through the catalog store.
+const WorkspaceCatalogBridge: React.FC = () => {
+  React.useEffect(() => {
+    void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
+    return subscribeRuntimeEndpointChanged(() => {
+      void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
+    });
+  }, []);
+  return null;
+};
+
 export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
   embeddedBackgroundWorkEnabled: boolean;
 }) {
@@ -178,6 +192,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
       <DesktopRuntimeSyncBridge />
       <FleetRegistryBridge />
       <FleetSummaryBridge />
+      <WorkspaceCatalogBridge />
     </>
   );
 }

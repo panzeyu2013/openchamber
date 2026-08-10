@@ -58,6 +58,7 @@ import { createSettingsNormalizationRuntime } from './lib/opencode/settings-norm
 import { createSettingsHelpers } from './lib/opencode/settings-helpers.js';
 import { createThemeRuntime } from './lib/opencode/theme-runtime.js';
 import { createFeatureRoutesRuntime } from './lib/opencode/feature-routes-runtime.js';
+import { createWorkspacesRuntime } from './lib/workspaces/index.js';
 import { parseServeCliOptions } from './lib/opencode/cli-options.js';
 import {
   registerAuthAndAccessRoutes,
@@ -556,6 +557,7 @@ let openCodeBaseUrl = hmrState.openCodeBaseUrl ?? null;
 let isShuttingDown = hmrState.isShuttingDown;
 let signalsAttached = hmrState.signalsAttached;
 let openCodeWorkingDirectory = hmrState.openCodeWorkingDirectory;
+let workspacesRuntime = null;
 
 const {
   configuredOpenCodePort: ENV_CONFIGURED_OPENCODE_PORT,
@@ -1687,6 +1689,26 @@ async function main(options = {}) {
     permissionAutoAcceptRuntime,
   });
 
+  // Unified workspace catalog + connection broker. Registered after the base
+  // UI auth gate (feature routes above) and before the generic OpenCode /api/*
+  // proxy (inside startupPipelineRuntime.run below) so workspace routes are
+  // never captured by the proxy. Migration imports legacy local projects
+  // without blocking startup.
+  workspacesRuntime = await createWorkspacesRuntime({
+    fs,
+    fsPromises,
+    path,
+    openchamberDataDir: OPENCHAMBER_DATA_DIR,
+    readSettings: readSettingsFromDiskMigrated,
+    normalizeDirectoryPath,
+    buildOpenCodeUrl,
+    getOpenCodeAuthHeaders,
+  });
+  workspacesRuntime.registerRoutes(app);
+  void workspacesRuntime.migrate().catch((error) => {
+    console.error('[workspaces] legacy migration failed:', error?.message ?? error);
+  });
+
   const previewProxyRuntime = createPreviewProxyRuntime({
     crypto,
     URL,
@@ -1815,6 +1837,11 @@ async function main(options = {}) {
         dictationRuntime?.stop?.();
       } catch {
         // best-effort shutdown of the dictation worker
+      }
+      try {
+        void workspacesRuntime?.dispose?.();
+      } catch {
+        // best-effort teardown of the workspace connection broker
       }
       return gracefulShutdown({ exitProcess: shutdownOptions.exitProcess ?? false });
     }

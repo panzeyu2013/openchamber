@@ -254,6 +254,33 @@ describe('ui auth client credential seam', () => {
       expect(writeCalled).toBe(false);
       expect(writeRes.statusCode).toBe(401);
     }
+
+    // Workspace catalog read paths are URL-token readable (mini-chat/tray
+    // surfaces may only hold a token)...
+    for (const tokenPath of [
+      '/api/workspaces',
+      `/api/workspaces/${'ws-1'}/children?path=%2Ftmp`,
+      '/api/connections',
+    ]) {
+      const separator = tokenPath.includes('?') ? '&' : '?';
+      const readReq = { method: 'GET', path: tokenPath.split('?')[0], url: `${tokenPath}${separator}oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+      const readRes = createResponse();
+      let readCalled = false;
+      await auth.requireAuth(readReq, readRes, () => {
+        readCalled = true;
+      });
+      expect(readCalled).toBe(true);
+    }
+
+    // ...but catalog MUTATIONS must never ride a URL token.
+    const createReq = { method: 'POST', path: '/api/workspaces', url: `/api/workspaces?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+    const createRes = createResponse();
+    let createCalled = false;
+    await auth.requireAuth(createReq, createRes, () => {
+      createCalled = true;
+    });
+    expect(createCalled).toBe(false);
+    expect(createRes.statusCode).toBe(401);
   });
 
   it('issues desktop client tokens with the UI session expiry', async () => {

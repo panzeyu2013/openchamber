@@ -301,7 +301,12 @@ const isUrlAuthReadableHttpPath = (pathname) => {
     || pathname === '/api/fs/serve'
     || pathname.startsWith('/api/fs/serve/')
     || pathname.startsWith('/api/preview/proxy/')
-    || /^\/api\/projects\/[^/]+\/icon$/.test(pathname);
+    || /^\/api\/projects\/[^/]+\/icon$/.test(pathname)
+    // Workspace catalog read paths: GET-only, no secrets in responses, and
+    // used by mini-chat/tray surfaces that may only hold a URL token.
+    || pathname === '/api/workspaces'
+    || /^\/api\/workspaces\/[^/]+\/children$/.test(pathname)
+    || pathname === '/api/connections';
 };
 
 const isUrlAuthWebSocketPath = (pathname) => {
