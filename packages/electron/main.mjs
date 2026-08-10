@@ -11,6 +11,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import updaterPkg from 'electron-updater';
 import { ElectronSshManager } from './ssh-manager.mjs';
+import { createSshWorkspaceConnectionAdapter } from './workspace-connection-adapter.mjs';
 import { createTrayController } from './tray.mjs';
 import { resolveManagedOpenCodeCwd } from './opencode-cwd.mjs';
 import { resolveStartupUrlProbePlan, shouldIgnoreLoopbackConnectionLimit } from './startup-url-selection.mjs';
@@ -1514,6 +1515,19 @@ const spawnLocalServer = async () => {
 
   const { startWebUiServer } = await import('@openchamber/web/server/index.js');
 
+  // SSH workspace adapters: one per saved SSH instance, injected into the
+  // in-process server's Connection Broker. Tunnel lifecycle stays owned by
+  // ssh-manager; the adapter only resolves the current tunnel URL per call.
+  const sshInstances = await sshManager.readInstances().catch(() => []);
+  const workspaceConnectionAdapters = sshInstances.map((instance) => (
+    createSshWorkspaceConnectionAdapter({
+      connectionId: `ssh:${instance.id}`,
+      label: instance.label || instance.id,
+      sshInstanceId: instance.id,
+      sshManager,
+    })
+  ));
+
   const handle = await startWebUiServer({
     port: chosenPort,
     host: bindHost,
@@ -1521,6 +1535,7 @@ const spawnLocalServer = async () => {
     attachSignals: false,
     exitOnShutdown: false,
     apiOnly: false,
+    workspaceConnectionAdapters,
     onDesktopNotification: (payload) => maybeShowNativeNotification(payload),
     getIsWindowFocused: isAnyWindowFocused,
     getDesktopRuntimeConfig: () => ({

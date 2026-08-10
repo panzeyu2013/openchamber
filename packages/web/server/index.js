@@ -1703,6 +1703,9 @@ async function main(options = {}) {
     normalizeDirectoryPath,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+    // Privileged adapters injected by the Electron main process (SSH
+    // tunnels). Web/headless servers never receive these.
+    injectedAdapters: Array.isArray(options.workspaceConnectionAdapters) ? options.workspaceConnectionAdapters : [],
   });
   workspacesRuntime.registerRoutes(app);
   void workspacesRuntime.migrate().catch((error) => {

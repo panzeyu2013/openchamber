@@ -2,18 +2,6 @@ import { settingsDict } from './fr.settings';
 
 export const dict = {
   ...settingsDict,
-  'sessions.fleet.title': 'Serveurs',
-  'sessions.fleet.status.connected': 'Connecté',
-  'sessions.fleet.status.connecting': 'Connexion',
-  'sessions.fleet.status.degraded': 'Indisponible',
-  'sessions.fleet.status.disconnected': 'Déconnecté',
-  'sessions.fleet.status.error': 'Erreur',
-  'sessions.fleet.openServer': 'Ouvrir {label}',
-  'sessions.fleet.openSession': 'Ouvrir {title} sur {server}',
-  'sessions.fleet.stale': 'Obsolète',
-  'sessions.fleet.unavailable': 'La dernière mise à jour a échoué',
-  'sessions.fleet.questionRequired': 'Réponse requise',
-  'sessions.fleet.moreAvailable': 'D’autres sessions sont disponibles',
   'terminalView.actions.attachSelection': 'Joindre la sortie sélectionnée',
   'terminalView.actions.restart': 'Redémarrer le terminal',
   'chat.message.terminalContext': '{terminal}, lignes {start}-{end}',

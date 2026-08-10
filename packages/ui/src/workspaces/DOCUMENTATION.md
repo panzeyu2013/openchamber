@@ -42,11 +42,13 @@ Workspace flow. Server mirror: `packages/web/server/lib/workspaces/`.
 
 ## Migration status
 
-Phase 1 is live: the catalog is hydrated at boot (AppEffects
-`WorkspaceCatalogBridge`), the Add Workspace dialog writes the catalog and
-mirrors local workspaces into the legacy projects store for the compatibility
-period (remote workspaces never enter the legacy store). The legacy sidebar,
+Phases 1–4 are live: catalog + session index hydration at boot, the unified
+Add Workspace dialog (with inline server registration), and the unified
+sidebar (`WorkspaceSessionsSection`) that replaced the fleet section. The
+renderer fleet observation layer (`packages/ui/src/fleet/`) was removed in
+Phase 6; its coordination algorithms live in the session index. Remaining:
 `useProjectsStore` (path-derived ids, API-base-URL-sliced storage),
-`useGlobalSessionsStore`, fleet stores and `switchRuntimeEndpoint` remain
-until the unified sidebar and session index land (Phases 4+). New code must
-not call the old facades; the call-site list may only shrink.
+`useGlobalSessionsStore`, `switchRuntimeEndpoint` (still used by the Host
+Switcher / remote-instances / mobile disconnect paths), `runtimeEndpointReset`
+and the workspace-bound SyncProvider migration. New code must not call the old
+facades; the call-site list may only shrink.

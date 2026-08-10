@@ -3,18 +3,6 @@ import { settingsDict } from './es.settings';
 
 export const dict: Record<I18nKey, string> = {
   ...settingsDict,
-  'sessions.fleet.title': 'Servidores',
-  'sessions.fleet.status.connected': 'Conectado',
-  'sessions.fleet.status.connecting': 'Conectando',
-  'sessions.fleet.status.degraded': 'No disponible',
-  'sessions.fleet.status.disconnected': 'Desconectado',
-  'sessions.fleet.status.error': 'Error',
-  'sessions.fleet.openServer': 'Abrir {label}',
-  'sessions.fleet.openSession': 'Abrir {title} en {server}',
-  'sessions.fleet.stale': 'Obsoleto',
-  'sessions.fleet.unavailable': 'No se pudo actualizar el último estado',
-  'sessions.fleet.questionRequired': 'Se requiere una respuesta',
-  'sessions.fleet.moreAvailable': 'Hay más sesiones disponibles',
   'terminalView.actions.attachSelection': 'Adjuntar salida seleccionada',
   'terminalView.actions.restart': 'Reiniciar terminal',
   'chat.message.terminalContext': '{terminal}, líneas {start}-{end}',

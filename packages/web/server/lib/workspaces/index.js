@@ -34,6 +34,11 @@ export const createWorkspacesRuntime = async (dependencies) => {
     // Server-side credential resolver for direct/relay connections
     // (credentialRef -> { token, headers }). Never exposed to renderers.
     credentialProvider = null,
+    // Adapters injected by privileged hosts (e.g. the Electron main process
+    // providing SSH tunnels through ssh-manager). Each adapter must expose
+    // connectionId + the standard adapter interface. packages/web never
+    // imports packages/electron; the main process supplies these objects.
+    injectedAdapters = [],
   } = dependencies;
 
   await fsPromises.mkdir(openchamberDataDir, { recursive: true });
@@ -72,6 +77,26 @@ export const createWorkspacesRuntime = async (dependencies) => {
 
   const connectionBroker = createConnectionBroker({ profileStore });
   connectionBroker.registerAdapter(localAdapter);
+  for (const adapter of injectedAdapters) {
+    if (!adapter || typeof adapter.connectionId !== 'string') {
+      console.error('[workspaces] skipping invalid injected adapter');
+      continue;
+    }
+    connectionBroker.registerAdapter(adapter);
+    // Seed a private profile record for injected adapters (Electron SSH) so
+    // the catalog can resolve them; the record carries only the opaque
+    // sshInstanceId, never tunnel URLs or keys.
+    const existing = await profileStore.getPrivateRecord(adapter.connectionId).catch(() => null);
+    if (!existing) {
+      await profileStore.upsertConnection({
+        id: adapter.connectionId,
+        label: adapter.label ?? adapter.connectionId,
+        target: { kind: 'ssh', sshInstanceId: adapter.sshInstanceId ?? adapter.connectionId },
+      }).catch((error) => {
+        console.error(`[workspaces] failed to seed profile for ${adapter.connectionId}:`, error?.message ?? error);
+      });
+    }
+  }
 
   /** Registers one direct adapter per saved direct profile and unregisters
    * adapters whose profile was deleted. Called at boot and after any

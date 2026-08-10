@@ -3,18 +3,6 @@ import { settingsDict } from './uk.settings';
 
 export const dict: Record<I18nKey, string> = {
   ...settingsDict,
-  'sessions.fleet.title': 'Сервери',
-  'sessions.fleet.status.connected': 'Підключено',
-  'sessions.fleet.status.connecting': 'Підключення',
-  'sessions.fleet.status.degraded': 'Недоступно',
-  'sessions.fleet.status.disconnected': 'Відключено',
-  'sessions.fleet.status.error': 'Помилка',
-  'sessions.fleet.openServer': 'Відкрити {label}',
-  'sessions.fleet.openSession': 'Відкрити {title} на {server}',
-  'sessions.fleet.stale': 'Застаріло',
-  'sessions.fleet.unavailable': 'Не вдалося оновити останній стан',
-  'sessions.fleet.questionRequired': 'Потрібна відповідь',
-  'sessions.fleet.moreAvailable': 'Доступні інші сеанси',
   'terminalView.actions.attachSelection': 'Прикріпити вибраний вивід',
   'terminalView.actions.restart': 'Перезапустити термінал',
   'chat.message.terminalContext': '{terminal}, рядки {start}-{end}',

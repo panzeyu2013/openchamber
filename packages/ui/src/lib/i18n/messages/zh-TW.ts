@@ -3,18 +3,6 @@ import { settingsDict } from './zh-TW.settings';
 
 export const dict: Record<I18nKey, string> = {
   ...settingsDict,
-  'sessions.fleet.title': '伺服器',
-  'sessions.fleet.status.connected': '已連線',
-  'sessions.fleet.status.connecting': '連線中',
-  'sessions.fleet.status.degraded': '無法使用',
-  'sessions.fleet.status.disconnected': '已中斷',
-  'sessions.fleet.status.error': '錯誤',
-  'sessions.fleet.openServer': '開啟 {label}',
-  'sessions.fleet.openSession': '在 {server} 開啟 {title}',
-  'sessions.fleet.stale': '已過期',
-  'sessions.fleet.unavailable': '無法重新整理上次狀態',
-  'sessions.fleet.questionRequired': '需要回答',
-  'sessions.fleet.moreAvailable': '還有更多工作階段',
   'terminalView.actions.attachSelection': '附加所選輸出',
   'terminalView.actions.restart': '重新啟動終端',
   'chat.message.terminalContext': '{terminal}，第 {start}-{end} 行',

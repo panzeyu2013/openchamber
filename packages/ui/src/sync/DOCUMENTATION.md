@@ -22,40 +22,25 @@ There are **two distinct session data scopes** in the UI:
 
 These two scopes are intentionally different, but they are no longer equal peers for live UI truth.
 
-### Fleet observation (multiple saved desktop hosts)
+### Fleet observation (multiple saved desktop hosts) — REMOVED (Phase 6)
 
-`packages/ui/src/fleet/` is deliberately outside both scopes. It is a small,
-in-memory observer for saved desktop hosts, not a second copy of the sync
-system:
+The renderer `packages/ui/src/fleet/` observation layer was removed with the
+unified workspace sidebar. Its role is replaced by:
 
-- `fleet-store.ts` owns the known host descriptors and chooses exactly one
-  **Active Runtime** through `runtime-switch.ts`. Activation validates an
-  unverified server with the same probe the Host Switcher uses (direct HTTP or
-  the E2EE relay) and never switches the Active Runtime or clears Fleet
-  transient state when the probe fails; rows the observation loop already
-  verified switch without a probe.
-- `fleet-summary-store.ts` retains only summary rows (session ID, title,
-  directory, update time) under the composite `serverId\0sessionId` key.
-  Fetches that return exactly the server limit are marked `truncated` — the
-  API exposes no total, so UI must never render an exact "N more" derived from
-  the returned list length.
-- `fleet-live-store.ts` retains only activity plus pending
-  permission/question booleans. A narrow per-inactive-host SSE subscription
-  updates those values. Only session create/delete events trigger a targeted
-  summary reconciliation — `session.updated` fires on every recency change
-  while the remote works, so reconciling on it would starve the poll loop; the
-  periodic refresh picks up title/archive changes instead. No messages, parts,
-  or permission payloads enter Fleet. When that server becomes Active Runtime,
-  its transient Fleet index is cleared before the normal runtime bootstrap
-  takes authority.
-- Switching/opening a Fleet session first changes Active Runtime, then uses the
-  normal `session-ui-store` selection path. Active Runtime bootstrap remains
-  the sole authority for full session data.
+- The server-side Session Index (`packages/web/server/lib/workspaces/
+  session-index.js`) — one upstream event stream per connection, debounced
+  structural refreshes, per-connection freshness that keeps the last
+  snapshot on failure, global revision with revision-gap recovery.
+- The renderer Session Index store (`packages/ui/src/workspaces/
+  session-index-store.ts`) — clone-on-write event reducers, revision-gap
+  detection, failure never empties a prior snapshot.
+- The unified sidebar (`WorkspaceSessionsSection.tsx`) rendering workspaces
+  from the Catalog with sessions from the index.
 
-Fleet summary refreshes are failure-distinct: a failed request marks the prior
-snapshot stale rather than replacing it with an empty list. Credentials remain
-owned by the existing desktop host configuration and are never persisted by a
-Fleet store.
+The revision/failure/backoff coordination algorithms Fleet developed were
+migrated into those modules with their own tests. `switchRuntimeEndpoint()`
+remains only for the legacy Host Switcher / remote-instances / mobile
+disconnect paths until the workspace-bound session-open migration lands.
 
 ### Why both exist
 
