@@ -7,6 +7,7 @@ import { isDesktopShell } from '@/lib/desktop';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { formatDirectoryName, cn } from '@/lib/utils';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useChildStoreManager } from '@/sync/sync-context';
 import { getAllSyncSessionMap } from '@/sync/sync-refs';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
@@ -94,11 +95,13 @@ import {
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useNotificationStore } from '@/sync/notification-store';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { buildSessionBootstrapDemands } from './sidebar/sessionBootstrapDemands';
 import { recordWorktreesSeen } from './sidebar/worktreeFirstSeen';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getSyncScopeKey } from '@/sync/sync-refs';
 import { streamPerfCount, streamPerfMark } from '@/stores/utils/streamDebug';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 
@@ -266,6 +269,54 @@ const ProjectAggregateStatusIndicator: React.FC<{ directories: Array<string | nu
   return null;
 };
 
+/**
+ * Read-only degradation state for the unified sidebar when the control plane
+ * reports `workspaceCatalogV1: false` (plan §20 rollback). Renders a banner
+ * plus the last catalog snapshot WITHOUT any mutation affordance: no session
+ * create, no add-workspace, no rename/delete, no open attempts. The server
+ * additionally rejects every catalog/session-index mutation and workspace
+ * runtime request with 501 `capability_unavailable` while the flag is off,
+ * and the catalog data files stay untouched.
+ */
+const WorkspaceCatalogDegradedSection: React.FC = () => {
+  const { t } = useI18n();
+  const snapshot = useWorkspaceCatalogStore((state) => state.snapshot);
+  const connectionsById = React.useMemo(
+    () => new Map((snapshot?.connections ?? []).map((connection) => [connection.id, connection])),
+    [snapshot],
+  );
+
+  return (
+    <section className="border-b border-border/60 px-2.5 py-2" aria-label={t('workspaces.sidebar.title')}>
+      <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('workspaces.sidebar.title')}</p>
+      <div className="flex flex-col gap-1.5 px-1">
+        <p className="text-xs font-medium text-warning">{t('workspaces.sidebar.capabilityDisabled.title')}</p>
+        <p className="text-xs text-muted-foreground">{t('workspaces.sidebar.capabilityDisabled.description')}</p>
+        {snapshot && snapshot.workspaces.length > 0 ? (
+          <ul className="mt-0.5 space-y-0.5">
+            {snapshot.workspaces.map((workspace) => {
+              const connection = connectionsById.get(workspace.connectionId);
+              return (
+                <li key={workspace.id} className="flex items-center gap-1.5 rounded px-1.5 py-1 text-xs">
+                  {workspace.color ? (
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: workspace.color }} aria-hidden="true" />
+                  ) : (
+                    <span className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true">▸</span>
+                  )}
+                  <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
+                  {connection && workspace.connectionId !== 'local' ? (
+                    <span className="shrink-0 text-muted-foreground/70">{connection.label}</span>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        ) : null}
+      </div>
+    </section>
+  );
+};
+
 const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   isVisible = true,
   mobileVariant = false,
@@ -380,6 +431,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  const activeWorkspaceId = useActiveWorkspaceId();
 
   const projects = useProjectsStore((state) => state.projects);
   const activeProjectId = useProjectsStore((state) => state.activeProjectId);
@@ -409,6 +461,18 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
 
   const hasSessionSearchQuery = normalizedSessionSearchQuery.length > 0;
+  const hasWorkspaceCatalogSnapshot = useWorkspaceCatalogStore((state) => state.snapshot !== null);
+
+  // Plan §20: the unified sidebar reads `workspaceCatalogV1` from the control
+  // plane on a separate channel. Unknown (no response yet / fetch failure) is
+  // treated as ENABLED — only an authoritative `false` flips the sidebar to
+  // its read-only degradation state. The server is the enforcement point.
+  const workspaceCatalogV1 = useWorkspaceSessionIndexStore((state) => state.capabilities?.workspaceCatalogV1);
+  const workspaceCatalogEnabled = workspaceCatalogV1 !== false;
+  React.useEffect(() => {
+    if (useWorkspaceSessionIndexStore.getState().capabilities !== null) return;
+    void useWorkspaceSessionIndexStore.getState().refreshCapabilities().catch(() => undefined);
+  }, []);
 
   // Session Folders store
   const collapsedFolderIds = useSessionFoldersStore((state) => state.collapsedFolderIds);
@@ -533,12 +597,12 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     syncSessionsSnapshotRef.current = liveSessions;
   }, [liveSessions]);
 
-  const runtimeKey = getRuntimeKey();
+  const scopeKey = getSyncScopeKey();
   const projectWorktreeDiscoveryKey = React.useMemo(
-    () => `${runtimeKey}|${projects
+    () => `${scopeKey}|${projects
       .map((project) => `${project.id}:${normalizePath(project.path) ?? ''}`)
       .join('|')}`,
-    [projects, runtimeKey],
+    [projects, scopeKey],
   );
   const [resolvedWorktreeTopologyKey, setResolvedWorktreeTopologyKey] = React.useState<string | null>(
     isVSCode ? projectWorktreeDiscoveryKey : null,
@@ -549,20 +613,24 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const initialGlobalSessionsRefreshStartedRef = React.useRef(false);
   React.useEffect(() => {
+    if (activeWorkspaceId) {
+      initialGlobalSessionsRefreshStartedRef.current = false;
+      return;
+    }
     if (initialGlobalSessionsRefreshStartedRef.current) {
       return;
     }
     initialGlobalSessionsRefreshStartedRef.current = true;
     void refreshGlobalSessions(syncSessionsSnapshotRef.current);
-  }, []);
+  }, [activeWorkspaceId]);
 
   React.useEffect(() => {
     let cancelled = false;
 
     const discoverWorktrees = async () => {
-      const discoveryRuntimeKey = runtimeKey;
+      const discoveryScopeKey = scopeKey;
       const projectEntries = useProjectsStore.getState().projects;
-      if (projectEntries.length === 0 || isVSCode) {
+      if (projectEntries.length === 0 || isVSCode || activeWorkspaceId) {
         if (!cancelled) {
           setUnresolvedWorktreeProjectPaths(new Set());
           setResolvedWorktreeTopologyKey(projectWorktreeDiscoveryKey);
@@ -616,7 +684,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       });
       await Promise.all(workers);
 
-      if (cancelled || getRuntimeKey() !== discoveryRuntimeKey) return;
+      if (cancelled || getSyncScopeKey() !== discoveryScopeKey) return;
 
       const activeProjectPaths = new Set(projectEntries.map((project) => normalizePath(project.path)).filter(Boolean));
       for (const projectPath of worktreesByProject.keys()) {
@@ -628,7 +696,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       const allWorktrees = [...partitionedWorktreesByProject.values()].flat();
       // Newly appearing worktrees sort to the top of their project's
       // worktree list (see worktreeFirstSeen.ts).
-      recordWorktreesSeen(allWorktrees.map((worktree) => worktree.path), Date.now());
+      recordWorktreesSeen(allWorktrees.map((worktree) => worktree.path), Date.now(), discoveryScopeKey);
 
       // Skip update if nothing changed — see worktreeMapsEqual JSDoc.
       if (!worktreeMapsEqual(partitionedWorktreesByProject, knownWorktreesByProject)) {
@@ -646,9 +714,12 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [isVSCode, projectWorktreeDiscoveryKey, runtimeKey, worktreeDiscoveryRevision]);
+  }, [activeWorkspaceId, isVSCode, projectWorktreeDiscoveryKey, scopeKey, worktreeDiscoveryRevision]);
 
   React.useEffect(() => {
+    if (activeWorkspaceId) {
+      return;
+    }
     let refreshTimeout: ReturnType<typeof setTimeout> | null = null;
     let needsGlobalRefresh = false;
     const sessionDirectories = new Set<string>();
@@ -683,7 +754,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       }
       unsubscribe();
     };
-  }, []);
+  }, [activeWorkspaceId]);
 
   const isDesktopShellRuntime = React.useMemo(() => isDesktopShell(), []);
 
@@ -701,6 +772,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     sessionOrderRanks,
     gitBranches,
     isVSCode,
+    scopeKey,
   });
 
   const { scheduleCollapsedProjectsPersist } = useSidebarPersistence({
@@ -856,6 +928,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     setActiveMainTab,
     setSessionSwitcherOpen,
     setCurrentSession,
+    workspaceId: activeWorkspaceId,
     updateSessionTitle,
     shareSession,
     unshareSession,
@@ -1066,6 +1139,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
 
   const knownProjectSessionDirectoriesRef = React.useRef<Set<string> | null>(null);
   React.useEffect(() => {
+    if (activeWorkspaceId) {
+      return;
+    }
     const nextDirectories = new Set(projectSessionDirectories);
     const previousDirectories = knownProjectSessionDirectoriesRef.current;
     knownProjectSessionDirectoriesRef.current = nextDirectories;
@@ -1082,18 +1158,18 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     }
 
     void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
-  }, [isVSCode, projectSessionDirectories]);
+  }, [activeWorkspaceId, isVSCode, projectSessionDirectories]);
 
   const { github } = useRuntimeAPIs();
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const githubAuthChecked = useGitHubAuthStore((state) => state.hasChecked);
-  const gitRepoStatus = useGitRepoStatusMap(isVisible ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
+  const gitRepoStatus = useGitRepoStatusMap(isVisible && !activeWorkspaceId ? normalizedProjectPaths : EMPTY_STRING_ARRAY);
   const ensurePrStatusEntry = useGitHubPrStatusStore((state) => state.ensureEntry);
   const setPrStatusParams = useGitHubPrStatusStore((state) => state.setParams);
   const refreshPrStatusTargets = useGitHubPrStatusStore((state) => state.refreshTargets);
 
   useProjectRepoStatus({
-    enabled: isVisible,
+    enabled: isVisible && !activeWorkspaceId,
     normalizedProjects,
     gitRepoStatus,
     setProjectRepoStatus,
@@ -1106,7 +1182,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     [archivedSessions, availableWorktreesByProject, isVSCode, normalizedProjects, sessions],
   );
   useAuthoritativeSessionCleanup({
-    enabled: isVisible,
+    enabled: isVisible && !activeWorkspaceId,
     hasAuthoritativeGlobalSessions,
     sessions: persistenceSessions,
   });
@@ -1116,7 +1192,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   });
 
   useArchivedAutoFolders({
-    enabled: isVisible,
+    enabled: isVisible && !activeWorkspaceId,
     normalizedProjects,
     ownership: sessionOwnership,
     isSessionsLoading,
@@ -1694,6 +1770,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     [
       hasSessionSearchQuery,
       normalizedSessionSearchQuery,
+      workspaceCatalogEnabled,
       groupSearchDataByGroup,
       visibleSessionCountByGroup,
       collapsedGroups,
@@ -1733,7 +1810,11 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const topContent = React.useMemo(
     () => (
       <>
-        {!hasSessionSearchQuery ? <WorkspaceSessionsSection /> : null}
+        {workspaceCatalogEnabled ? (
+          <WorkspaceSessionsSection searchQuery={normalizedSessionSearchQuery} />
+        ) : (
+          <WorkspaceCatalogDegradedSection />
+        )}
         {!isVSCode && showRecentSection && !hasSessionSearchQuery ? (
           <SidebarActivitySections
             sections={activitySections}
@@ -1747,7 +1828,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         ) : null}
       </>
     ),
-    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection],
+    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, normalizedSessionSearchQuery, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection],
   );
   const isInlineEditing = Boolean(renamingFolderId || editingId || editingProjectDialogId);
 
@@ -1872,7 +1953,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         onToggleSelectionMode={handleToggleSelectionMode}
       />
 
-      {isVisible ? <SidebarProjectsList
+      {isVisible && !hasWorkspaceCatalogSnapshot ? <SidebarProjectsList
         topContent={topContent}
         hasSharedSessions={hasActivitySectionItems}
         sectionsForRender={sectionsForSidebarRender}
@@ -1973,7 +2054,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
             setSessionSwitcherOpen(false);
           }
           if (options?.sessionId) {
-            setCurrentSession(options.sessionId, worktreePath);
+            setCurrentSession(options.sessionId, worktreePath, activeWorkspaceId);
             return;
           }
           openNewSessionDraft({ directoryOverride: worktreePath, preserveDirectoryOverride: true });

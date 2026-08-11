@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import {
   bindWorkspaceSession,
+  createSeededRandom,
   createWorkspaceSession,
   fetchWorkspaceSessionSnapshot,
   openWorkspaceSessionEventStream,
+  withBackoffJitter,
 } from './session-index-client';
 import { CatalogClientError, type WorkspaceSessionEvent, type WorkspaceSessionSnapshot } from './types';
 
@@ -12,7 +14,8 @@ const runtimeFetchCalls: Array<{ url: string; init?: RequestInit }> = [];
 
 // The session index client fetches through the control-plane-pinned fetch,
 // which calls the global fetch at request time; stub that instead of the
-// module.
+// module. The stub is re-registered in beforeEach so a shared-process
+// directory run always sees this file's stub for its own tests.
 const headersToObject = (headers: HeadersInit | undefined): Record<string, string> | undefined => {
   if (!headers) return undefined;
   const result: Record<string, string> = {};
@@ -22,11 +25,13 @@ const headersToObject = (headers: HeadersInit | undefined): Record<string, strin
   return result;
 };
 
-globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+const stubGlobalFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
   const raw = url instanceof Request ? url.url : String(url);
   runtimeFetchCalls.push({ url: raw, init: init ? { ...init, headers: headersToObject(init.headers) } : undefined });
   return runtimeFetchImpl(raw, init);
 };
+
+globalThis.fetch = stubGlobalFetch;
 
 const jsonResponse = (body: unknown, status = 200): Response => (
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -35,7 +40,7 @@ const jsonResponse = (body: unknown, status = 200): Response => (
 const snapshotFixture: WorkspaceSessionSnapshot = {
   revision: 3,
   sessions: [],
-  freshnessByConnection: { 'conn-1': { complete: true, stale: false, lastSuccessAt: 1000, error: null } },
+  freshnessByConnection: { 'conn-1': { complete: true, partial: false, offline: false, stale: false, lastSuccessAt: 1000, error: null } },
 };
 
 const eventFixture = (revision: number, type: WorkspaceSessionEvent['type']): WorkspaceSessionEvent => ({
@@ -83,6 +88,7 @@ describe('session index client', () => {
   beforeEach(() => {
     runtimeFetchCalls.length = 0;
     runtimeFetchImpl = async () => jsonResponse({});
+    globalThis.fetch = stubGlobalFetch;
   });
 
   test('fetchWorkspaceSessionSnapshot returns the parsed snapshot', async () => {
@@ -209,5 +215,37 @@ describe('session index client', () => {
     await waitFor(() => delivered.length >= 1);
     expect(delivered).toEqual([eventFixture(1, 'session.upserted')]);
     cleanup();
+  });
+
+  test('withBackoffJitter stays inside the configured bounds (performance budget §17.5)', () => {
+    expect(withBackoffJitter(5000, 0, 100, 30_000)).toBe(4000);
+    expect(withBackoffJitter(5000, 0.5, 100, 30_000)).toBe(5000);
+    expect(withBackoffJitter(5000, 1, 100, 30_000)).toBe(6000);
+    expect(withBackoffJitter(100, 0, 100, 30_000)).toBe(100);
+    expect(withBackoffJitter(30_000, 1, 100, 30_000)).toBe(30_000);
+    for (const base of [100, 1000, 10_000, 30_000]) {
+      for (const randomValue of [0, 0.1, 0.33, 0.5, 0.9, 1]) {
+        const delay = withBackoffJitter(base, randomValue, 100, 30_000);
+        expect(delay).toBeGreaterThanOrEqual(100);
+        expect(delay).toBeLessThan(30_001);
+      }
+    }
+  });
+
+  test('reconnect jitter is deterministic per seed and differs across seeds (performance budget §17.5)', () => {
+    const first = createSeededRandom(11);
+    const second = createSeededRandom(11);
+    for (let i = 0; i < 5; i += 1) expect(first()).toBe(second());
+
+    const randA = createSeededRandom(11);
+    const scheduleA = Array.from({ length: 20 }, () => withBackoffJitter(2000, randA(), 100, 30_000));
+    const randB = createSeededRandom(12);
+    const scheduleB = Array.from({ length: 20 }, () => withBackoffJitter(2000, randB(), 100, 30_000));
+    expect(new Set(scheduleA).size).toBeGreaterThan(1);
+    expect(scheduleA.some((delay, index) => delay !== scheduleB[index])).toBe(true);
+    for (const delay of [...scheduleA, ...scheduleB]) {
+      expect(delay).toBeGreaterThanOrEqual(100);
+      expect(delay).toBeLessThan(30_001);
+    }
   });
 });

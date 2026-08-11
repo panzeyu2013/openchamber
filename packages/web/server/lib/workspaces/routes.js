@@ -1,6 +1,6 @@
 import { validateCreateWorkspaceInput, validateUpdateWorkspaceInput, toConnectionSummary } from './catalog-schema.js';
 import { createSafeUpstreamValidator } from './direct-adapter.js';
-import { isPathWithinRoot } from './path-boundary.js';
+import { isPathWithinWorkspace } from './path-boundary.js';
 
 /**
  * Workspace Catalog API routes.
@@ -29,11 +29,21 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     profileStore,
     credentialProvider = null,
     onConnectionsChanged = null,
+    // Server capability flag `workspaceCatalogV1` (plan §20): when false,
+    // every catalog/connection MUTATION returns 501 `capability_unavailable`
+    // before touching any store. Reads (snapshot, single workspace, browse,
+    // probes, capabilities) stay available; the catalog data files are never
+    // rewritten by the disabled state. index.js resolves the flag from the
+    // operator env switch; tests inject the boolean directly.
+    workspaceCatalogV1 = true,
     // Inject for tests; defaults to the real DNS-resolving validator.
     safeUpstreamValidator = createSafeUpstreamValidator({}),
   } = dependencies;
 
   const { assertSafeUpstreamUrl } = safeUpstreamValidator;
+
+  const sendCapabilityUnavailable = (res) => sendError(res, 501, 'The workspace catalog is disabled on this server', 'capability_unavailable');
+  const catalogMutationsDisabled = workspaceCatalogV1 === false;
 
   const resolveAdapter = (connectionId) => {
     const adapter = connectionBroker.getAdapter(connectionId);
@@ -90,7 +100,15 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     }
   });
 
+  // Lightweight capabilities read: stays available in EVERY state so clients
+  // can detect `workspaceCatalogV1: false` and switch the unified sidebar to
+  // its read-only degradation state instead of attempting mutations.
+  app.get('/api/workspaces/capabilities', async (_req, res) => {
+    res.json({ workspaceCatalogV1 });
+  });
+
   app.post('/api/workspaces', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     let input;
     try {
       input = validateCreateWorkspaceInput(req.body);
@@ -104,6 +122,13 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     let canonicalPath;
     try {
       canonicalPath = await adapter.canonicalizePath({}, input.path);
+      const profile = profileStore ? await profileStore.getPrivateRecord(input.connectionId) : null;
+      const probe = await adapter.probe({ profile, credentialProvider }, canonicalPath);
+      if (!probe?.ok) {
+        const probeError = probe?.error ?? { code: 'catalog_probe_failed', message: 'Workspace path probe failed' };
+        return sendError(res, probeErrorStatus(probeError.code), probeError.message, probeError.code);
+      }
+      canonicalPath = typeof probe.canonicalPath === 'string' ? probe.canonicalPath : canonicalPath;
     } catch (error) {
       return sendError(res, error.status ?? 400, error.message, error.code);
     }
@@ -128,6 +153,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
   });
 
   app.patch('/api/workspaces/:workspaceId', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     const workspaceId = req.params.workspaceId;
     let patch;
     try {
@@ -147,6 +173,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
   });
 
   app.delete('/api/workspaces/:workspaceId', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     const workspaceId = req.params.workspaceId;
     const ifMatch = readIfMatch(req);
     try {
@@ -174,7 +201,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     }
     try {
       const profile = profileStore ? await profileStore.getPrivateRecord(workspace.connectionId) : null;
-      const probe = await adapter.probe({ profile }, workspace.canonicalPath);
+      const probe = await adapter.probe({ profile, credentialProvider }, workspace.canonicalPath);
       res.json(probe);
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : 'Probe failed');
@@ -197,11 +224,12 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     // Lexical boundary first (blocks `..` traversal for every adapter); the
     // adapter additionally enforces the boundary under its own path semantics
     // (the local adapter resolves symlinks) via the canonicalPath context.
-    if (!isPathWithinRoot(workspace.canonicalPath, directory)) {
+    if (!isPathWithinWorkspace(workspace.canonicalPath, directory)) {
       return sendError(res, 403, 'Path is outside the workspace', 'catalog_path_outside_workspace');
     }
     try {
-      const result = await adapter.listChildren({ canonicalPath: workspace.canonicalPath }, directory);
+      const profile = profileStore ? await profileStore.getPrivateRecord(workspace.connectionId) : null;
+      const result = await adapter.listChildren({ profile, canonicalPath: workspace.canonicalPath, credentialProvider }, directory);
       res.json(result);
     } catch (error) {
       sendError(res, error.status ?? 400, error.message, error.code);
@@ -229,7 +257,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     }
     try {
       const profile = profileStore ? await profileStore.getPrivateRecord(req.params.connectionId) : null;
-      const probe = await adapter.probe({ profile }, null);
+      const probe = await adapter.probe({ profile, credentialProvider }, null);
       res.json(probe);
     } catch (error) {
       sendError(res, 500, error instanceof Error ? error.message : 'Probe failed');
@@ -251,7 +279,10 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
       ? req.query.path
       : (typeof req.query.path === 'string' ? req.query.path : '/');
     try {
-      const result = await adapter.listChildren({ profile: await profileStore.getPrivateRecord(req.params.connectionId) }, directory);
+      const result = await adapter.listChildren({
+        profile: await profileStore.getPrivateRecord(req.params.connectionId),
+        credentialProvider,
+      }, directory);
       res.json(result);
     } catch (error) {
       sendError(res, error.status ?? 400, error.message, error.code);
@@ -280,6 +311,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
   };
 
   app.post('/api/connections', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
     let target;
     try {
@@ -298,6 +330,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
   });
 
   app.patch('/api/connections/:connectionId', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
     const existing = await profileStore.getPrivateRecord(req.params.connectionId);
     if (!existing) return sendError(res, 404, 'Unknown connection', 'catalog_connection_not_found');
@@ -321,6 +354,7 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
   });
 
   app.delete('/api/connections/:connectionId', async (req, res) => {
+    if (catalogMutationsDisabled) return sendCapabilityUnavailable(res);
     if (!profileStore) return sendError(res, 500, 'Connection store is unavailable', 'catalog_connection_store_unavailable');
     const connectionId = req.params.connectionId;
     if (connectionId === 'local') {
@@ -389,4 +423,12 @@ const localAdapterCapabilities = (record) => {
     return { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true };
   }
   return { pathBrowse: false, terminal: false, files: false, git: false, eventStream: false };
+};
+
+const probeErrorStatus = (code) => {
+  if (code === 'catalog_path_not_found') return 404;
+  if (code === 'catalog_path_outside_workspace') return 403;
+  if (code === 'catalog_invalid_path' || code === 'direct_unsafe_target') return 400;
+  if (code === 'capability_unavailable') return 501;
+  return 502;
 };

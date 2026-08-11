@@ -32,6 +32,8 @@ const makeSession = (workspaceId: string, sessionId: string, overrides: Partial<
 
 const makeFreshness = (overrides: Partial<SourceFreshness> = {}): SourceFreshness => ({
   complete: true,
+  partial: false,
+  offline: false,
   stale: false,
   lastSuccessAt: 1000,
   error: null,
@@ -65,6 +67,22 @@ const makeEvent = (
   ...extra,
 });
 
+/** Wraps the sessions array in a counting proxy: every property access is
+ * recorded, so a reducer that scans the array (findIndex/map/filter/iterator)
+ * is detectable. */
+const makeCountingArrayProxy = (sessions: WorkspaceSessionSummary[], counters: Record<string, number>): WorkspaceSessionSummary[] => (
+  new Proxy(sessions, {
+    get(target, prop, receiver) {
+      if (typeof prop === 'string' || prop === Symbol.iterator) {
+        const key = typeof prop === 'symbol' ? 'Symbol.iterator' : prop;
+        counters[key] = (counters[key] ?? 0) + 1;
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as WorkspaceSessionSummary[]
+);
+
 describe('workspace session index store', () => {
   beforeEach(() => {
     fetchSnapshotCalls.length = 0;
@@ -74,6 +92,7 @@ describe('workspace session index store', () => {
       lastError: null,
       lastAppliedRevision: 0,
       sessionKeys: new Set(),
+      sessionIndex: new Map(),
       revisionGap: false,
     });
     fetchSnapshotImpl = async () => makeSnapshot(0, []);
@@ -233,13 +252,13 @@ describe('workspace session index store', () => {
     const before = useWorkspaceSessionIndexStore.getState().snapshot;
 
     useWorkspaceSessionIndexStore.getState().applyEvent(
-      makeEvent(6, 'freshness.changed', { complete: false, stale: true }, { connectionId: 'conn-1' }),
+      makeEvent(6, 'freshness.changed', { complete: false, partial: true, stale: true }, { connectionId: 'conn-1' }),
     );
 
     const state = useWorkspaceSessionIndexStore.getState();
     expect(state.lastAppliedRevision).toBe(6);
     expect(state.snapshot?.freshnessByConnection['conn-1']).toEqual(
-      makeFreshness({ complete: false, stale: true, lastSuccessAt: 1000 }),
+      makeFreshness({ complete: false, partial: true, stale: true, lastSuccessAt: 1000 }),
     );
     expect(state.snapshot?.freshnessByConnection['conn-2']).toBe(conn2);
     expect(state.snapshot?.sessions).toBe(before?.sessions);
@@ -287,5 +306,94 @@ describe('workspace session index store', () => {
     expect(selectSessionsForWorkspace(snapshot, 'ws-1').map((session) => session.upstreamSessionId)).toEqual(['ses-1', 'ses-3']);
     expect(selectSessionsForWorkspace(snapshot, 'ws-2').map((session) => session.upstreamSessionId)).toEqual(['ses-2']);
     expect(selectSessionsForWorkspace(null, 'ws-1')).toEqual([]);
+  });
+
+  describe('reducer work is proportional to the affected entity (performance budget §17.5)', () => {
+    const seedLargeSnapshot = (counters: Record<string, number>, count = 5000) => {
+      const sessions = Array.from({ length: count }, (_, i) => makeSession('ws-1', `ses-${i}`));
+      const proxied = makeCountingArrayProxy(sessions, counters);
+      fetchSnapshotImpl = async () => makeSnapshot(5, proxied, { 'conn-1': makeFreshness() });
+      return sessions;
+    };
+
+    test('upsert of one existing session never scans or rebuilds other entries', async () => {
+      const counters: Record<string, number> = {};
+      const original = seedLargeSnapshot(counters);
+      await useWorkspaceSessionIndexStore.getState().refresh();
+      // Discard accesses performed while indexing the snapshot; the event
+      // reducer below must not scan anything.
+      Object.keys(counters).forEach((key) => { delete counters[key]; });
+      const before = useWorkspaceSessionIndexStore.getState().snapshot;
+
+      const updated = makeSession('ws-1', 'ses-2500', { title: 'Renamed', updatedAt: 9999 });
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(6, 'session.upserted', updated));
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.lastAppliedRevision).toBe(6);
+      expect(state.snapshot?.sessions).toHaveLength(original.length);
+      // Position preserved via the keyed index; no findIndex scan.
+      expect(state.sessionIndex.get('ws-1\0ses-2500')).toBe(2500);
+      // The touched entity is replaced; every other entry keeps its identity
+      // and position (workspace A's event must not rebuild other entries).
+      expect(state.snapshot?.sessions[2500]).toBe(updated);
+      expect(state.snapshot?.sessions[2499]).toBe(original[2499]);
+      expect(state.snapshot?.sessions[2501]).toBe(original[2501]);
+      expect(state.snapshot?.sessions[0]).toBe(original[0]);
+      expect(state.snapshot?.sessions[original.length - 1]).toBe(original[original.length - 1]);
+      // Array scans are gone from the reducer: one slice for the rebuild.
+      expect(counters.slice).toBe(1);
+      expect(counters.findIndex).toBe(undefined);
+      expect(counters.map).toBe(undefined);
+      expect(counters.filter).toBe(undefined);
+      expect(counters['Symbol.iterator']).toBe(undefined);
+      // Clone-on-write: unrelated slices keep their identity.
+      expect(state.snapshot?.freshnessByConnection).toBe(before?.freshnessByConnection);
+      expect(state.snapshot?.sessions).not.toBe(before?.sessions);
+    });
+
+    test('upsert insert appends through the index without scanning', async () => {
+      const counters: Record<string, number> = {};
+      const original = seedLargeSnapshot(counters);
+      await useWorkspaceSessionIndexStore.getState().refresh();
+      Object.keys(counters).forEach((key) => { delete counters[key]; });
+
+      const incoming = makeSession('ws-2', 'ses-new', { updatedAt: 9999 });
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(6, 'session.upserted', incoming));
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.snapshot?.sessions).toHaveLength(original.length + 1);
+      expect(state.snapshot?.sessions[original.length]).toBe(incoming);
+      expect(state.sessionIndex.get('ws-2\0ses-new')).toBe(original.length);
+      expect(state.sessionKeys.has('ws-2\0ses-new')).toBe(true);
+      expect(counters.findIndex).toBe(undefined);
+      expect(counters.map).toBe(undefined);
+      expect(counters.filter).toBe(undefined);
+    });
+
+    test('removal is membership-checked through the index and never filters the array', async () => {
+      const counters: Record<string, number> = {};
+      const original = seedLargeSnapshot(counters);
+      await useWorkspaceSessionIndexStore.getState().refresh();
+      Object.keys(counters).forEach((key) => { delete counters[key]; });
+
+      useWorkspaceSessionIndexStore.getState().applyEvent(
+        makeEvent(6, 'session.removed', {}, { workspaceId: 'ws-1', sessionId: 'ses-2500' }),
+      );
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.lastAppliedRevision).toBe(6);
+      expect(state.snapshot?.sessions).toHaveLength(original.length - 1);
+      // Index positions after the removed entity are shifted down.
+      expect(state.sessionIndex.get('ws-1\0ses-2501')).toBe(2500);
+      expect(state.sessionIndex.has('ws-1\0ses-2500')).toBe(false);
+      expect(state.sessionKeys.has('ws-1\0ses-2500')).toBe(false);
+      // Only the removed entry disappears; the rest keep identity and order.
+      expect(state.snapshot?.sessions[2499]).toBe(original[2499]);
+      expect(state.snapshot?.sessions[2500]).toBe(original[2501]);
+      expect(state.snapshot?.sessions[0]).toBe(original[0]);
+      expect(counters.filter).toBe(undefined);
+      expect(counters.findIndex).toBe(undefined);
+      expect(counters.map).toBe(undefined);
+    });
   });
 });

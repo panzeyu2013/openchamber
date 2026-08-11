@@ -46,13 +46,38 @@ export const fetchWorkspaceSessionSnapshot = async (): Promise<WorkspaceSessionS
   ) {
     throw new CatalogClientError('Session index response has an invalid shape', 500, 'session_index_invalid_response');
   }
+  const freshnessByConnection = Object.fromEntries(
+    Object.entries(snapshot.freshnessByConnection).map(([connectionId, value]) => {
+      if (!value || typeof value !== 'object') {
+        throw new CatalogClientError(`Session index freshness for ${connectionId} has an invalid shape`, 500, 'session_index_invalid_response');
+      }
+      const freshness = value as unknown as Record<string, unknown>;
+      if (typeof freshness.complete !== 'boolean' || typeof freshness.stale !== 'boolean') {
+        throw new CatalogClientError(`Session index freshness for ${connectionId} has an invalid shape`, 500, 'session_index_invalid_response');
+      }
+      const lastSuccessAt = freshness.lastSuccessAt === null || typeof freshness.lastSuccessAt === 'number'
+        ? freshness.lastSuccessAt
+        : null;
+      const error = freshness.error === null || freshness.error === undefined
+        ? null
+        : (typeof freshness.error === 'object' ? freshness.error : null);
+      return [connectionId, {
+        complete: freshness.complete,
+        partial: freshness.partial === true,
+        offline: freshness.offline === true,
+        stale: freshness.stale,
+        lastSuccessAt,
+        error,
+      }];
+    }),
+  );
   if (
     snapshot.truncatedByConnection !== undefined
     && (typeof snapshot.truncatedByConnection !== 'object' || snapshot.truncatedByConnection === null)
   ) {
     throw new CatalogClientError('Session index response has an invalid shape', 500, 'session_index_invalid_response');
   }
-  return snapshot as WorkspaceSessionSnapshot;
+  return { ...snapshot, freshnessByConnection } as WorkspaceSessionSnapshot;
 };
 
 export const createWorkspaceSession = async (
@@ -101,6 +126,30 @@ const HEALTHY_STREAM_MS = 30_000;
 const MAX_BACKOFF_MS = 30_000;
 const DEFAULT_INITIAL_BACKOFF_MS = 1_000;
 
+/** Deterministic mulberry32 PRNG: the same seed always yields the same
+ * sequence, so reconnect schedules are reproducible in tests (§17.5). */
+export const createSeededRandom = (seed: number): () => number => {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+};
+
+/** ±20% uniform backoff jitter clamped to [minDelay, maxDelay]. */
+export const withBackoffJitter = (
+  baseDelay: number,
+  randomValue: number,
+  minDelay: number,
+  maxDelay: number,
+): number => {
+  const jittered = Math.round(baseDelay * (0.8 + 0.4 * Math.max(0, Math.min(1, randomValue))));
+  return Math.min(maxDelay, Math.max(minDelay, jittered));
+};
+
 export interface WorkspaceSessionEventStreamOptions {
   initialBackoffMs?: number;
 }
@@ -124,8 +173,10 @@ const parseEventChunk = (chunk: string): WorkspaceSessionEvent | null => {
  * Opens the server-side SSE event stream and reconnects with exponential
  * backoff (1s base, 30s cap) mirroring the fleet summary transport pacing:
  * EOF and errors count as failures; only a stream that stayed up long enough
- * resets the backoff. Returns a cleanup function that aborts the connection
- * and clears any pending reconnect timer.
+ * resets the backoff. Each reconnect delay gets deterministic ±20% jitter
+ * (seeded per stream, clamped to the configured bounds — §17.5) so a fleet
+ * of clients does not reconnect in lockstep. Returns a cleanup function that
+ * aborts the connection and clears any pending reconnect timer.
  */
 export const openWorkspaceSessionEventStream = (
   onEvent: (event: WorkspaceSessionEvent) => void,
@@ -136,6 +187,7 @@ export const openWorkspaceSessionEventStream = (
   const onOuterAbort = () => abort.abort();
   signal.addEventListener('abort', onOuterAbort, { once: true });
   const initialBackoffMs = options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
+  const jitterRandom = createSeededRandom(0x9e3779b9);
   let consecutiveFailures = 0;
   let waitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -185,8 +237,9 @@ export const openWorkspaceSessionEventStream = (
       }
       consecutiveFailures = Date.now() - acquiredAt >= HEALTHY_STREAM_MS ? 0 : consecutiveFailures + 1;
       const baseDelay = Math.min(initialBackoffMs * (2 ** Math.max(0, consecutiveFailures - 1)), MAX_BACKOFF_MS);
+      const delay = withBackoffJitter(baseDelay, jitterRandom(), initialBackoffMs, MAX_BACKOFF_MS);
       const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
-      await wait(hidden ? baseDelay : Math.min(baseDelay, 10_000));
+      await wait(hidden ? delay : Math.min(delay, 10_000));
     }
   })();
 

@@ -12,12 +12,18 @@ import { createConnectionProfileStore } from './connection-profile-store.js';
 import { createConnectionBroker } from './connection-broker.js';
 import { createLocalWorkspaceAdapter } from './local-adapter.js';
 import { createDirectWorkspaceAdapter } from './direct-adapter.js';
+import { createRelayWorkspaceAdapter } from './relay-adapter.js';
 import { createLegacyWorkspaceMigration } from './migration.js';
 import { createSessionBindingStore } from './session-binding-store.js';
 import { createSessionIndex } from './session-index.js';
 import { registerWorkspaceCatalogRoutes } from './routes.js';
-import { registerWorkspaceRuntimeProxyRoutes } from './runtime-proxy.js';
+import {
+  getRuntimeProxyStats,
+  registerWorkspaceRuntimeProxyRoutes,
+  resolveWorkspaceCatalogV1,
+} from './runtime-proxy.js';
 import { registerSessionIndexRoutes } from './session-index-routes.js';
+import { registerWorkspaceDiagnosticsRoutes } from './diagnostics.js';
 
 export const createWorkspacesRuntime = async (dependencies) => {
   const {
@@ -39,7 +45,17 @@ export const createWorkspacesRuntime = async (dependencies) => {
     // connectionId + the standard adapter interface. packages/web never
     // imports packages/electron; the main process supplies these objects.
     injectedAdapters = [],
+    // Server capability flag `workspaceCatalogV1` (plan §20): an operator
+    // switch that gates catalog/session-index mutations and the workspace
+    // runtime proxy while keeping reads (snapshot, browse, probes,
+    // capabilities, diagnostics) available. It is a READ GATE only: the
+    // catalog data files are never deleted, downgraded or rewritten by it.
+    // Defaults to enabled; set OPENCHAMBER_WORKSPACE_CATALOG_DISABLED=1 to
+    // disable. Tests inject the boolean directly.
+    workspaceCatalogV1: workspaceCatalogV1Option = null,
   } = dependencies;
+
+  const workspaceCatalogV1 = resolveWorkspaceCatalogV1(workspaceCatalogV1Option);
 
   await fsPromises.mkdir(openchamberDataDir, { recursive: true });
 
@@ -98,31 +114,53 @@ export const createWorkspacesRuntime = async (dependencies) => {
     }
   }
 
-  /** Registers one direct adapter per saved direct profile and unregisters
-   * adapters whose profile was deleted. Called at boot and after any
-   * connection CRUD mutation. */
-  const syncDirectAdapters = async () => {
+  /** Registers one adapter per saved profile kind owned by this runtime and
+   * unregisters only those managed adapters whose profile was deleted or
+   * changed. Injected adapters (notably Electron SSH) remain broker-owned and
+   * are never swept by profile synchronization. */
+  const syncProfileAdapters = async () => {
     const profiles = await profileStore.listPrivateRecords();
-    const directIds = new Set();
+    const managed = new Map();
     for (const profile of profiles) {
-      if (profile.target?.kind !== 'direct') continue;
-      directIds.add(profile.id);
+      const kind = profile.target?.kind;
+      if (kind !== 'direct' && kind !== 'relay') continue;
+      // A relay adapter needs a server-side credential provider. Keeping the
+      // profile visible while leaving the adapter unavailable makes the
+      // capability state truthful in headless runtimes that do not own relay
+      // credentials.
+      if (kind === 'relay' && !credentialProvider) continue;
+      managed.set(profile.id, kind);
       if (!connectionBroker.hasAdapter(profile.id)) {
-        const adapter = createDirectWorkspaceAdapter({
-          connectionId: profile.id,
-          fetchImpl: typeof fetch === 'function' ? fetch : null,
-        });
+        const adapter = kind === 'relay'
+          ? createRelayWorkspaceAdapter({ connectionId: profile.id })
+          : createDirectWorkspaceAdapter({
+            connectionId: profile.id,
+            fetchImpl: typeof fetch === 'function' ? fetch : null,
+          });
+        connectionBroker.registerAdapter(adapter);
+        continue;
+      }
+      const existing = connectionBroker.getAdapter(profile.id);
+      if (existing?.kind !== kind) {
+        await connectionBroker.unregisterAdapter(profile.id);
+        const adapter = kind === 'relay'
+          ? createRelayWorkspaceAdapter({ connectionId: profile.id })
+          : createDirectWorkspaceAdapter({
+            connectionId: profile.id,
+            fetchImpl: typeof fetch === 'function' ? fetch : null,
+          });
         connectionBroker.registerAdapter(adapter);
       }
     }
     for (const connectionId of connectionBroker.listConnectionIds()) {
-      if (connectionId !== 'local' && !directIds.has(connectionId)) {
+      const adapter = connectionBroker.getAdapter(connectionId);
+      if ((adapter?.kind === 'direct' || adapter?.kind === 'relay') && !managed.has(connectionId)) {
         await connectionBroker.unregisterAdapter(connectionId);
       }
     }
   };
-  await syncDirectAdapters().catch((error) => {
-    console.error('[workspaces] direct adapter sync failed:', error?.message ?? error);
+  await syncProfileAdapters().catch((error) => {
+    console.error('[workspaces] profile adapter sync failed:', error?.message ?? error);
   });
 
   const migration = createLegacyWorkspaceMigration({
@@ -148,18 +186,42 @@ export const createWorkspacesRuntime = async (dependencies) => {
   });
 
   const registerRoutes = (app) => {
+    // Diagnostics/capabilities reads register FIRST: `GET
+    // /api/workspaces/diagnostics` must beat the later
+    // `GET /api/workspaces/:workspaceId` param route (Express matches in
+    // registration order), and the flag must be readable in every state.
+    registerWorkspaceDiagnosticsRoutes(app, { getDiagnostics });
     registerWorkspaceCatalogRoutes(app, {
       catalogStore,
       connectionBroker,
       profileStore,
       credentialProvider,
-      onConnectionsChanged: syncDirectAdapters,
+      onConnectionsChanged: syncProfileAdapters,
+      workspaceCatalogV1,
     });
-    registerWorkspaceRuntimeProxyRoutes(app, {
-      catalogStore,
-      connectionBroker,
-      credentialProvider,
-    });
+    if (workspaceCatalogV1 === false) {
+      // Disabled mode (§20): the workspace runtime proxy and the session
+      // index mutation routes are replaced by explicit capability gates
+      // (501 `capability_unavailable`), matching the sendError convention of
+      // routes.js. Reads — catalog snapshot, browse, probes, capabilities,
+      // diagnostics and the session-index snapshot/SSE — stay available, and
+      // the catalog data files are never touched. The gates are registered
+      // before the session-index routes below so the later real handlers
+      // (and the generic OpenCode proxy) never see these mutations.
+      const sendCapabilityUnavailable = (_req, res) => {
+        res.status(501).json({ error: 'The workspace catalog is disabled on this server', code: 'capability_unavailable' });
+      };
+      app.all('/api/workspaces/:workspaceId/runtime', sendCapabilityUnavailable);
+      app.use('/api/workspaces/:workspaceId/runtime', sendCapabilityUnavailable);
+      app.post('/api/workspaces/:workspaceId/sessions', sendCapabilityUnavailable);
+      app.post('/api/workspaces/:workspaceId/sessions/:sessionId/bind', sendCapabilityUnavailable);
+    } else {
+      registerWorkspaceRuntimeProxyRoutes(app, {
+        catalogStore,
+        connectionBroker,
+        credentialProvider,
+      });
+    }
     registerSessionIndexRoutes(app, {
       catalogStore,
       connectionBroker,
@@ -195,7 +257,9 @@ export const createWorkspacesRuntime = async (dependencies) => {
     connections: Object.fromEntries(
       connectionBroker.listConnectionIds().map((connectionId) => [connectionId, connectionBroker.getLifecycleState(connectionId)]),
     ),
+    proxy: getRuntimeProxyStats(),
     migration: await migration.getStatus(),
+    capabilities: { workspaceCatalogV1 },
   });
 
   const dispose = async () => {

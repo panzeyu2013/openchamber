@@ -357,4 +357,34 @@ describe('createCatalogStore', () => {
     expect(store.filePath).toBe(path.join(tempDir, 'workspace-catalog.json'));
     expect(store.backupFilePath).toBe(path.join(tempDir, 'workspace-catalog.json.bak'));
   });
+
+  it('reads never rewrite the store file (the disabled read gate is byte-preserving)', async () => {
+    const filePath = path.join(tempDir, 'workspace-catalog.json');
+    const store = createStore();
+    await store.createWorkspace(createWorkspaceInput({ label: 'Alpha' }));
+    await store.createWorkspace(createWorkspaceInput({
+      connectionId: 'remote-1',
+      canonicalPath: '/remote/path',
+      path: '/remote/path',
+      label: 'Beta',
+    }));
+    await store.setConnections([{ id: 'c1', label: 'C1', capabilities: {} }]);
+    const beforeBytes = fs.readFileSync(filePath, 'utf8');
+
+    // The flag-disabled surface is a READ GATE: the only store operations it
+    // can trigger are load/reads. Those must never rewrite the file (no
+    // persist call, no backup churn), so disabling can never corrupt, downgrade
+    // or touch catalog data.
+    const reader = createStore();
+    await reader.load();
+    const snapshot = await reader.getSnapshot();
+    await reader.getWorkspace(snapshot.workspaces[0].id);
+    await reader.findWorkspaceByLocation('remote-1', '/remote/path');
+    await reader.listWorkspacesForConnection('local');
+    await reader.getDiagnostics();
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(beforeBytes);
+    expect(fs.existsSync(`${filePath}.bak`)).toBe(true);
+    expect(fs.readFileSync(`${filePath}.bak`, 'utf8')).toBe(beforeBytes);
+  });
 });

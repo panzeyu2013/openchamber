@@ -3,6 +3,7 @@ import {
   createWorkspace,
   deleteWorkspace,
   fetchCatalogSnapshot,
+  fetchWorkspaceCapabilities,
   listConnectionChildren,
   probeConnection,
   probeWorkspace,
@@ -15,6 +16,8 @@ const runtimeFetchCalls: Array<{ url: string; init?: RequestInit }> = [];
 
 // The catalog client fetches through the control-plane-pinned fetch, which
 // calls the global fetch at request time; stub that instead of the module.
+// The stub is re-registered in beforeEach so a shared-process directory run
+// always sees this file's stub for its own tests.
 const headersToObject = (headers: HeadersInit | undefined): Record<string, string> | undefined => {
   if (!headers) return undefined;
   const result: Record<string, string> = {};
@@ -24,11 +27,13 @@ const headersToObject = (headers: HeadersInit | undefined): Record<string, strin
   return result;
 };
 
-globalThis.fetch = async (url: string | URL | Request, init?: RequestInit) => {
+const stubGlobalFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
   const raw = url instanceof Request ? url.url : String(url);
   runtimeFetchCalls.push({ url: raw, init: init ? { ...init, headers: headersToObject(init.headers) } : undefined });
   return runtimeFetchImpl(raw, init);
 };
+
+globalThis.fetch = stubGlobalFetch;
 
 const jsonResponse = (body: unknown, status = 200): Response => (
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -66,6 +71,7 @@ describe('workspace catalog client', () => {
   beforeEach(() => {
     runtimeFetchCalls.length = 0;
     runtimeFetchImpl = async () => jsonResponse({});
+    globalThis.fetch = stubGlobalFetch;
   });
 
   test('fetchCatalogSnapshot returns the parsed snapshot', async () => {
@@ -163,6 +169,50 @@ describe('workspace catalog client', () => {
   test('probeWorkspace rejects a non-object response', async () => {
     runtimeFetchImpl = async () => jsonResponse(null);
     const caught = await captureError(() => probeWorkspace('ws-1'));
+    expect(caught).toBeInstanceOf(CatalogClientError);
+    expect((caught as CatalogClientError).code).toBe('catalog_invalid_response');
+  });
+});
+
+describe('workspace catalog capabilities (plan §20)', () => {
+  beforeEach(() => {
+    runtimeFetchCalls.length = 0;
+    runtimeFetchImpl = async () => jsonResponse({});
+    globalThis.fetch = stubGlobalFetch;
+  });
+
+  test('fetchWorkspaceCapabilities reads the flag from the control plane capabilities route', async () => {
+    runtimeFetchImpl = async () => jsonResponse({ workspaceCatalogV1: true });
+    expect(await fetchWorkspaceCapabilities()).toEqual({ workspaceCatalogV1: true });
+    expect(runtimeFetchCalls).toHaveLength(1);
+    expect(runtimeFetchCalls[0].url).toBe('/api/workspaces/capabilities');
+  });
+
+  test('fetchWorkspaceCapabilities surfaces the disabled degradation state authoritatively', async () => {
+    runtimeFetchImpl = async () => jsonResponse({ workspaceCatalogV1: false });
+    expect(await fetchWorkspaceCapabilities()).toEqual({ workspaceCatalogV1: false });
+    expect(runtimeFetchCalls[0].url).toBe('/api/workspaces/capabilities');
+  });
+
+  test('fetchWorkspaceCapabilities throws CatalogClientError on a server error (never a fabricated state)', async () => {
+    runtimeFetchImpl = async () => jsonResponse({ error: 'Catalog exploded', code: 'catalog_internal_error' }, 500);
+    const caught = await captureError(() => fetchWorkspaceCapabilities());
+    expect(caught).toBeInstanceOf(CatalogClientError);
+    const error = caught as CatalogClientError;
+    expect(error.status).toBe(500);
+    expect(error.code).toBe('catalog_internal_error');
+  });
+
+  test('fetchWorkspaceCapabilities rejects a payload without a boolean flag', async () => {
+    runtimeFetchImpl = async () => jsonResponse({ workspaceCatalogV1: 'enabled' });
+    const caught = await captureError(() => fetchWorkspaceCapabilities());
+    expect(caught).toBeInstanceOf(CatalogClientError);
+    expect((caught as CatalogClientError).code).toBe('catalog_invalid_response');
+  });
+
+  test('fetchWorkspaceCapabilities rejects a non-object response', async () => {
+    runtimeFetchImpl = async () => jsonResponse(null);
+    const caught = await captureError(() => fetchWorkspaceCapabilities());
     expect(caught).toBeInstanceOf(CatalogClientError);
     expect((caught as CatalogClientError).code).toBe('catalog_invalid_response');
   });

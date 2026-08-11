@@ -75,6 +75,9 @@ let profileStore;
 let broker;
 let app;
 let getRoute;
+const credentialProvider = {
+  resolveCredential: async () => ({ token: 'server-only-token' }),
+};
 
 beforeEach(async () => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspaces-routes-test-'));
@@ -100,6 +103,7 @@ beforeEach(async () => {
     catalogStore,
     connectionBroker: broker,
     profileStore,
+    credentialProvider,
   });
 });
 
@@ -438,6 +442,58 @@ describe('GET /api/workspaces/:workspaceId/children', () => {
   });
 });
 
+describe('direct workspace route context', () => {
+  it('passes the saved profile, credential provider and workspace path to direct adapters', async () => {
+    const calls = [];
+    const adapter = {
+      kind: 'direct',
+      connectionId: 'direct-1',
+      capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true },
+      canonicalizePath: async (_context, inputPath) => inputPath.trim().replace(/\/+$/, ''),
+      probe: async (context, inputPath) => {
+        calls.push({ type: 'probe', context, inputPath });
+        return {
+          ok: true,
+          canonicalPath: inputPath,
+          capabilities: adapter.capabilities,
+        };
+      },
+      listChildren: async (context, directory) => {
+        calls.push({ type: 'children', context, directory });
+        return { directory, children: [] };
+      },
+      fetch: async () => new Response('{}', { status: 200 }),
+      openEventStream: async () => new Response(''),
+      openWebSocket: async () => ({ url: 'wss://example.com/api/event/ws' }),
+      dispose: async () => {},
+    };
+    await profileStore.upsertConnection({
+      id: 'direct-1',
+      label: 'Remote',
+      target: { kind: 'direct', baseUrl: 'https://api.example.com' },
+    });
+    broker.registerAdapter(adapter);
+
+    const created = createMockResponse();
+    await postWorkspace(createMockRequest({
+      body: { connectionId: 'direct-1', path: '/remote/project/' },
+    }), created);
+    expect(created.statusCode).toBe(201);
+    expect(calls[0].context.profile.target.baseUrl).toBe('https://api.example.com');
+    expect(calls[0].context.credentialProvider).toBe(credentialProvider);
+
+    const children = createMockResponse();
+    await getRoute('GET', '/api/workspaces/:workspaceId/children')(createMockRequest({
+      params: { workspaceId: created.body.workspace.id },
+      query: { path: '/remote/project' },
+    }), children);
+    expect(children.statusCode).toBe(200);
+    expect(calls[1].context.profile.target.baseUrl).toBe('https://api.example.com');
+    expect(calls[1].context.canonicalPath).toBe('/remote/project');
+    expect(calls[1].context.credentialProvider).toBe(credentialProvider);
+  });
+});
+
 describe('GET /api/connections', () => {
   it('returns connection summaries only, never private records', async () => {
     await profileStore.upsertConnection({
@@ -492,5 +548,128 @@ describe('POST /api/connections/:connectionId/probe', () => {
 
     expect(response.statusCode).toBe(404);
     expect(response.body).toEqual({ error: 'Unknown connection', code: 'catalog_connection_not_found' });
+  });
+});
+
+describe('workspaceCatalogV1 disabled state (plan §20)', () => {
+  const registerDisabledRoutes = () => {
+    const registry = createRouteRegistry();
+    registerWorkspaceCatalogRoutes(registry.app, {
+      catalogStore,
+      connectionBroker: broker,
+      profileStore,
+      credentialProvider,
+      workspaceCatalogV1: false,
+    });
+    return registry;
+  };
+
+  it('reports the capability as enabled by default and disabled when the flag is off', async () => {
+    const enabledResponse = createMockResponse();
+    await getRoute('GET', '/api/workspaces/capabilities')(createMockRequest(), enabledResponse);
+    expect(enabledResponse.statusCode).toBe(200);
+    expect(enabledResponse.body).toEqual({ workspaceCatalogV1: true });
+
+    const disabledRegistry = registerDisabledRoutes();
+    const disabledResponse = createMockResponse();
+    await disabledRegistry.getRoute('GET', '/api/workspaces/capabilities')(createMockRequest(), disabledResponse);
+    expect(disabledResponse.statusCode).toBe(200);
+    expect(disabledResponse.body).toEqual({ workspaceCatalogV1: false });
+  });
+
+  it('rejects every catalog/connection mutation with 501 capability_unavailable', async () => {
+    const created = await catalogStore.createWorkspace({
+      connectionId: 'local',
+      canonicalPath: workspaceDir,
+      path: workspaceDir,
+      label: 'WS',
+    });
+    await profileStore.upsertConnection({
+      id: 'direct-1',
+      label: 'Direct',
+      target: { kind: 'direct', baseUrl: 'https://api.example.com' },
+    });
+
+    const registry = registerDisabledRoutes();
+    const cases = [
+      ['POST', '/api/workspaces', { body: { connectionId: 'local', path: '/new' } }],
+      ['PATCH', '/api/workspaces/:workspaceId', { params: { workspaceId: created.descriptor.id }, body: { label: 'Renamed' } }],
+      ['DELETE', '/api/workspaces/:workspaceId', { params: { workspaceId: created.descriptor.id } }],
+      ['POST', '/api/connections', { body: { label: 'Remote', baseUrl: 'https://remote.example.com' } }],
+      ['PATCH', '/api/connections/:connectionId', { params: { connectionId: 'direct-1' }, body: { label: 'Renamed' } }],
+      ['DELETE', '/api/connections/:connectionId', { params: { connectionId: 'direct-1' } }],
+    ];
+    for (const [method, routePath, overrides] of cases) {
+      const response = createMockResponse();
+      await registry.getRoute(method, routePath)(createMockRequest(overrides), response);
+      expect(response.statusCode).toBe(501);
+      expect(response.body).toEqual({
+        error: 'The workspace catalog is disabled on this server',
+        code: 'capability_unavailable',
+      });
+    }
+  });
+
+  it('never rewrites the catalog file and never mutates stored data while disabled', async () => {
+    const created = await catalogStore.createWorkspace({
+      connectionId: 'local',
+      canonicalPath: workspaceDir,
+      path: workspaceDir,
+      label: 'WS',
+    });
+    await catalogStore.createWorkspace({
+      connectionId: 'local',
+      canonicalPath: '/other',
+      path: '/other',
+      label: 'Other',
+    });
+    await profileStore.upsertConnection({
+      id: 'direct-1',
+      label: 'Direct',
+      target: { kind: 'direct', baseUrl: 'https://api.example.com' },
+    });
+    const filePath = path.join(tempDir, 'workspace-catalog.json');
+    const beforeBytes = fs.readFileSync(filePath, 'utf8');
+
+    const registry = registerDisabledRoutes();
+    for (const [method, routePath, overrides] of [
+      ['POST', '/api/workspaces', { body: { connectionId: 'local', path: '/new' } }],
+      ['PATCH', '/api/workspaces/:workspaceId', { params: { workspaceId: created.descriptor.id }, body: { label: 'Renamed' } }],
+      ['DELETE', '/api/workspaces/:workspaceId', { params: { workspaceId: created.descriptor.id } }],
+      ['POST', '/api/connections', { body: { label: 'Remote', baseUrl: 'https://remote.example.com' } }],
+      ['PATCH', '/api/connections/:connectionId', { params: { connectionId: 'direct-1' }, body: { label: 'Renamed' } }],
+      ['DELETE', '/api/connections/:connectionId', { params: { connectionId: 'direct-1' } }],
+    ]) {
+      const response = createMockResponse();
+      await registry.getRoute(method, routePath)(createMockRequest(overrides), response);
+      expect(response.statusCode).toBe(501);
+    }
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(beforeBytes);
+    const snapshot = await catalogStore.getSnapshot();
+    expect(snapshot.workspaces.map((entry) => entry.label)).toEqual(['WS', 'Other']);
+    expect(snapshot.revision).toBe(2);
+  });
+
+  it('keeps reads available while disabled: snapshot, single workspace and browse', async () => {
+    await catalogStore.createWorkspace({
+      connectionId: 'local',
+      canonicalPath: workspaceDir,
+      path: workspaceDir,
+      label: 'WS',
+    });
+    const registry = registerDisabledRoutes();
+
+    const snapshotResponse = createMockResponse();
+    await registry.getRoute('GET', '/api/workspaces')(createMockRequest(), snapshotResponse);
+    expect(snapshotResponse.statusCode).toBe(200);
+    expect(snapshotResponse.body.workspaces).toHaveLength(1);
+
+    const singleResponse = createMockResponse();
+    await registry.getRoute('GET', '/api/workspaces/:workspaceId')(createMockRequest({
+      params: { workspaceId: snapshotResponse.body.workspaces[0].id },
+    }), singleResponse);
+    expect(singleResponse.statusCode).toBe(200);
+    expect(singleResponse.body.workspace.label).toBe('WS');
   });
 });

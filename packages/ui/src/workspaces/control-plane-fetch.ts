@@ -3,6 +3,7 @@ import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/run
 import { sameRuntimeOrigin } from '@/lib/runtime-origin';
 import { isRelayModeActive } from '@/lib/relay/runtime-tunnel';
 import { runtimeFetch } from '@/lib/runtime-fetch';
+import type { RuntimeUrlQuery } from '@/lib/runtime-url';
 
 /**
  * Control-plane pinned fetch for the Workspace Catalog, Session Index and
@@ -116,6 +117,24 @@ export const getControlPlaneBaseUrl = (): string => {
   return windowOrigin;
 };
 
+type ControlPlaneRequestInit = RequestInit & { query?: RuntimeUrlQuery };
+
+const appendQuery = (urlValue: string, query?: RuntimeUrlQuery): string => {
+  if (!query) return urlValue;
+  try {
+    const url = new URL(urlValue, getControlPlaneBaseUrl() || 'http://openchamber.local');
+    const entries = query instanceof URLSearchParams ? Array.from(query.entries()) : Object.entries(query);
+    for (const [name, value] of entries) {
+      if (value === null || value === undefined) continue;
+      url.searchParams.set(name, String(value));
+    }
+    if (isAbsoluteHttpUrl(urlValue)) return url.toString();
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return urlValue;
+  }
+};
+
 const resolveControlPlaneUrl = (input: string | URL | Request): string => {
   const base = getControlPlaneBaseUrl();
   if (typeof input === 'string') {
@@ -126,6 +145,25 @@ const resolveControlPlaneUrl = (input: string | URL | Request): string => {
     return rewriteWindowOriginUrl(input.toString(), base);
   }
   return rewriteWindowOriginUrl(input.url, base);
+};
+
+const mergeRequestInput = (input: string | URL | Request, init?: ControlPlaneRequestInit): ControlPlaneRequestInit => {
+  if (!(input instanceof Request)) return init ?? {};
+  return {
+    method: input.method,
+    headers: input.headers,
+    body: input.body ?? undefined,
+    referrer: input.referrer,
+    referrerPolicy: input.referrerPolicy,
+    mode: input.mode,
+    credentials: input.credentials,
+    cache: input.cache,
+    redirect: input.redirect,
+    integrity: input.integrity,
+    keepalive: input.keepalive,
+    signal: input.signal,
+    ...init,
+  };
 };
 
 /** The SDK resolves relative base URLs against `window.location.href`, so a
@@ -151,7 +189,6 @@ const rewriteWindowOriginUrl = (raw: string, base: string): string => {
   }
 };
 
-const isAbsoluteHttpUrl = (value: string): boolean => /^[a-z][a-z\d+.-]*:\/\//i.test(value);
 
 /** True when the caller's URL is the control plane itself (same origin), so
  * its bearer credential is the control plane's own and can be attached. */
@@ -171,12 +208,14 @@ const credentialBelongsToControlPlane = (): boolean => {
 
 export const createControlPlaneFetch = (): typeof fetch => {
   return async (input, init) => {
+    const controlPlaneInit = mergeRequestInput(input, init as ControlPlaneRequestInit | undefined);
+    const { query, ...requestInit } = controlPlaneInit;
     const url = resolveControlPlaneUrl(input);
     // Relay mode: the control plane is behind the active E2EE tunnel, which
     // carries requests addressed to the window (virtual) origin. Delegate to
     // runtimeFetch so the tunnel transport + auth headers apply.
     if (isRelayModeActive()) {
-      return runtimeFetch(url, { ...init });
+      return runtimeFetch(url, { ...requestInit, ...(query ? { query } : {}) });
     }
     const base = getControlPlaneBaseUrl();
     // No http(s) control plane in this runtime (VS Code / Capacitor webview
@@ -187,7 +226,7 @@ export const createControlPlaneFetch = (): typeof fetch => {
     if (typeof window !== 'undefined' && !isHttpOrigin(base)) {
       return controlPlaneUnavailableResponse();
     }
-    const headers = new Headers(init?.headers);
+    const headers = new Headers(requestInit.headers);
     if (credentialBelongsToControlPlane()) {
       const bearer = getRuntimeBearerTokenSync();
       if (bearer && !headers.has('Authorization')) {
@@ -197,6 +236,8 @@ export const createControlPlaneFetch = (): typeof fetch => {
         if (!headers.has(name)) headers.set(name, value);
       }
     }
-    return fetch(url, { ...init, headers, credentials: 'include' });
+    return fetch(appendQuery(url, query), { ...requestInit, headers, credentials: 'include' });
   };
 };
+
+const isAbsoluteHttpUrl = (value: string): boolean => /^[a-z][a-z\d+.-]*:\/\//i.test(value);

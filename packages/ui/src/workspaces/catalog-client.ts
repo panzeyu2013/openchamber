@@ -3,6 +3,7 @@ import {
   CatalogClientError,
   type CatalogMutationResult,
   type ConnectionProfileSummary,
+  type WorkspaceCapabilities,
   type WorkspaceCatalogSnapshot,
   type WorkspaceCreateInput,
   type WorkspaceDescriptor,
@@ -50,6 +51,19 @@ export const fetchCatalogSnapshot = async (): Promise<WorkspaceCatalogSnapshot> 
     throw new CatalogClientError('Catalog response has an invalid shape', 500, 'catalog_invalid_response');
   }
   return body as WorkspaceCatalogSnapshot;
+};
+
+/** Reads the server capability flags (plan §20). This route STAYS available
+ * when the catalog is disabled, so the client can detect the state and switch
+ * the unified sidebar to its read-only degradation mode. Any failure (old
+ * server, transient error, control plane unavailable) surfaces as
+ * CatalogClientError; callers treat unknown as enabled, never as disabled. */
+export const fetchWorkspaceCapabilities = async (): Promise<WorkspaceCapabilities> => {
+  const body = await jsonRequest('/api/workspaces/capabilities', { headers: { accept: 'application/json' } });
+  if (!body || typeof body !== 'object' || typeof (body as WorkspaceCapabilities).workspaceCatalogV1 !== 'boolean') {
+    throw new CatalogClientError('Capabilities response has an invalid shape', 500, 'catalog_invalid_response');
+  }
+  return body as WorkspaceCapabilities;
 };
 
 export const fetchConnections = async (): Promise<ConnectionProfileSummary[]> => {

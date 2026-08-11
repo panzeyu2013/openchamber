@@ -23,6 +23,16 @@ export interface ConnectionCapabilities {
   eventStream: boolean;
 }
 
+/** Server capability flags (plan §20), read from
+ * `GET /api/workspaces/capabilities`. `workspaceCatalogV1: false` means the
+ * operator disabled the catalog: the unified sidebar shows its read-only
+ * degradation state and must not attempt catalog/session-index mutations.
+ * Unknown (`null` in the store) is treated as enabled — only an
+ * authoritative `false` disables the surface. */
+export interface WorkspaceCapabilities {
+  workspaceCatalogV1: boolean;
+}
+
 /** Safe to return to a plain browser: no tokens, headers or SSH references. */
 export interface ConnectionProfileSummary {
   id: ConnectionId;
@@ -68,6 +78,11 @@ export interface WorkspaceSessionSummary {
 
 export interface SourceFreshness {
   complete: boolean;
+  /** The source responded successfully, but the bounded page walk was not
+   * exhaustive. Partial data must not be interpreted as deletion. */
+  partial?: boolean;
+  /** No successful snapshot has ever been received for this connection. */
+  offline?: boolean;
   stale: boolean;
   lastSuccessAt: number | null;
   error: { code: string; message: string } | null;

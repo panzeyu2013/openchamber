@@ -10,20 +10,27 @@ import {
 import { setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
 import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
 
-const runtimeWindow = globalThis as unknown as {
-  window?: { location: { origin: string }; __OPENCHAMBER_LOCAL_ORIGIN__?: string } | undefined;
+type TestWindow = {
+  location: { origin: string };
+  __OPENCHAMBER_LOCAL_ORIGIN__?: string;
+  dispatchEvent?: (event: Event) => boolean;
+  addEventListener?: (type: string, listener: EventListenerOrEventListenerObject) => void;
 };
 
 const captured: Array<{ url: string; init?: RequestInit }> = [];
 
 const stubWindowOrigin = (origin: string, localOrigin?: string): void => {
   const eventTarget = new EventTarget();
-  runtimeWindow.window = {
-    location: { origin },
-    dispatchEvent: (event: Event) => eventTarget.dispatchEvent(event),
-    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.addEventListener(type, listener),
-    ...(localOrigin ? { __OPENCHAMBER_LOCAL_ORIGIN__: localOrigin } : {}),
-  } as typeof runtimeWindow.window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      location: { origin },
+      dispatchEvent: (event: Event) => eventTarget.dispatchEvent(event),
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.addEventListener(type, listener),
+      ...(localOrigin ? { __OPENCHAMBER_LOCAL_ORIGIN__: localOrigin } : {}),
+    } as TestWindow,
+  });
 };
 
 describe('control-plane-fetch pinning', () => {
@@ -39,7 +46,7 @@ describe('control-plane-fetch pinning', () => {
   });
 
   afterEach(() => {
-    runtimeWindow.window = undefined;
+    Object.defineProperty(globalThis, 'window', { configurable: true, writable: true, value: undefined });
     setRuntimeBearerToken(null);
     setControlPlaneOrigin(null);
   });
@@ -48,6 +55,16 @@ describe('control-plane-fetch pinning', () => {
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('https://cp.example/api/workspaces');
+  });
+
+  test('serializes workspace API query options onto the pinned URL', async () => {
+    const fetchPinned = createControlPlaneFetch();
+    await fetchPinned('/api/workspaces/ws-1/runtime/api/fs/list', {
+      query: new URLSearchParams({ path: '/remote/project', respectGitignore: 'true' }),
+    } as RequestInit);
+    expect(captured[0].url).toBe(
+      'https://cp.example/api/workspaces/ws-1/runtime/api/fs/list?path=%2Fremote%2Fproject&respectGitignore=true',
+    );
   });
 
   test('does not follow the active remote runtime', async () => {
@@ -76,6 +93,19 @@ describe('control-plane-fetch pinning', () => {
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned(new Request('https://cp.example/api/workspaces/ws-1/runtime/api/session', { method: 'GET' }));
     expect(captured[0].url).toBe('https://cp.example/api/workspaces/ws-1/runtime/api/session');
+  });
+
+  test('preserves Request method, body, and headers while pinning its URL', async () => {
+    const fetchPinned = createControlPlaneFetch();
+    await fetchPinned(new Request('https://cp.example/api/workspaces/ws-1/runtime/api/session', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'remote' }),
+    }));
+    expect(captured[0].url).toBe('https://cp.example/api/workspaces/ws-1/runtime/api/session');
+    expect(captured[0].init?.method).toBe('POST');
+    expect(new Headers(captured[0].init?.headers).get('content-type')).toBe('application/json');
+    expect(captured[0].init?.body).toBeTruthy();
   });
 
   test('prefers the injected local origin on desktop', async () => {

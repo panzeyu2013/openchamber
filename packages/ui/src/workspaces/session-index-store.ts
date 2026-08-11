@@ -1,9 +1,11 @@
 import { create } from 'zustand';
 import { workspaceSessionKey } from './identity';
+import { fetchWorkspaceCapabilities } from './catalog-client';
 import { fetchWorkspaceSessionSnapshot } from './session-index-client';
 import {
   CatalogClientError,
   type SourceFreshness,
+  type WorkspaceCapabilities,
   type WorkspaceId,
   type WorkspaceSessionEvent,
   type WorkspaceSessionSnapshot,
@@ -20,9 +22,18 @@ import {
  *   snapshot must be re-fetched (revisionGap flag, consumed by callers).
  * - Events clone only the slice they touch; unrelated sessions, freshness
  *   entries and the sessionKeys set keep their identity (clone-on-write).
+ * - Performance budget (§17.5): `sessionIndex` (key -> array position) makes
+ *   upsert membership/position O(1); a session event never scans the
+ *   sessions array (`findIndex`/`filter`/`map` are gone from `applyEvent`).
+ * - Capability flags (plan §20): `refreshCapabilities()` reads
+ *   `workspaceCatalogV1` from the control plane on a SEPARATE channel. A
+ *   failed read marks `capabilitiesError` and keeps the prior value; it
+ *   never fails the session-index snapshot and never fabricates a disabled
+ *   state (unknown = enabled).
  */
 
 type SessionIndexStatus = 'idle' | 'loading' | 'ready' | 'error';
+type CapabilitiesStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface SessionIndexState {
   snapshot: WorkspaceSessionSnapshot | null;
@@ -30,14 +41,23 @@ interface SessionIndexState {
   lastError: string | null;
   lastAppliedRevision: number;
   sessionKeys: Set<string>;
+  /** session.key -> position in `snapshot.sessions`. Maintained alongside
+   * every array mutation so event reducers never scan the collection. */
+  sessionIndex: Map<string, number>;
   revisionGap: boolean;
+  capabilities: WorkspaceCapabilities | null;
+  capabilitiesStatus: CapabilitiesStatus;
+  capabilitiesError: string | null;
   refresh: () => Promise<void>;
   applyEvent: (event: WorkspaceSessionEvent) => void;
   consumeRevisionGap: () => boolean;
+  refreshCapabilities: () => Promise<void>;
 }
 
 const DEFAULT_FRESHNESS: SourceFreshness = {
   complete: false,
+  partial: false,
+  offline: false,
   stale: false,
   lastSuccessAt: null,
   error: null,
@@ -60,11 +80,15 @@ const parseFreshnessPatch = (value: unknown): Partial<SourceFreshness> | null =>
   const patch = value as Record<string, unknown>;
   const result: Partial<SourceFreshness> = {};
   if (typeof patch.complete === 'boolean') result.complete = patch.complete;
+  if (typeof patch.partial === 'boolean') result.partial = patch.partial;
+  if (typeof patch.offline === 'boolean') result.offline = patch.offline;
   if (typeof patch.stale === 'boolean') result.stale = patch.stale;
   if (typeof patch.lastSuccessAt === 'number') result.lastSuccessAt = patch.lastSuccessAt;
   if (patch.error === null || patch.error === undefined) result.error = null;
   else if (typeof patch.error === 'object') result.error = patch.error as SourceFreshness['error'];
   return result.complete === undefined
+    && result.partial === undefined
+    && result.offline === undefined
     && result.stale === undefined
     && result.lastSuccessAt === undefined
     && result.error === undefined
@@ -76,13 +100,28 @@ const validEventRevision = (revision: unknown): revision is number => (
   typeof revision === 'number' && Number.isFinite(revision)
 );
 
+/** Builds the key-set and key->position index for a sessions array. */
+const indexSessions = (sessions: WorkspaceSessionSummary[]) => {
+  const sessionKeys = new Set<string>();
+  const sessionIndex = new Map<string, number>();
+  for (let i = 0; i < sessions.length; i += 1) {
+    sessionKeys.add(sessions[i].key);
+    sessionIndex.set(sessions[i].key, i);
+  }
+  return { sessionKeys, sessionIndex };
+};
+
 export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, get) => ({
   snapshot: null,
   status: 'idle',
   lastError: null,
   lastAppliedRevision: 0,
   sessionKeys: new Set(),
+  sessionIndex: new Map(),
   revisionGap: false,
+  capabilities: null,
+  capabilitiesStatus: 'idle',
+  capabilitiesError: null,
 
   refresh: async () => {
     set({ status: 'loading' });
@@ -96,10 +135,12 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
           revisionGap: false,
         };
         if (!state.snapshot) {
+          const { sessionKeys, sessionIndex } = indexSessions(snapshot.sessions);
           return {
             ...base,
             snapshot,
-            sessionKeys: new Set(snapshot.sessions.map((session) => session.key)),
+            sessionKeys,
+            sessionIndex,
           };
         }
         // A TRUNCATED snapshot is NOT an authoritative full state for the
@@ -114,10 +155,12 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
             .map(([connectionId]) => connectionId),
         );
         if (truncatedConnections.size === 0) {
+          const { sessionKeys, sessionIndex } = indexSessions(snapshot.sessions);
           return {
             ...base,
             snapshot,
-            sessionKeys: new Set(snapshot.sessions.map((session) => session.key)),
+            sessionKeys,
+            sessionIndex,
           };
         }
         const newKeys = new Set(snapshot.sessions.map((session) => session.key));
@@ -125,10 +168,12 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
           truncatedConnections.has(session.connectionId) && !newKeys.has(session.key)
         ));
         const mergedSessions = [...snapshot.sessions, ...preserved];
+        const { sessionKeys, sessionIndex } = indexSessions(mergedSessions);
         return {
           ...base,
           snapshot: { ...snapshot, sessions: mergedSessions },
-          sessionKeys: new Set(mergedSessions.map((session) => session.key)),
+          sessionKeys,
+          sessionIndex,
         };
       });
     } catch (error) {
@@ -150,14 +195,20 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
     if (event.type === 'session.upserted') {
       const summary = event.payload;
       if (!isSessionSummary(summary)) return state;
-      const index = state.snapshot.sessions.findIndex((session) => session.key === summary.key);
-      const sessions = index >= 0
-        ? state.snapshot.sessions.map((session) => (session.key === summary.key ? summary : session))
-        : [...state.snapshot.sessions, summary];
-      const sessionKeys = index >= 0 ? state.sessionKeys : new Set(state.sessionKeys).add(summary.key);
+      // Keyed lookup: an event for one entity never scans the collection.
+      const position = state.sessionIndex.get(summary.key);
+      if (position === undefined) {
+        return {
+          snapshot: { ...state.snapshot, sessions: [...state.snapshot.sessions, summary] },
+          sessionKeys: new Set(state.sessionKeys).add(summary.key),
+          sessionIndex: new Map(state.sessionIndex).set(summary.key, state.snapshot.sessions.length),
+          lastAppliedRevision: event.revision,
+        };
+      }
+      const sessions = state.snapshot.sessions.slice();
+      sessions[position] = summary;
       return {
         snapshot: { ...state.snapshot, sessions },
-        sessionKeys,
         lastAppliedRevision: event.revision,
       };
     }
@@ -166,17 +217,21 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
       if (typeof event.workspaceId !== 'string' || event.workspaceId.length === 0
         || typeof event.sessionId !== 'string' || event.sessionId.length === 0) return state;
       const key = workspaceSessionKey(event.workspaceId, event.sessionId);
-      if (!state.sessionKeys.has(key)) return state;
+      const position = state.sessionIndex.get(key);
+      if (position === undefined) return state;
+      const sessions = state.snapshot.sessions.slice();
+      sessions.splice(position, 1);
+      const sessionIndex = new Map(state.sessionIndex);
+      sessionIndex.delete(key);
+      for (const [entryKey, entryPosition] of sessionIndex) {
+        if (entryPosition > position) sessionIndex.set(entryKey, entryPosition - 1);
+      }
+      const sessionKeys = new Set(state.sessionKeys);
+      sessionKeys.delete(key);
       return {
-        snapshot: {
-          ...state.snapshot,
-          sessions: state.snapshot.sessions.filter((session) => session.key !== key),
-        },
-        sessionKeys: (() => {
-          const next = new Set(state.sessionKeys);
-          next.delete(key);
-          return next;
-        })(),
+        snapshot: { ...state.snapshot, sessions },
+        sessionIndex,
+        sessionKeys,
         lastAppliedRevision: event.revision,
       };
     }
@@ -207,6 +262,23 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
     const hadGap = get().revisionGap;
     set({ revisionGap: false });
     return hadGap;
+  },
+
+  refreshCapabilities: async () => {
+    set({ capabilitiesStatus: 'loading' });
+    try {
+      const capabilities = await fetchWorkspaceCapabilities();
+      set({ capabilities, capabilitiesStatus: 'ready', capabilitiesError: null });
+    } catch (error) {
+      // Failure is NOT a disabled state: keep the prior value, mark error.
+      // Only an authoritative `{ workspaceCatalogV1: false }` disables the
+      // unified sidebar; a transient/unknown read keeps current behavior.
+      set((state) => ({
+        capabilitiesStatus: 'error',
+        capabilitiesError: error instanceof CatalogClientError ? error.message : error instanceof Error ? error.message : 'Failed to load workspace capabilities',
+        capabilities: state.capabilities,
+      }));
+    }
   },
 }));
 
