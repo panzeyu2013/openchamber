@@ -33,6 +33,7 @@ import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLab
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
@@ -342,6 +343,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
 
   const session = node.session;
   const resolvedSession = session;
+  const activeWorkspaceId = useActiveWorkspaceId();
   // Tooltip context: recent rows receive project/branch via secondaryMeta;
   // project rows resolve them from the row's own props/node instead.
   const projectLabelFromStore = useProjectsStore(
@@ -360,7 +362,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     const branch = node.worktree?.branch?.trim();
     const directory = normalizePath(node.worktree?.path ?? null);
     return branch && directory ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [isVSCode, node.worktree]);
+  }, [activeWorkspaceId, isVSCode, node.worktree]);
   const prSummary = usePrVisualSummary(prLookupKey);
   const prIconColor = prSummary ? `var(--pr-${prSummary.visualState})` : undefined;
   const sessionGroupingMode = useSessionDisplayStore((state) => state.sessionGroupingMode);

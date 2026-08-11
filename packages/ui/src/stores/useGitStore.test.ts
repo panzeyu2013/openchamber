@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { GitStatus } from '@/lib/api/types';
-import { useGitStore } from './useGitStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+
+const { useGitStore } = await import('./useGitStore');
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -152,7 +156,7 @@ describe('useGitStore', () => {
     request.resolve(createStatus(undefined, [{ path: 'stale.ts', index: 'M', working_dir: ' ' }]));
     await loading;
 
-    expect(useGitStore.getState().runtimeKey).toBe('runtime-b');
+    expect(useGitStore.getState().scopeKey).toBe(getRuntimeKey());
     expect(useGitStore.getState().getDirectoryState('/repo')?.status ?? null).toBe(null);
   });
 
@@ -333,5 +337,75 @@ describe('useGitStore', () => {
     useGitStore.getState().restoreStatus('/repo', previousStatus);
 
     expect(useGitStore.getState().getDirectoryState('/repo')?.status).toBe(initialStatus);
+  });
+});
+
+const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
+  const upstreamSessionId = `ses-${workspaceId}`;
+  return {
+    revision: 1,
+    sessions: [{
+      key: `${workspaceId}\u0000${upstreamSessionId}`,
+      workspaceId,
+      connectionId: 'conn',
+      upstreamSessionId,
+      directory: '/repo',
+      title: 'title',
+      updatedAt: 1,
+      archived: false,
+    }],
+    freshnessByConnection: {},
+  };
+};
+
+const setWorkspaceSession = (workspaceId: string) => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+};
+
+const clearWorkspaceSession = () => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+  useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
+};
+
+const currentWorkspaceId = (): string | null =>
+  useWorkspaceSessionIndexStore.getState().snapshot?.sessions[0]?.workspaceId ?? null;
+
+describe('useGitStore workspace scope', () => {
+  beforeEach(() => {
+    clearWorkspaceSession();
+    useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
+  });
+
+  afterEach(clearWorkspaceSession);
+
+  test('keeps directory caches isolated per workspace for the same directory', async () => {
+    const statusA = createStatus(undefined, [{ path: 'a.ts', index: ' ', working_dir: 'M' }]);
+    const statusB = createStatus(undefined, [{ path: 'b.ts', index: ' ', working_dir: 'M' }]);
+    const statusCalls: string[] = [];
+    const git = createGitApi(async () => {
+      const workspaceId = currentWorkspaceId();
+      statusCalls.push(workspaceId ?? 'none');
+      return workspaceId === 'ws-a' ? statusA : statusB;
+    });
+
+    setWorkspaceSession('ws-a');
+    await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
+
+    setWorkspaceSession('ws-b');
+    expect(useGitStore.getState().getDirectoryState('/repo') ?? null).toBe(null);
+    await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('b.ts');
+
+    setWorkspaceSession('ws-a');
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
+    expect(statusCalls).toEqual(['ws-a', 'ws-b']);
+  });
+
+  test('scope key falls back to the ambient runtime key outside workspace mode', () => {
+    useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
+    expect(useGitStore.getState().scopeKey).toBe(getRuntimeKey());
+    expect(useGitStore.getState().directoriesByScope).toEqual({});
   });
 });

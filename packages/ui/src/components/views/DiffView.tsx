@@ -3,7 +3,7 @@ import React from 'react';
 import { useUIStore } from '@/stores/useUIStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useGitStore, useGitStatus, useIsGitRepo, useGitLoadingStatus } from '@/stores/useGitStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { resolveActiveWorkspaceScopeKey } from '@/stores/useGitStore';
 import { cn } from '@/lib/utils';
 import type { GitStatus } from '@/lib/api/types';
 import {
@@ -671,7 +671,7 @@ const MultiFileDiffEntry = React.memo<MultiFileDiffEntryProps>(({
         setIsLoading(true);
 
         let cancelled = false;
-        const runtimeKey = getRuntimeKey();
+        const runtimeKey = resolveActiveWorkspaceScopeKey();
         const contextLines = loadFullFiles ? FULL_CONTEXT_DIFF_LINES : DEFAULT_CONTEXT_DIFF_LINES;
         const fetchPromise = isImageFile(file.path)
             ? git.getGitFileDiff(directory, { path: file.path, staged })
@@ -1556,7 +1556,7 @@ export const DiffView: React.FC<DiffViewProps> = ({
         }
 
         setOpeningEditorFilePath(filePath);
-        const runtimeKey = getRuntimeKey();
+        const runtimeKey = resolveActiveWorkspaceScopeKey();
         try {
             let targetLine: number | null = null;
 

@@ -3,35 +3,35 @@ import type { SessionStatus } from "@opencode-ai/sdk/v2/client"
 export const LIVE_STATUS_TTL_MS = 15_000
 
 type RuntimeLiveStatus = {
-  runtimeKey: string
+  scopeKey: string
   directory: string
   sessionId: string
   status: SessionStatus
   expiresAt: number
 }
 
-const liveStatusByRuntime = new Map<string, RuntimeLiveStatus>()
+const liveStatusByScope = new Map<string, RuntimeLiveStatus>()
 
-const keyFor = (runtimeKey: string, directory: string) => `${runtimeKey}\n${directory}`
+const keyFor = (scopeKey: string, directory: string) => `${scopeKey}\n${directory}`
 
 export function rememberRuntimeLiveStatus(params: {
-  runtimeKey: string
+  scopeKey: string
   directory: string | null | undefined
   sessionId: string | null | undefined
   status: SessionStatus | null | undefined
 }) {
-  if (!params.runtimeKey || !params.directory || !params.sessionId || !params.status) return
+  if (!params.scopeKey || !params.directory || !params.sessionId || !params.status) return
   if (params.status.type === "idle") return
 
   // Evict expired entries on write so keys that are never read again don't
   // accumulate (reads are lazy and only prune their own key).
   const now = Date.now()
-  for (const [key, entry] of liveStatusByRuntime) {
-    if (entry.expiresAt <= now) liveStatusByRuntime.delete(key)
+  for (const [key, entry] of liveStatusByScope) {
+    if (entry.expiresAt <= now) liveStatusByScope.delete(key)
   }
 
-  liveStatusByRuntime.set(keyFor(params.runtimeKey, params.directory), {
-    runtimeKey: params.runtimeKey,
+  liveStatusByScope.set(keyFor(params.scopeKey, params.directory), {
+    scopeKey: params.scopeKey,
     directory: params.directory,
     sessionId: params.sessionId,
     status: params.status,
@@ -39,11 +39,11 @@ export function rememberRuntimeLiveStatus(params: {
   })
 }
 
-export function getRuntimeLiveStatusSeed(runtimeKey: string, directory: string): RuntimeLiveStatus | null {
-  const entry = liveStatusByRuntime.get(keyFor(runtimeKey, directory))
+export function getRuntimeLiveStatusSeed(scopeKey: string, directory: string): RuntimeLiveStatus | null {
+  const entry = liveStatusByScope.get(keyFor(scopeKey, directory))
   if (!entry) return null
   if (entry.expiresAt <= Date.now()) {
-    liveStatusByRuntime.delete(keyFor(runtimeKey, directory))
+    liveStatusByScope.delete(keyFor(scopeKey, directory))
     return null
   }
   return entry

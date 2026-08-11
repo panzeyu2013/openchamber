@@ -26,6 +26,11 @@ const safeStorage = {
 mock.module('./utils/safeStorage', () => ({
   getDeferredSafeStorage: () => safeStorage,
   getSafeStorage: () => safeStorage,
+  createDeferredSafeJSONStorage: () => ({
+    getItem: async () => null,
+    setItem: async () => undefined,
+    removeItem: async () => undefined,
+  }),
 }));
 
 mock.module('@/lib/desktop', () => ({
@@ -35,7 +40,12 @@ mock.module('@/lib/desktop', () => ({
 mock.module('@/lib/runtime-fetch', () => ({
   runtimeFetch: mock(async () => new Response(JSON.stringify(diskResponseBody), { headers: { 'Content-Type': 'application/json' } })),
 }));
-mock.module('@/lib/runtime-switch', () => ({ getRuntimeKey: () => runtimeKey }));
+mock.module('@/lib/runtime-switch', () => ({
+  getRuntimeKey: () => runtimeKey,
+  getRuntimeApiBaseUrl: () => '',
+  getRuntimeBearerTokenSync: () => '',
+  getRuntimeExtraHeadersSync: () => undefined,
+}));
 
 const { useSessionFoldersStore } = await import('./useSessionFoldersStore');
 

@@ -3,6 +3,18 @@ import { devtools, persist, createJSONStorage } from 'zustand/middleware';
 import type { PersistStorage } from 'zustand/middleware';
 
 import { getSafeSessionStorage } from '@/stores/utils/safeStorage';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
+
+const TERMINAL_LEGACY_SCOPE = 'legacy';
+
+const resolveTerminalScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : TERMINAL_LEGACY_SCOPE;
+};
 
 export interface TerminalChunk {
   id: number;
@@ -58,9 +70,13 @@ export type TerminalProjectActionRun = {
 };
 
 interface TerminalStore {
+  scopeKey: string;
   sessions: Map<string, DirectoryTerminalState>;
+  sessionsByScope: Record<string, Map<string, DirectoryTerminalState>>;
   buffers: Map<string, TerminalBuffer>;
+  buffersByScope: Record<string, Map<string, TerminalBuffer>>;
   projectActionRuns: Record<string, TerminalProjectActionRun>;
+  projectActionRunsByScope: Record<string, Record<string, TerminalProjectActionRun>>;
   nextChunkId: number;
   nextTabId: number;
   hasHydrated: boolean;
@@ -134,8 +150,10 @@ type PersistedDirectoryTerminalState = {
   activeTabId: string | null;
 };
 
+type PersistedTerminalScopeEntry = [string, PersistedDirectoryTerminalState];
+
 type PersistedTerminalStoreState = {
-  sessions: Array<[string, PersistedDirectoryTerminalState]>;
+  sessionsByScope: Record<string, PersistedTerminalScopeEntry[]>;
   nextTabId: number;
 };
 
@@ -205,44 +223,49 @@ const findTabIndex = (state: DirectoryTerminalState, tabId: string): number =>
  * `nextTabId` are persisted, so reuse the previous projection whenever both are
  * referentially unchanged and skip the write for an unchanged projection.
  */
-let lastPartializeInput: { sessions: unknown; nextTabId: number } | null = null;
+let lastPartializeInput: { sessionsByScope: unknown; nextTabId: number } | null = null;
 let lastPartializeResult: PersistedTerminalStoreState | null = null;
 
 const partializeTerminalStore = (state: TerminalStore): PersistedTerminalStoreState => {
   if (
     lastPartializeResult
-    && lastPartializeInput?.sessions === state.sessions
+    && lastPartializeInput?.sessionsByScope === state.sessionsByScope
     && lastPartializeInput.nextTabId === state.nextTabId
   ) {
     return lastPartializeResult;
   }
 
   const result: PersistedTerminalStoreState = {
-    sessions: Array.from(state.sessions.entries()).map(([directory, dirState]) => [
-      directory,
-      {
-        activeTabId: dirState.activeTabId,
-        tabs: dirState.tabs.map((tab) => ({
-          id: tab.id,
-          label: tab.label,
-          iconKey: tab.iconKey,
-          createdAt: tab.createdAt,
-        })),
-      },
-    ]),
+    sessionsByScope: Object.fromEntries(
+      Object.entries(state.sessionsByScope).map(([scopeKey, sessions]) => [
+        scopeKey,
+        Array.from(sessions.entries()).map(([directory, dirState]): PersistedTerminalScopeEntry => [
+          directory,
+          {
+            activeTabId: dirState.activeTabId,
+            tabs: dirState.tabs.map((tab) => ({
+              id: tab.id,
+              label: tab.label,
+              iconKey: tab.iconKey,
+              createdAt: tab.createdAt,
+            })),
+          },
+        ]),
+      ]),
+    ),
     nextTabId: state.nextTabId,
   };
 
-  lastPartializeInput = { sessions: state.sessions, nextTabId: state.nextTabId };
+  lastPartializeInput = { sessionsByScope: state.sessionsByScope, nextTabId: state.nextTabId };
   lastPartializeResult = result;
   return result;
 };
 
-const createDedupedTerminalStorage = (): PersistStorage<PersistedTerminalStoreState> | undefined => {
-  const base = createJSONStorage<PersistedTerminalStoreState>(() => getSafeSessionStorage());
+const createDedupedTerminalStorage = (): PersistStorage<unknown> | undefined => {
+  const base = createJSONStorage<unknown>(() => getSafeSessionStorage());
   if (!base) return undefined;
 
-  let lastWrittenState: PersistedTerminalStoreState | null = null;
+  let lastWrittenState: unknown = null;
   return {
     getItem: (name) => base.getItem(name),
     setItem: (name, value) => {
@@ -261,9 +284,13 @@ export const useTerminalStore = create<TerminalStore>()(
   devtools(
     persist(
       (set, get) => ({
+        scopeKey: TERMINAL_LEGACY_SCOPE,
         sessions: new Map(),
+        sessionsByScope: {},
         buffers: new Map(),
+        buffersByScope: {},
         projectActionRuns: {},
+        projectActionRunsByScope: {},
         nextChunkId: 1,
         nextTabId: 1,
         hasHydrated: typeof window === 'undefined',
@@ -757,83 +784,132 @@ export const useTerminalStore = create<TerminalStore>()(
         },
 
         clearAll: () => {
-          set({ sessions: new Map(), buffers: new Map(), projectActionRuns: {}, nextChunkId: 1, nextTabId: 1 });
+          set({
+            scopeKey: resolveTerminalScopeKey(),
+            sessions: new Map(),
+            sessionsByScope: {},
+            buffers: new Map(),
+            buffersByScope: {},
+            projectActionRuns: {},
+            projectActionRunsByScope: {},
+            nextChunkId: 1,
+            nextTabId: 1,
+          });
         },
       }),
       {
         name: TERMINAL_STORE_NAME,
         storage: createDedupedTerminalStorage(),
         partialize: partializeTerminalStore,
+        version: 2,
+        migrate: (persistedState, version) => {
+          if (version >= 2 || !isRecord(persistedState)) {
+            return persistedState;
+          }
+          const legacySessions = Array.isArray(persistedState.sessions)
+            ? (persistedState.sessions as unknown[])
+            : [];
+          const nextTabId = typeof persistedState.nextTabId === 'number'
+            ? persistedState.nextTabId
+            : 1;
+          return {
+            sessionsByScope: { [TERMINAL_LEGACY_SCOPE]: legacySessions },
+            nextTabId,
+          };
+        },
         merge: (persistedState, currentState) => {
           if (!isRecord(persistedState)) {
             return currentState;
           }
 
-          const rawSessions = Array.isArray(persistedState.sessions)
-            ? (persistedState.sessions as PersistedTerminalStoreState['sessions'])
-            : [];
+          const parseScopeEntries = (rawEntries: unknown[]): Map<string, DirectoryTerminalState> | null => {
+            const sessions = new Map<string, DirectoryTerminalState>();
+            let hasEntries = false;
 
-          const sessions = new Map<string, DirectoryTerminalState>();
-          let maxTabNum = 0;
-
-          for (const entry of rawSessions) {
-            if (!Array.isArray(entry) || entry.length !== 2) {
-              continue;
-            }
-
-            const [directory, rawState] = entry as [unknown, unknown];
-            if (typeof directory !== 'string' || !isRecord(rawState)) {
-              continue;
-            }
-
-            const rawTabs = Array.isArray(rawState.tabs) ? (rawState.tabs as unknown[]) : [];
-            const tabs: TerminalTab[] = [];
-            const migratedTabIds = new Map<string, string>();
-
-            for (const rawTab of rawTabs) {
-              if (!isRecord(rawTab)) {
+            for (const entry of rawEntries) {
+              if (!Array.isArray(entry) || entry.length !== 2) {
                 continue;
               }
 
-              const persistedId = typeof rawTab.id === 'string' ? rawTab.id : null;
-              if (!persistedId) {
+              const [directory, rawState] = entry as [unknown, unknown];
+              if (typeof directory !== 'string' || !isRecord(rawState)) {
                 continue;
               }
 
-              const num = tabIdNumber(persistedId);
-              if (num !== null) {
-                maxTabNum = Math.max(maxTabNum, num);
-              }
-              const id = num === null ? persistedId : createTerminalTabId();
-              migratedTabIds.set(persistedId, id);
+              const rawTabs = Array.isArray(rawState.tabs) ? (rawState.tabs as unknown[]) : [];
+              const tabs: TerminalTab[] = [];
+              const migratedTabIds = new Map<string, string>();
 
-              tabs.push({
-                id,
-                label: typeof rawTab.label === 'string' ? rawTab.label : 'Terminal',
-                iconKey: typeof rawTab.iconKey === 'string' ? rawTab.iconKey : null,
-                terminalSessionId: null,
-                lifecycle: 'idle',
-                createdAt: typeof rawTab.createdAt === 'number' ? rawTab.createdAt : Date.now(),
-                isConnecting: false,
-                previewUrl: null,
-                previewAutoOpened: false,
-                previewUrlLocked: false,
+              for (const rawTab of rawTabs) {
+                if (!isRecord(rawTab)) {
+                  continue;
+                }
+
+                const persistedId = typeof rawTab.id === 'string' ? rawTab.id : null;
+                if (!persistedId) {
+                  continue;
+                }
+
+                const num = tabIdNumber(persistedId);
+                if (num !== null) {
+                  maxTabNum = Math.max(maxTabNum, num);
+                }
+                const id = num === null ? persistedId : createTerminalTabId();
+                migratedTabIds.set(persistedId, id);
+
+                tabs.push({
+                  id,
+                  label: typeof rawTab.label === 'string' ? rawTab.label : 'Terminal',
+                  iconKey: typeof rawTab.iconKey === 'string' ? rawTab.iconKey : null,
+                  terminalSessionId: null,
+                  lifecycle: 'idle',
+                  createdAt: typeof rawTab.createdAt === 'number' ? rawTab.createdAt : Date.now(),
+                  isConnecting: false,
+                  previewUrl: null,
+                  previewAutoOpened: false,
+                  previewUrlLocked: false,
+                });
+              }
+
+              if (tabs.length === 0) {
+                continue;
+              }
+
+              const activeTabId =
+                typeof rawState.activeTabId === 'string' ? (rawState.activeTabId as string) : null;
+              const migratedActiveTabId = activeTabId ? (migratedTabIds.get(activeTabId) ?? activeTabId) : null;
+              const activeExists = migratedActiveTabId ? tabs.some((t) => t.id === migratedActiveTabId) : false;
+
+              sessions.set(directory, {
+                tabs,
+                activeTabId: activeExists ? migratedActiveTabId : tabs[0].id,
               });
+              hasEntries = true;
             }
 
-            if (tabs.length === 0) {
-              continue;
+            return hasEntries ? sessions : null;
+          };
+
+          let maxTabNum = 0;
+          const sessionsByScope: Record<string, Map<string, DirectoryTerminalState>> = {};
+
+          if (Array.isArray(persistedState.sessions)) {
+            const legacy = parseScopeEntries(persistedState.sessions as unknown[]);
+            if (legacy) {
+              sessionsByScope[TERMINAL_LEGACY_SCOPE] = legacy;
             }
+          }
 
-            const activeTabId =
-              typeof rawState.activeTabId === 'string' ? (rawState.activeTabId as string) : null;
-            const migratedActiveTabId = activeTabId ? (migratedTabIds.get(activeTabId) ?? activeTabId) : null;
-            const activeExists = migratedActiveTabId ? tabs.some((t) => t.id === migratedActiveTabId) : false;
-
-            sessions.set(directory, {
-              tabs,
-              activeTabId: activeExists ? migratedActiveTabId : tabs[0].id,
-            });
+          if (isRecord(persistedState.sessionsByScope)) {
+            for (const [scopeKey, rawEntries] of Object.entries(persistedState.sessionsByScope)) {
+              if (!Array.isArray(rawEntries)) {
+                continue;
+              }
+              const parsed = parseScopeEntries(rawEntries);
+              if (parsed) {
+                sessionsByScope[scopeKey] = parsed;
+              }
+            }
           }
 
           const persistedNextTabId =
@@ -842,11 +918,17 @@ export const useTerminalStore = create<TerminalStore>()(
               : 1;
 
           const nextTabId = Math.max(currentState.nextTabId, persistedNextTabId, maxTabNum + 1);
+          const scopeKey = resolveTerminalScopeKey();
 
           return {
             ...currentState,
-            sessions,
+            scopeKey,
+            sessions: sessionsByScope[scopeKey] ?? new Map(),
+            sessionsByScope,
             buffers: new Map(),
+            buffersByScope: {},
+            projectActionRuns: {},
+            projectActionRunsByScope: {},
             nextChunkId: 1,
             nextTabId,
             hasHydrated: true,
@@ -856,6 +938,41 @@ export const useTerminalStore = create<TerminalStore>()(
     )
   )
 );
+
+const swapTerminalScope = (scopeKey: string): void => {
+  const state = useTerminalStore.getState();
+  if (state.scopeKey === scopeKey) {
+    return;
+  }
+  useTerminalStore.setState({
+    scopeKey,
+    sessions: state.sessionsByScope[scopeKey] ?? new Map(),
+    buffers: state.buffersByScope[scopeKey] ?? new Map(),
+    projectActionRuns: state.projectActionRunsByScope[scopeKey] ?? {},
+    sessionsByScope: { ...state.sessionsByScope, [state.scopeKey]: state.sessions },
+    buffersByScope: { ...state.buffersByScope, [state.scopeKey]: state.buffers },
+    projectActionRunsByScope: { ...state.projectActionRunsByScope, [state.scopeKey]: state.projectActionRuns },
+  });
+};
+
+let terminalScopeSubscriptionInstalled = false;
+const installTerminalScopeSubscription = (): void => {
+  if (terminalScopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
+  terminalScopeSubscriptionInstalled = true;
+  queueMicrotask(() => {
+    let lastScope = resolveTerminalScopeKey();
+    const check = () => {
+      const nextScope = resolveTerminalScopeKey();
+      if (nextScope !== lastScope) {
+        lastScope = nextScope;
+        swapTerminalScope(nextScope);
+      }
+    };
+    useSessionUIStore?.subscribe?.(check);
+    useWorkspaceSessionIndexStore?.subscribe?.(check);
+  });
+};
+installTerminalScopeSubscription();
 
 // Ensure hydration completes even when no persisted state exists.
 if (typeof window !== 'undefined' && !hydrationListenerAttached) {

@@ -1,7 +1,7 @@
 import React from 'react';
 
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useViewportStore } from '@/sync/viewport-store';
+import { getViewportSessionMemory, useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync } from '@/sync/sync-context';
 import { MEMORY_LIMITS } from '@/stores/types/sessionTypes';
 import { useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
@@ -179,7 +179,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
           assistantMessageCount += 1;
         }
       }
-      const memoryState = sessionMemoryState.get(session.id);
+      const memoryState = getViewportSessionMemory(session.id);
       return {
         id: session.id,
         title: session.title || t('memoryDebugPanel.common.untitled'),

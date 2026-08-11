@@ -4,6 +4,7 @@ import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import type { AttachedFile } from './types/sessionTypes';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { normalizePath } from '@/lib/pathNormalization';
 
 export type FollowUpBehavior = 'steer' | 'queue';
@@ -55,7 +56,8 @@ export interface QueuedMessage {
 }
 
 export type MessageQueueTarget = {
-    runtimeKey: string;
+    /** Workspace scope key for workspace sessions, ambient runtime key otherwise. */
+    scopeKey: string;
     directory: string;
     sessionId: string;
 };
@@ -66,19 +68,19 @@ const MAX_MESSAGES_PER_QUEUE = 20;
 export const createMessageQueueTarget = (
     sessionId: string,
     directory: string | null | undefined,
-    runtimeKey: string = getRuntimeKey(),
+    scopeKey: string = resolveSessionScopeKey(sessionId, directory),
 ): MessageQueueTarget | null => {
     const normalizedDirectory = normalizePath(directory);
-    if (!runtimeKey || !normalizedDirectory || !sessionId) return null;
-    return { runtimeKey, directory: normalizedDirectory, sessionId };
+    if (!scopeKey || !normalizedDirectory || !sessionId) return null;
+    return { scopeKey, directory: normalizedDirectory, sessionId };
 };
 
 export const getMessageQueueKey = (target: MessageQueueTarget): string =>
-    `${target.runtimeKey}\n${target.directory}\n${target.sessionId}`;
+    `${target.scopeKey}\n${target.directory}\n${target.sessionId}`;
 
 export const parseMessageQueueKey = (key: string): MessageQueueTarget | null => {
-    const [runtimeKey, directory, ...sessionParts] = key.split('\n');
-    return createMessageQueueTarget(sessionParts.join('\n'), directory, runtimeKey);
+    const [scopeKey, directory, ...sessionParts] = key.split('\n');
+    return createMessageQueueTarget(sessionParts.join('\n'), directory, scopeKey);
 };
 
 interface MessageQueueState {
@@ -252,19 +254,38 @@ export const useMessageQueueStore = create<MessageQueueStore>()(
                 },
 
                 clearQueue: (target) => {
+                    // Dual-clean when the target carries the current runtime
+                    // key (legacy deletion path): also clear the
+                    // workspace-scoped twin so runtime-captured identities
+                    // still reach workspace-scoped queues. A non-current or
+                    // workspace scope never clears another owner's queue.
                     const key = getMessageQueueKey(target);
+                    const legacyKey = target.scopeKey === getRuntimeKey()
+                        ? getMessageQueueKey({
+                            scopeKey: resolveSessionScopeKey(target.sessionId, target.directory),
+                            directory: target.directory,
+                            sessionId: target.sessionId,
+                        })
+                        : key;
+                    const keysToClear = legacyKey === key ? [key] : [key, legacyKey];
                     set((state) => {
-                        // Clearing drops what is still queued, never a message
-                        // already handed to the server: that send will resolve
-                        // and must find its entry to remove or restore.
-                        const sending = state.sendingIds[key] ?? [];
-                        const retained = (state.queuedMessages[key] ?? []).filter((m) => sending.includes(m.id));
-                        if (retained.length > 0) {
-                            return { queuedMessages: { ...state.queuedMessages, [key]: retained } };
+                        let next = state.queuedMessages;
+                        for (const candidate of keysToClear) {
+                            // Clearing drops what is still queued, never a message
+                            // already handed to the server: that send will resolve
+                            // and must find its entry to remove or restore.
+                            const sending = state.sendingIds[candidate] ?? [];
+                            const retained = (next[candidate] ?? []).filter((m) => sending.includes(m.id));
+                            if (retained.length > 0) {
+                                next = { ...next, [candidate]: retained };
+                            } else if (candidate in next) {
+                                const { [candidate]: _removed, ...rest } = next;
+                                void _removed;
+                                next = rest;
+                            }
                         }
-                        const { [key]: _removed, ...rest } = state.queuedMessages;
-                        void _removed;
-                        return { queuedMessages: rest };
+                        if (next === state.queuedMessages) return state;
+                        return { queuedMessages: next };
                     });
                 },
 

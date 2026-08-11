@@ -280,7 +280,7 @@ describe('sendMessage captured target', () => {
 
   test('uses the target captured before the active session changes', async () => {
     await sendToTarget({
-      runtimeKey: getRuntimeKey(),
+      scopeKey: getRuntimeKey(),
       sessionId: 'session-captured',
       directory: '/captured/project',
     });
@@ -295,7 +295,7 @@ describe('sendMessage captured target', () => {
     let error = null;
     try {
       await sendToTarget({
-        runtimeKey: `${getRuntimeKey()}-stale`,
+        scopeKey: `${getRuntimeKey()}-stale`,
         sessionId: 'session-captured',
         directory: '/captured/project',
       });

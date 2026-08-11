@@ -1,5 +1,8 @@
 import { create } from 'zustand';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
 import type {
   GitHubAPI,
   GitHubPullRequestContextResult,
@@ -9,11 +12,18 @@ import type {
 const PR_CONTEXT_TTL_MS = 30_000;
 const PR_CONTEXT_MAX_ENTRIES = 20;
 
-// JSON tuple key: runtime-scoped (a runtime switch must never serve another
-// backend's data) and parseable, so invalidation can compare the directory
-// exactly instead of by string prefix.
+const resolveActiveWorkspaceScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+};
+
+// JSON tuple key: scope-scoped (workspace scope when a workspace session is
+// active, ambient runtime key otherwise) and parseable, so invalidation can
+// compare the directory exactly instead of by string prefix.
 export const getPrContextKey = (directory: string, number: number): string =>
-  JSON.stringify([getRuntimeKey(), directory, number]);
+  JSON.stringify([resolveActiveWorkspaceScopeKey(), directory, number]);
 
 const parsePrContextKey = (key: string): { runtimeKey: string; directory: string; number: number } | null => {
   try {
@@ -152,10 +162,12 @@ export const usePrContextStore = create<PrContextStoreState>()((set, get) => ({
   invalidate: (directory, number) => {
     set((state) => {
       const next: Record<string, PrContextEntry> = {};
+      const scopeKey = resolveActiveWorkspaceScopeKey();
       for (const [key, entry] of Object.entries(state.entries)) {
         const parsed = parsePrContextKey(key);
         const matches = Boolean(
           parsed
+          && parsed.runtimeKey === scopeKey
           && parsed.directory === directory
           && (number == null || parsed.number === number),
         );

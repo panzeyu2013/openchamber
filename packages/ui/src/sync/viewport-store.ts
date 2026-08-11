@@ -1,10 +1,16 @@
 /**
  * Viewport Store — per-session scroll anchors, streaming state, memory.
  * Extracted from session-ui-store for subscription isolation.
+ *
+ * Memory is keyed by session scope (`${scopeKey}\n${sessionId}`), where the
+ * scope key is the workspace scope for workspace sessions and the ambient
+ * runtime key otherwise — byte-identical to the pre-migration key format in
+ * non-workspace mode. Bare session IDs (pre-scope legacy) remain readable as
+ * a fallback; writes only ever use the scoped key.
  */
 
 import { create } from "zustand"
-import { getRuntimeKey } from "@/lib/runtime-switch"
+import { resolveSessionScopeKey } from "./selection-store"
 
 export type SessionMemoryState = {
   viewportAnchor: number
@@ -37,7 +43,8 @@ export type ViewportState = {
   updateViewportAnchor: (sessionId: string, anchor: number, scrollPosition?: SessionMemoryState['scrollPosition']) => void
 }
 
-export const viewportSessionKey = (sessionId: string, runtimeKey = getRuntimeKey()): string => `${runtimeKey}\n${sessionId}`
+export const viewportSessionKey = (sessionId: string, scopeKey?: string): string =>
+  `${scopeKey ?? resolveSessionScopeKey(sessionId)}\n${sessionId}`
 
 export const getViewportSessionMemory = (sessionId: string): SessionMemoryState | undefined => {
   const state = useViewportStore.getState()

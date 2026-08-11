@@ -327,7 +327,7 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
   useConfigStore((state) => state.modelsMetadata.size);
   const savedSessionModel = useSelectionStore(
     React.useCallback(
-      (state) => (currentSessionId ? state.sessionModelSelections.get(currentSessionId) ?? null : null),
+      (state) => (currentSessionId ? state.getSessionModelSelection(currentSessionId) : null),
       [currentSessionId],
     ),
   );

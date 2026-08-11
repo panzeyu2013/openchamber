@@ -1,10 +1,14 @@
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
+import { getRuntimeKey } from "@/lib/runtime-switch"
 
-// Persisted "last active session" per runtime (server instance), so a cold
-// app launch can reopen the session the user had open the last time this
-// instance was connected. This is startup-continuity context ONLY — callers
-// must confirm the session still exists against an authoritative snapshot
-// before opening it (see the MobileApp restore effect).
+// Persisted "last active session" per scope (workspace scope key for
+// workspace sessions, ambient runtime key otherwise), so a cold app launch
+// can reopen the session the user had open the last time this instance was
+// connected. This is startup-continuity context ONLY — callers must confirm
+// the session still exists against an authoritative snapshot before opening
+// it (see the MobileApp restore effect). Entries written before the scope
+// migration (keyed by raw runtime key) stay readable as a fallback; writes
+// always use the caller-provided scope key.
 const STORAGE_KEY = "oc.lastSession.v1"
 const MAX_RUNTIME_ENTRIES = 8
 
@@ -57,35 +61,46 @@ const writeEnvelope = (storage: Storage, envelope: PersistedEnvelope): void => {
 }
 
 export function persistLastActiveSession(
-  runtimeKey: string,
+  scopeKey: string,
   entry: PersistedLastSession,
   storage: Storage = getDeferredSafeStorage(),
 ): void {
-  if (!runtimeKey || !entry.sessionId) return
+  if (!scopeKey || !entry.sessionId) return
   const envelope = readEnvelope(storage)
   // Monotonic vs the stored entries: same-millisecond writes must not tie,
-  // or retention trimming would evict an arbitrary runtime.
+  // or retention trimming would evict an arbitrary scope.
   const maxExisting = Object.values(envelope.runtimes).reduce((max, existing) => Math.max(max, existing.updatedAt), 0)
-  envelope.runtimes[runtimeKey] = { ...entry, updatedAt: Math.max(Date.now(), maxExisting + 1) }
+  envelope.runtimes[scopeKey] = { ...entry, updatedAt: Math.max(Date.now(), maxExisting + 1) }
+  // A scoped write supersedes the legacy runtime-keyed entry for the same
+  // session context; drop it so a stale read cannot resurrect it.
+  const legacyRuntimeKey = getRuntimeKey()
+  if (scopeKey !== legacyRuntimeKey) delete envelope.runtimes[legacyRuntimeKey]
   writeEnvelope(storage, envelope)
 }
 
 export function readLastActiveSession(
-  runtimeKey: string,
+  scopeKey: string,
   storage: Storage = getDeferredSafeStorage(),
 ): PersistedLastSession | null {
-  if (!runtimeKey) return null
-  const entry = readEnvelope(storage).runtimes[runtimeKey]
+  if (!scopeKey) return null
+  const envelope = readEnvelope(storage)
+  const entry = envelope.runtimes[scopeKey] ?? envelope.runtimes[getRuntimeKey()]
   return entry ? { sessionId: entry.sessionId, directory: entry.directory } : null
 }
 
 export function clearLastActiveSession(
-  runtimeKey: string,
+  scopeKey: string,
   storage: Storage = getDeferredSafeStorage(),
 ): void {
-  if (!runtimeKey) return
+  if (!scopeKey) return
   const envelope = readEnvelope(storage)
-  if (!envelope.runtimes[runtimeKey]) return
-  delete envelope.runtimes[runtimeKey]
+  const keys = [scopeKey, getRuntimeKey()]
+  let changed = false
+  for (const key of keys) {
+    if (!envelope.runtimes[key]) continue
+    delete envelope.runtimes[key]
+    changed = true
+  }
+  if (!changed) return
   writeEnvelope(storage, envelope)
 }

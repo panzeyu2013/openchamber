@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -25,12 +28,16 @@ const searchFilesMock = mock(() => {
   return request.promise;
 });
 
+const realRuntimeSwitch = await import('@/lib/runtime-switch');
 mock.module('@/lib/opencode/client', () => ({
   opencodeClient: {
     searchFiles: searchFilesMock,
   },
 }));
-mock.module('@/lib/runtime-switch', () => ({ getRuntimeKey: () => runtimeKey }));
+mock.module('@/lib/runtime-switch', () => ({
+  ...realRuntimeSwitch,
+  getRuntimeKey: () => runtimeKey,
+}));
 
 const { useFileSearchStore } = await import('./useFileSearchStore');
 
@@ -119,5 +126,80 @@ describe('useFileSearchStore', () => {
     runtimeKey = 'runtime-b';
     expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'runtime-b.ts' }]);
     expect(searchRequests).toHaveLength(2);
+  });
+});
+
+const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
+  const upstreamSessionId = `ses-${workspaceId}`;
+  return {
+    revision: 1,
+    sessions: [{
+      key: `${workspaceId}\u0000${upstreamSessionId}`,
+      workspaceId,
+      connectionId: 'conn',
+      upstreamSessionId,
+      directory: '/project',
+      title: 'title',
+      updatedAt: 1,
+      archived: false,
+    }],
+    freshnessByConnection: {},
+  };
+};
+
+const setWorkspaceSession = (workspaceId: string) => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/project' });
+};
+
+const clearWorkspaceSession = () => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+  useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
+};
+
+describe('useFileSearchStore workspace scope', () => {
+  beforeEach(() => {
+    searchRequests.length = 0;
+    runtimeKey = 'runtime-a';
+    useFileSearchStore.setState({ cache: {}, cacheKeys: [], inFlight: {} });
+    clearWorkspaceSession();
+  });
+
+  afterEach(clearWorkspaceSession);
+
+  test('isolates cache and in-flight ownership per workspace', async () => {
+    setWorkspaceSession('ws-a');
+    const firstPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
+    setWorkspaceSession('ws-b');
+    const secondPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
+    expect(searchRequests).toHaveLength(2);
+
+    searchRequests[1].resolve([{ path: 'ws-b.ts' }]);
+    expect(await secondPromise).toEqual([{ path: 'ws-b.ts' }]);
+    searchRequests[0].resolve([{ path: 'ws-a.ts' }]);
+    await firstPromise;
+
+    expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'ws-b.ts' }]);
+    expect(searchRequests).toHaveLength(2);
+  });
+
+  test('invalidateDirectory clears only the active workspace scope', async () => {
+    setWorkspaceSession('ws-a');
+    const searchA = useFileSearchStore.getState().searchFiles('/project', 'foo');
+    searchRequests[0].resolve([{ path: 'first.ts' }]);
+    await searchA;
+    expect(Object.values(useFileSearchStore.getState().cache)).toHaveLength(1);
+
+    setWorkspaceSession('ws-b');
+    const searchB = useFileSearchStore.getState().searchFiles('/project', 'foo');
+    searchRequests[1].resolve([{ path: 'second.ts' }]);
+    await searchB;
+    expect(Object.values(useFileSearchStore.getState().cache)).toHaveLength(2);
+
+    useFileSearchStore.getState().invalidateDirectory('/project');
+
+    const remaining = Object.values(useFileSearchStore.getState().cache);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0]?.files).toEqual([{ path: 'first.ts' }]);
   });
 });

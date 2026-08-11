@@ -20,8 +20,8 @@ import {
   useGitStatus,
   useIsGitRepo,
   useGitLoadingStatus,
+  resolveActiveWorkspaceScopeKey,
 } from '@/stores/useGitStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type SyncAction = 'fetch' | 'pull' | 'push' | 'sync' | null;
 type CommitAction = 'commit' | 'commitAndPush' | null;
@@ -203,7 +203,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
 
     let cancelled = false;
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = resolveActiveWorkspaceScopeKey();
     setDiffLoadError(null);
     void git.getGitFileDiff(currentDirectory, { path: route.path, staged: route.staged || undefined })
       .then((response) => {

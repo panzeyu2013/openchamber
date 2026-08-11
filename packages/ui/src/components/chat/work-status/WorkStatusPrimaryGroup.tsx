@@ -4,6 +4,7 @@ import { useGitStore } from '@/stores/useGitStore';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useSession, useSessionMessages } from '@/sync/sync-context';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
@@ -49,6 +50,7 @@ export const WorkStatusPrimaryGroup: React.FC<Props> = ({ sessionId, directory, 
   const session = useSession(sessionId ?? '', directory ?? undefined);
   const { git } = useRuntimeAPIs();
   const ensureStatus = useGitStore((state) => state.ensureStatus);
+  const activeWorkspaceId = useActiveWorkspaceId();
 
   const gitStatus = useGitStore(
     React.useCallback(
@@ -94,7 +96,7 @@ export const WorkStatusPrimaryGroup: React.FC<Props> = ({ sessionId, directory, 
   // fan-out the PR-status concurrency gate exists to prevent.
   const prKey = React.useMemo(
     () => (directory && branch ? getGitHubPrStatusKey(directory, branch) : null),
-    [directory, branch],
+    [activeWorkspaceId, branch, directory],
   );
   const prSummary = usePrVisualSummary(prKey);
 

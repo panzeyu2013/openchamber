@@ -31,6 +31,7 @@ import {
 import type { SessionNodeRenderExtras } from './sessionNodeItemUtils';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useI18n } from '@/lib/i18n';
 import { useChildStoreManager } from '@/sync/sync-context';
 import { canRequestNativeDirectoryAccess, requestDirectoryAccess } from '@/lib/desktop';
@@ -279,6 +280,7 @@ const areGroupPropsEqual = (prev: Props, next: Props): boolean => {
 
 function SessionGroupSectionBase(props: Props): React.ReactNode {
   const { t } = useI18n();
+  const activeWorkspaceId = useActiveWorkspaceId();
   const {
     group,
     groupKey,
@@ -346,7 +348,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
     const directory = normalizePath(group.directory ?? null);
     const branch = group.branch?.trim();
     return directory && branch ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [group.branch, group.directory, group.isArchivedBucket, group.isMain, hideGroupLabel]);
+  }, [activeWorkspaceId, group.branch, group.directory, group.isArchivedBucket, group.isMain, hideGroupLabel]);
   const groupPrSummary = usePrVisualSummary(groupPrKey);
   const groupPrColor = groupPrSummary ? `var(--pr-${groupPrSummary.visualState})` : undefined;
   const childStores = useChildStoreManager();

@@ -348,7 +348,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const contextHydrated = useContextStore((state) => state.hasHydrated);
 
     const sessionSavedAgentName = useSelectionStore((state) =>
-        currentSessionId ? state.sessionAgentSelections.get(currentSessionId) ?? null : null
+        currentSessionId ? state.getSessionAgentSelection(currentSessionId) : null
     );
 
     const stickySessionAgentRef = React.useRef<string | null>(null);

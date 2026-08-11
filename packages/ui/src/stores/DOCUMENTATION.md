@@ -85,6 +85,35 @@ Project and UI settings use successful settings synchronization as authority. Om
 
 Project ordering defaults to manual. Session display persistence v3 migrates the previously shipped `recent` project order to `manual` while preserving every other explicit sort mode.
 
+## Store key migration status (workspace scope)
+
+Session-scoped UI stores have migrated from ambient runtime keys / path-only
+keys to explicit workspace scope keys. The scope key is
+`workspaceScopeKey(workspaceId)` (from `packages/ui/src/workspaces/identity.ts`)
+when the session index maps the `(sessionId, directory)` tuple to a workspace,
+and the ambient `getRuntimeKey()` otherwise — byte-identical keys and behavior
+in non-workspace mode. Legacy persisted data (runtime-keyed buckets, bare
+session IDs) remains readable through dual-read fallbacks; new writes only
+ever write the scoped structure. Legacy read paths stay for at least one
+release cycle before removal.
+
+| Store | New key shape | Legacy read fallback |
+|---|---|---|
+| `messageQueueStore.ts` | `MessageQueueTarget.scopeKey`; queue key `` `${scopeKey}\n${directory}\n${sessionId}` `` | Old runtime-keyed queue entries parse and auto-send under the legacy guard; `clearQueue` dual-cleans the current-runtime twin |
+| `useSessionPinnedStore.ts` | `JSON.stringify([scopeKey, directory, sessionId])` | `isSessionPinned` also checks the `[getRuntimeKey(), directory, sessionId]` tuple; `toggle`/`clearPinnedSession` clean both |
+| `useTodosPersistStore.ts` | `JSON.stringify([scopeKey, directory, sessionId])` | `getSessionTodos` falls back to the runtime-keyed key; writes delete the legacy twin |
+| `useInlineCommentDraftStore.ts` | `JSON.stringify([scopeKey, directory, sessionKey])` | `getDrafts`/`consumeDrafts` fall back to the runtime-keyed bucket; `clearDrafts`/`clearSessionDrafts` clean both |
+| `useSessionFoldersStore.ts` | Outer browser bucket `oc.sessions.folders.v2:<scopeKey>`; inner `foldersMap` keys stay directory strings (passed by `SessionSidebar`) | `readPersistedFolders`/`readPersistedCollapsed` fall back to the runtime bucket; `activateScope` switches the active bucket (called from `setCurrentSession`), `resetForRuntimeSwitch` remains the legacy switch path |
+
+Scope resolution is centralized in `resolveSessionScopeKey(sessionId, directory?)`
+(`packages/ui/src/sync/selection-store.ts`), which reads the workspace session
+index and falls back to the ambient runtime key. Twin-cleanup on deletion
+identities is gated on the explicit key being the current runtime key, so a
+stale or foreign scope never clears another owner's data. The session folders
+store's inner scope key remains the caller-provided directory string
+(`SessionSidebar` groups by project/worktree directory); the outer bucket is
+the only scope dimension changed there.
+
 Session folders persist in runtime-specific v2 browser keys without silently evicting older runtime namespaces. Runtime switch, page hide, app freeze, and unload synchronously flush the pending browser snapshot before lifecycle suspension or namespace replacement. A runtime switch then cancels stale old-runtime disk work and starts generation-owned disk hydration. Missing or malformed server files are not authoritative empty snapshots; disk data may replace browser state only when it carries a real revision and no newer local folder mutation occurred. Server writes are serialized and reject non-newer revisions so delayed or duplicate requests cannot overwrite the current state. File-search cache and in-flight keys include runtime plus directory and are cleared on endpoint reset.
 
 Persisted session todos use a bounded composite key of runtime, normalized directory, and session ID. Ambiguous legacy todo entries are discarded rather than claimed by whichever runtime starts first. Authoritative deletion uses an explicit runtime identity, and session-folder deletion scans every scope in the active runtime so archived assignments cannot survive after their session is gone.

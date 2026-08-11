@@ -26,6 +26,7 @@ mock.module('@/sync/session-ui-store', () => ({
       },
       sessionAbortFlags: new Map(),
     }),
+    subscribe: () => () => undefined,
   },
 }));
 
@@ -273,7 +274,7 @@ describe('buildQueuedAutoSendPayload', () => {
 
     expect(payload).not.toBeNull();
     await sendQueuedAutoSendPayload({
-      runtimeKey: 'runtime-original',
+      scopeKey: 'runtime-original',
       sessionId: 'session-original',
       directory: '/repo',
     }, payload!, {
@@ -296,7 +297,7 @@ describe('buildQueuedAutoSendPayload', () => {
       'normal',
       {
         target: {
-          runtimeKey: 'runtime-original',
+          scopeKey: 'runtime-original',
           sessionId: 'session-original',
           directory: '/repo',
         },

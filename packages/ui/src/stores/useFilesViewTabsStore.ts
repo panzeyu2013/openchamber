@@ -3,6 +3,16 @@ import { devtools, persist } from 'zustand/middleware';
 
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
+
+const resolveActiveWorkspaceScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+};
 
 type RootTabsState = {
   openPaths: string[];
@@ -508,7 +518,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
         storage: createDeferredSafeJSONStorage(),
         migrate: (persistedState, version) => {
           if (version < 3 || !persistedState || typeof persistedState !== 'object') {
-            return { byRoot: {}, activeRuntimeKey: getRuntimeKey(), runtimeSnapshots: {} };
+            return { byRoot: {}, activeRuntimeKey: resolveActiveWorkspaceScopeKey(), runtimeSnapshots: {} };
           }
           return persistedState;
         },
@@ -533,7 +543,7 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
           const runtimeSnapshots = persisted.runtimeSnapshots && typeof persisted.runtimeSnapshots === 'object'
             ? persisted.runtimeSnapshots
             : {};
-          const activeRuntimeKey = getRuntimeKey();
+          const activeRuntimeKey = resolveActiveWorkspaceScopeKey();
           return {
             ...currentState,
             activeRuntimeKey,
@@ -546,3 +556,38 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
     { name: 'files-view-tabs-store' }
   )
 );
+
+const swapTabsScope = (scopeKey: string): void => {
+  const state = useFilesViewTabsStore.getState();
+  if (state.activeRuntimeKey === scopeKey) {
+    return;
+  }
+  const runtimeSnapshots = {
+    ...state.runtimeSnapshots,
+    [state.activeRuntimeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
+  };
+  useFilesViewTabsStore.setState({
+    activeRuntimeKey: scopeKey,
+    runtimeSnapshots,
+    byRoot: sanitizeByRoot(runtimeSnapshots[scopeKey]?.byRoot),
+  });
+};
+
+let scopeSubscriptionInstalled = false;
+const installScopeSubscription = (): void => {
+  if (scopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
+  scopeSubscriptionInstalled = true;
+  queueMicrotask(() => {
+    let lastScope = resolveActiveWorkspaceScopeKey();
+    const check = () => {
+      const nextScope = resolveActiveWorkspaceScopeKey();
+      if (nextScope !== lastScope) {
+        lastScope = nextScope;
+        swapTabsScope(nextScope);
+      }
+    };
+    useSessionUIStore?.subscribe?.(check);
+    useWorkspaceSessionIndexStore?.subscribe?.(check);
+  });
+};
+installScopeSubscription();

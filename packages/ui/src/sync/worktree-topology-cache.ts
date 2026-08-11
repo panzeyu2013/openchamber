@@ -1,5 +1,6 @@
 import type { WorktreeMetadata } from "@/types/worktree"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
+import { getRuntimeKey } from "@/lib/runtime-switch"
 
 const STORAGE_KEY = "oc.worktreeMap.v2"
 const LEGACY_STORAGE_KEY = "oc.worktreeMap"
@@ -56,11 +57,13 @@ const writeEnvelope = (storage: Storage, envelope: PersistedTopologyEnvelope): v
 }
 
 export function readPersistedWorktreeTopology(
-  runtimeKey: string,
+  scopeKey: string,
   storage: Storage = getDeferredSafeStorage(),
 ): Map<string, WorktreeMetadata[]> {
   const envelope = readEnvelope(storage)
-  const topology = envelope.runtimes[runtimeKey]
+  // Dual read: the scope key (workspace scope for workspace sessions) wins,
+  // the ambient runtime key remains readable as the legacy pre-scope bucket.
+  const topology = envelope.runtimes[scopeKey] ?? envelope.runtimes[getRuntimeKey()]
   if (topology) return new Map(topology.entries)
   if (envelope.legacyClaimed) return new Map()
 
@@ -68,7 +71,7 @@ export function readPersistedWorktreeTopology(
     const legacyEntries = parseEntries(JSON.parse(storage.getItem(LEGACY_STORAGE_KEY) ?? "[]"))
     envelope.legacyClaimed = true
     if (legacyEntries.length > 0) {
-      envelope.runtimes[runtimeKey] = { updatedAt: Date.now(), entries: legacyEntries }
+      envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: legacyEntries }
     }
     writeEnvelope(storage, envelope)
     storage.removeItem(LEGACY_STORAGE_KEY)
@@ -79,15 +82,15 @@ export function readPersistedWorktreeTopology(
 }
 
 export function persistWorktreeTopology(
-  runtimeKey: string,
+  scopeKey: string,
   topology: Map<string, WorktreeMetadata[]>,
   storage: Storage = getDeferredSafeStorage(),
 ): void {
-  if (!runtimeKey) return
+  if (!scopeKey) return
   try {
     const envelope = readEnvelope(storage)
     envelope.legacyClaimed = true
-    envelope.runtimes[runtimeKey] = {
+    envelope.runtimes[scopeKey] = {
       updatedAt: Date.now(),
       entries: [...topology.entries()],
     }

@@ -9,6 +9,16 @@ import type {
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
+
+export const resolveActiveWorkspaceScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+};
 
 const LOG_STALE_THRESHOLD = 10000;
 const REPO_CHECK_STALE_THRESHOLD = 60_000;
@@ -49,8 +59,9 @@ interface DirectoryGitState {
 }
 
 interface GitStore {
-  runtimeKey: string;
+  scopeKey: string;
   directories: Map<string, DirectoryGitState>;
+  directoriesByScope: Record<string, Map<string, DirectoryGitState>>;
 
   activeDirectory: string | null;
 
@@ -70,7 +81,7 @@ interface GitStore {
   bumpIndexRevision: (directory: string) => void;
 
   getDiff: (directory: string, filePath: string) => { original: string; modified: string; fetchedAt: number; isBinary?: boolean } | null;
-  setDiff: (directory: string, filePath: string, diff: { original: string; modified: string; isBinary?: boolean }, expectedRuntimeKey?: string) => void;
+  setDiff: (directory: string, filePath: string, diff: { original: string; modified: string; isBinary?: boolean }, expectedScopeKey?: string) => void;
   clearDiffCache: (directory: string, filePaths?: string[]) => void;
   fetchAllDiffs: (directory: string, git: GitAPI) => Promise<void>;
   prefetchDiffs: (directory: string, git: GitAPI, filePaths: string[], options?: { maxFiles?: number }) => Promise<void>;
@@ -104,16 +115,15 @@ const inFlightEnsureAllByDirectory = new Map<string, Promise<void>>();
 const requestGenerationByChannel = new Map<string, number>();
 const statusMutationRevisionByDirectory = new Map<string, number>();
 let gitRuntimeGeneration = 0;
-let activeGitRuntimeKey = getRuntimeKey();
 
-const runtimeDirectoryKey = (runtimeKey: string, directory: string) => JSON.stringify([runtimeKey, directory]);
-const getStatusFetchKey = (runtimeKey: string, directory: string, mode: GitStatusFetchMode): string =>
-  JSON.stringify([runtimeKey, directory, mode]);
-const channelKey = (runtimeKey: string, directory: string, channel: string) =>
-  JSON.stringify([runtimeKey, directory, channel]);
+const scopeDirectoryKey = (scopeKey: string, directory: string) => JSON.stringify([scopeKey, directory]);
+const getStatusFetchKey = (scopeKey: string, directory: string, mode: GitStatusFetchMode): string =>
+  JSON.stringify([scopeKey, directory, mode]);
+const channelKey = (scopeKey: string, directory: string, channel: string) =>
+  JSON.stringify([scopeKey, directory, channel]);
 
 type GitRequestToken = {
-  runtimeKey: string;
+  scopeKey: string;
   runtimeGeneration: number;
   channelKey: string;
   requestGeneration: number;
@@ -121,46 +131,45 @@ type GitRequestToken = {
 };
 
 const startRequest = (directory: string, channel: string, includeStatusMutation = false): GitRequestToken => {
-  const runtimeKey = getRuntimeKey();
-  const key = channelKey(runtimeKey, directory, channel);
+  const scopeKey = resolveActiveWorkspaceScopeKey();
+  const key = channelKey(scopeKey, directory, channel);
   const requestGeneration = (requestGenerationByChannel.get(key) ?? 0) + 1;
   requestGenerationByChannel.set(key, requestGeneration);
   return {
-    runtimeKey,
+    scopeKey,
     runtimeGeneration: gitRuntimeGeneration,
     channelKey: key,
     requestGeneration,
     ...(includeStatusMutation
-      ? { statusMutationRevision: statusMutationRevisionByDirectory.get(runtimeDirectoryKey(runtimeKey, directory)) ?? 0 }
+      ? { statusMutationRevision: statusMutationRevisionByDirectory.get(scopeDirectoryKey(scopeKey, directory)) ?? 0 }
       : {}),
   };
 };
 
 const isRequestCurrent = (token: GitRequestToken, directory: string): boolean => (
-  token.runtimeKey === getRuntimeKey()
-  && token.runtimeKey === activeGitRuntimeKey
+  token.scopeKey === resolveActiveWorkspaceScopeKey()
   && token.runtimeGeneration === gitRuntimeGeneration
   && requestGenerationByChannel.get(token.channelKey) === token.requestGeneration
   && (token.statusMutationRevision === undefined
-    || token.statusMutationRevision === (statusMutationRevisionByDirectory.get(runtimeDirectoryKey(token.runtimeKey, directory)) ?? 0))
+    || token.statusMutationRevision === (statusMutationRevisionByDirectory.get(scopeDirectoryKey(token.scopeKey, directory)) ?? 0))
 );
 
-const bumpStatusMutationRevision = (runtimeKey: string, directory: string): void => {
-  const key = runtimeDirectoryKey(runtimeKey, directory);
+const bumpStatusMutationRevision = (scopeKey: string, directory: string): void => {
+  const key = scopeDirectoryKey(scopeKey, directory);
   statusMutationRevisionByDirectory.set(key, (statusMutationRevisionByDirectory.get(key) ?? 0) + 1);
 };
 
 const getDiffFetchGeneration = (directory: string): number =>
-  diffFetchGenerationByDirectory.get(runtimeDirectoryKey(getRuntimeKey(), directory)) ?? 0;
+  diffFetchGenerationByDirectory.get(scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory)) ?? 0;
 
 const bumpDiffFetchGeneration = (directory: string): number => {
   const next = getDiffFetchGeneration(directory) + 1;
-  diffFetchGenerationByDirectory.set(runtimeDirectoryKey(getRuntimeKey(), directory), next);
+  diffFetchGenerationByDirectory.set(scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory), next);
   return next;
 };
 
 const getInFlightDiffs = (directory: string): Set<string> => {
-  const key = runtimeDirectoryKey(getRuntimeKey(), directory);
+  const key = scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory);
   const existing = inFlightDiffFetchesByDirectory.get(key);
   if (existing) {
     return existing;
@@ -213,7 +222,7 @@ type BranchCacheEnvelope = {
 
 const emptyBranchCache = (): BranchCacheEnvelope => ({ version: 2, legacyClaimed: false, runtimes: {} });
 
-const readBranchCacheEnvelope = (runtimeKey: string): BranchCacheEnvelope => {
+const readBranchCacheEnvelope = (scopeKey: string): BranchCacheEnvelope => {
   try {
     const storage = getDeferredSafeStorage();
     const raw = storage.getItem(GIT_BRANCH_CACHE_V2_KEY);
@@ -229,7 +238,7 @@ const readBranchCacheEnvelope = (runtimeKey: string): BranchCacheEnvelope => {
         for (const [directory, branches] of Object.entries(legacy ?? {})) {
           if (directory && branches && Array.isArray(branches.all)) directories[directory] = { branches, updatedAt: 0 };
         }
-        if (Object.keys(directories).length > 0) envelope.runtimes[runtimeKey] = { updatedAt: 0, directories };
+        if (Object.keys(directories).length > 0) envelope.runtimes[scopeKey] = { updatedAt: 0, directories };
       }
       envelope.legacyClaimed = true;
       const serialized = JSON.stringify(envelope);
@@ -242,17 +251,17 @@ const readBranchCacheEnvelope = (runtimeKey: string): BranchCacheEnvelope => {
   }
 };
 
-const writeCachedBranches = (runtimeKey: string, directory: string, branches: GitBranch): void => {
+const writeCachedBranches = (scopeKey: string, directory: string, branches: GitBranch): void => {
   if (!directory || !branches) return;
   try {
-    const envelope = readBranchCacheEnvelope(runtimeKey);
+    const envelope = readBranchCacheEnvelope(scopeKey);
     const now = Date.now();
-    const current = envelope.runtimes[runtimeKey]?.directories ?? {};
+    const current = envelope.runtimes[scopeKey]?.directories ?? {};
     const directories = { ...current, [directory]: { branches, updatedAt: now } };
     const boundedDirectories = Object.fromEntries(
       Object.entries(directories).sort(([, left], [, right]) => right.updatedAt - left.updatedAt).slice(0, MAX_BRANCH_CACHE_DIRECTORIES),
     );
-    envelope.runtimes[runtimeKey] = { updatedAt: now, directories: boundedDirectories };
+    envelope.runtimes[scopeKey] = { updatedAt: now, directories: boundedDirectories };
     envelope.runtimes = Object.fromEntries(
       Object.entries(envelope.runtimes).sort(([, left], [, right]) => right.updatedAt - left.updatedAt).slice(0, MAX_BRANCH_CACHE_RUNTIMES),
     );
@@ -262,9 +271,9 @@ const writeCachedBranches = (runtimeKey: string, directory: string, branches: Gi
   }
 };
 
-const seedDirectoriesFromBranchCache = (runtimeKey: string): Map<string, DirectoryGitState> => {
+const seedDirectoriesFromBranchCache = (scopeKey: string): Map<string, DirectoryGitState> => {
   const directories = new Map<string, DirectoryGitState>();
-  const cache = readBranchCacheEnvelope(runtimeKey).runtimes[runtimeKey]?.directories ?? {};
+  const cache = readBranchCacheEnvelope(scopeKey).runtimes[scopeKey]?.directories ?? {};
   for (const [directory, entry] of Object.entries(cache)) {
     const branches = entry.branches;
     if (!directory || !branches || !Array.isArray(branches.all)) continue;
@@ -541,25 +550,26 @@ const toUnstagedStatusFile = (file: GitStatus['files'][number]): GitStatus['file
 const isCleanStatusFile = (file: GitStatus['files'][number]): boolean =>
   isBlankStatusCode(file.index) && isBlankStatusCode(file.working_dir);
 
-const initialGitRuntimeKey = activeGitRuntimeKey;
+const initialGitScopeKey = resolveActiveWorkspaceScopeKey();
 
 export const useGitStore = create<GitStore>()(
   devtools(
     (set, get) => ({
-      runtimeKey: initialGitRuntimeKey,
-      directories: seedDirectoriesFromBranchCache(initialGitRuntimeKey),
+      scopeKey: initialGitScopeKey,
+      directories: seedDirectoriesFromBranchCache(initialGitScopeKey),
+      directoriesByScope: {},
       activeDirectory: null,
 
-      resetForRuntimeSwitch: (runtimeKey) => {
+      resetForRuntimeSwitch: () => {
         gitRuntimeGeneration += 1;
-        activeGitRuntimeKey = runtimeKey;
+        const nextScopeKey = resolveActiveWorkspaceScopeKey();
         requestGenerationByChannel.clear();
         statusMutationRevisionByDirectory.clear();
         inFlightStatusFetches.clear();
         inFlightEnsureAllByDirectory.clear();
         inFlightDiffFetchesByDirectory.clear();
         diffFetchGenerationByDirectory.clear();
-        set({ runtimeKey, directories: seedDirectoriesFromBranchCache(runtimeKey), activeDirectory: null });
+        set({ scopeKey: nextScopeKey, directories: seedDirectoriesFromBranchCache(nextScopeKey), directoriesByScope: {}, activeDirectory: null });
       },
 
       setActiveDirectory: (directory) => {
@@ -588,10 +598,10 @@ export const useGitStore = create<GitStore>()(
 
       fetchStatus: async (directory, git, options = {}) => {
         const statusFetchMode: GitStatusFetchMode = options.mode ?? 'full';
-        const runtimeKey = getRuntimeKey();
-        const statusFetchKey = getStatusFetchKey(runtimeKey, directory, statusFetchMode);
+        const scopeKey = resolveActiveWorkspaceScopeKey();
+        const statusFetchKey = getStatusFetchKey(scopeKey, directory, statusFetchMode);
         const existing = inFlightStatusFetches.get(statusFetchKey)
-          ?? (statusFetchMode === 'light' ? inFlightStatusFetches.get(getStatusFetchKey(runtimeKey, directory, 'full')) : undefined);
+          ?? (statusFetchMode === 'light' ? inFlightStatusFetches.get(getStatusFetchKey(scopeKey, directory, 'full')) : undefined);
         if (existing) {
           return existing;
         }
@@ -779,7 +789,7 @@ export const useGitStore = create<GitStore>()(
           return previousStatus;
         }
 
-        bumpStatusMutationRevision(get().runtimeKey, directory);
+        bumpStatusMutationRevision(get().scopeKey, directory);
 
         const nextDirectories = new Map(directories);
         nextDirectories.set(directory, {
@@ -804,7 +814,7 @@ export const useGitStore = create<GitStore>()(
           return;
         }
 
-        bumpStatusMutationRevision(get().runtimeKey, directory);
+        bumpStatusMutationRevision(get().scopeKey, directory);
 
         const nextDirectories = new Map(directories);
         nextDirectories.set(directory, {
@@ -823,7 +833,7 @@ export const useGitStore = create<GitStore>()(
           return;
         }
 
-        bumpStatusMutationRevision(get().runtimeKey, directory);
+        bumpStatusMutationRevision(get().scopeKey, directory);
 
         const nextDirectories = new Map(directories);
         nextDirectories.set(directory, {
@@ -849,7 +859,7 @@ export const useGitStore = create<GitStore>()(
           const dirState = newDirectories.get(directory) ?? createEmptyDirectoryState();
           newDirectories.set(directory, { ...dirState, branches, isLoadingBranches: false, lastBranchesFetch: Date.now() });
           set({ directories: newDirectories });
-          writeCachedBranches(token.runtimeKey, directory, branches);
+          writeCachedBranches(token.scopeKey, directory, branches);
         } catch (error) {
           console.error('Failed to fetch git branches:', error);
           if (!isRequestCurrent(token, directory)) return;
@@ -961,8 +971,8 @@ export const useGitStore = create<GitStore>()(
         return dirState?.diffCache.get(filePath) ?? null;
       },
 
-      setDiff: (directory, filePath, diff, expectedRuntimeKey) => {
-        if (expectedRuntimeKey && expectedRuntimeKey !== get().runtimeKey) return;
+      setDiff: (directory, filePath, diff, expectedScopeKey) => {
+        if (expectedScopeKey && expectedScopeKey !== get().scopeKey) return;
         if (diffEntrySize(diff) > DIFF_CACHE_MAX_TOTAL_SIZE_BYTES) return;
         const newDirectories = new Map(get().directories);
         const dirState = newDirectories.get(directory) ?? createEmptyDirectoryState();
@@ -1135,7 +1145,7 @@ export const useGitStore = create<GitStore>()(
       },
 
       ensureAll: (directory, git) => {
-        const ensureKey = runtimeDirectoryKey(getRuntimeKey(), directory);
+        const ensureKey = scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory);
         const existing = inFlightEnsureAllByDirectory.get(ensureKey);
         if (existing) return existing;
 
@@ -1185,6 +1195,38 @@ export const useGitStore = create<GitStore>()(
     { name: 'git-store' }
   )
 );
+
+const swapGitScope = (scopeKey: string): void => {
+  const state = useGitStore.getState();
+  if (state.scopeKey === scopeKey) {
+    return;
+  }
+  gitRuntimeGeneration += 1;
+  useGitStore.setState({
+    scopeKey,
+    directories: state.directoriesByScope[scopeKey] ?? new Map(),
+    directoriesByScope: { ...state.directoriesByScope, [state.scopeKey]: state.directories },
+  });
+};
+
+let gitScopeSubscriptionInstalled = false;
+const installGitScopeSubscription = (): void => {
+  if (gitScopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
+  gitScopeSubscriptionInstalled = true;
+  queueMicrotask(() => {
+    let lastScope = resolveActiveWorkspaceScopeKey();
+    const check = () => {
+      const nextScope = resolveActiveWorkspaceScopeKey();
+      if (nextScope !== lastScope) {
+        lastScope = nextScope;
+        swapGitScope(nextScope);
+      }
+    };
+    useSessionUIStore?.subscribe?.(check);
+    useWorkspaceSessionIndexStore?.subscribe?.(check);
+  });
+};
+installGitScopeSubscription();
 
 export const useGitStatus = (directory: string | null) => {
   return useGitStore((state) => {

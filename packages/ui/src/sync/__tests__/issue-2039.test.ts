@@ -131,8 +131,10 @@ mock.module("@/stores/useSessionFoldersStore", () => ({
   useSessionFoldersStore: {
     getState: () => ({
       addSessionToFolder: mock(() => undefined),
+      activateScope: mock(() => undefined),
     }),
   },
+  getActiveFolderScopeKey: () => "test-runtime",
 }))
 
 mock.module("@/stores/useCommandsStore", () => ({
@@ -172,6 +174,7 @@ mock.module("../selection-store", () => ({
       getAgentModelVariantForSession: () => undefined,
     }),
   },
+  resolveSessionScopeKey: () => "test-runtime",
 }))
 
 mock.module("@/lib/runtime-switch", () => ({

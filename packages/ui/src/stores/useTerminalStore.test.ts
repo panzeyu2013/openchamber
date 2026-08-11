@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { useTerminalStore } from './useTerminalStore';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+
+const { useTerminalStore } = await import('./useTerminalStore');
 
 const setup = () => {
   useTerminalStore.getState().clearAll();
@@ -156,5 +160,73 @@ describe('default terminal tab labels', () => {
     useTerminalStore.getState().createTab('/repo');
 
     expect(labels()).toEqual(['build', 'Terminal']);
+  });
+});
+
+const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
+  const upstreamSessionId = `ses-${workspaceId}`;
+  return {
+    revision: 1,
+    sessions: [{
+      key: `${workspaceId}\u0000${upstreamSessionId}`,
+      workspaceId,
+      connectionId: 'conn',
+      upstreamSessionId,
+      directory: '/repo',
+      title: 'title',
+      updatedAt: 1,
+      archived: false,
+    }],
+    freshnessByConnection: {},
+  };
+};
+
+const setWorkspaceSession = (workspaceId: string) => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+};
+
+const clearWorkspaceSession = () => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+  useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
+};
+
+describe('terminal store workspace scope', () => {
+  afterEach(() => {
+    clearWorkspaceSession();
+    useTerminalStore.getState().clearAll();
+  });
+
+  test('keeps tabs and scrollback isolated per workspace for the same directory', () => {
+    setWorkspaceSession('ws-a');
+    useTerminalStore.getState().ensureDirectory('/repo');
+    const tabA = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
+    useTerminalStore.getState().appendToBuffer('/repo', tabA, 'from a', 1);
+
+    setWorkspaceSession('ws-b');
+    expect(useTerminalStore.getState().getDirectoryState('/repo')).toBe(undefined);
+
+    useTerminalStore.getState().ensureDirectory('/repo');
+    const tabB = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
+    useTerminalStore.getState().appendToBuffer('/repo', tabB, 'from b', 1);
+    const chunkData = (tabId: string) =>
+      useTerminalStore.getState().getBuffer('/repo', tabId).chunks.map((chunk) => chunk.data).join('');
+    expect(chunkData(tabB)).toBe('from b');
+
+    setWorkspaceSession('ws-a');
+    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(tabA);
+    expect(chunkData(tabA)).toBe('from a');
+  });
+
+  test('falls back to the legacy unscoped bucket outside workspace mode', () => {
+    useTerminalStore.getState().ensureDirectory('/repo');
+    const legacyTab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
+    expect(useTerminalStore.getState().scopeKey).toBe('legacy');
+
+    setWorkspaceSession('ws-a');
+    expect(useTerminalStore.getState().getDirectoryState('/repo')).toBe(undefined);
+
+    clearWorkspaceSession();
+    expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(legacyTab);
   });
 });

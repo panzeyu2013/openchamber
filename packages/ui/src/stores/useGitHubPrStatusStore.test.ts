@@ -1,8 +1,15 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { GitHubPullRequestStatus, RuntimeAPIs } from "@/lib/api/types"
+import { useSessionUIStore } from "@/sync/session-ui-store"
+import { useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
+import type { WorkspaceSessionSnapshot } from "@/workspaces/types"
 
+const realRuntimeSwitch = await import("@/lib/runtime-switch")
 let runtimeKey = "runtime-a"
-mock.module("@/lib/runtime-switch", () => ({ getRuntimeKey: () => runtimeKey }))
+mock.module("@/lib/runtime-switch", () => ({
+  ...realRuntimeSwitch,
+  getRuntimeKey: () => runtimeKey,
+}))
 
 const { getGitHubPrStatusKey, useGitHubPrStatusStore } = await import("./useGitHubPrStatusStore")
 
@@ -164,5 +171,77 @@ describe("GitHub PR status cache ownership", () => {
     expect(held?.fetchedAt).toBe(2_000)
     expect(held?.checks?.pending).toBe(1)
     expect(useGitHubPrStatusStore.getState().entries[key]?.isLoading).toBe(false)
+  })
+})
+
+const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
+  const upstreamSessionId = `ses-${workspaceId}`
+  return {
+    revision: 1,
+    sessions: [{
+      key: `${workspaceId}\u0000${upstreamSessionId}`,
+      workspaceId,
+      connectionId: "conn",
+      upstreamSessionId,
+      directory: "/repo",
+      title: "title",
+      updatedAt: 1,
+      archived: false,
+    }],
+    freshnessByConnection: {},
+  }
+}
+
+const setWorkspaceSession = (workspaceId: string) => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) })
+  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: "/repo" })
+}
+
+const clearWorkspaceSession = () => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: null })
+  useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null })
+}
+
+describe("GitHub PR status workspace scope", () => {
+  beforeEach(() => {
+    runtimeKey = "runtime-a"
+    useGitHubPrStatusStore.setState({ entries: {}, activeRequestCount: 0, totalRequestCount: 0 })
+    useGitHubPrStatusStore.getState().resetForRuntimeSwitch()
+    clearWorkspaceSession()
+  })
+
+  afterEach(clearWorkspaceSession)
+
+  test("builds distinct keys per workspace for the same directory and branch", () => {
+    setWorkspaceSession("ws-a")
+    const keyA = getGitHubPrStatusKey("/repo", "main", "origin")
+    setWorkspaceSession("ws-b")
+    const keyB = getGitHubPrStatusKey("/repo", "main", "origin")
+    expect(keyA).not.toBe(keyB)
+    expect(JSON.parse(keyA)[0]).toBe("workspace:ws-a")
+    expect(JSON.parse(keyB)[0]).toBe("workspace:ws-b")
+  })
+
+  test("keys stay byte-identical to runtime keys outside workspace mode", () => {
+    const key = getGitHubPrStatusKey("/repo", "main", "origin")
+    expect(key).toBe(JSON.stringify(["runtime-a", "/repo", "main", "origin"]))
+  })
+
+  test("does not serve one workspace cache to another", async () => {
+    const request = deferred<GitHubPullRequestStatus>()
+    const github = { prStatus: () => request.promise } as unknown as RuntimeAPIs["github"]
+
+    setWorkspaceSession("ws-a")
+    const keyA = getGitHubPrStatusKey("/repo", "main", "origin")
+    useGitHubPrStatusStore.getState().ensureEntry(keyA)
+    useGitHubPrStatusStore.getState().setParams(keyA, params(github))
+    const loading = useGitHubPrStatusStore.getState().refresh(keyA, { force: true })
+    request.resolve({ connected: true, pr: { number: 7, title: "t", url: "u", state: "open", draft: false, base: "main", head: "f" } })
+    await loading
+
+    setWorkspaceSession("ws-b")
+    const keyB = getGitHubPrStatusKey("/repo", "main", "origin")
+    expect(useGitHubPrStatusStore.getState().entries[keyB] ?? undefined).toBe(undefined)
+    expect(useGitHubPrStatusStore.getState().entries[keyA]?.status?.pr?.number).toBe(7)
   })
 })

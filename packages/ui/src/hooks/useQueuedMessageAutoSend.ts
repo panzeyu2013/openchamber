@@ -1,7 +1,7 @@
 import React from 'react';
 import { getMessageQueueKey, parseMessageQueueKey, useMessageQueueStore, type MessageQueueTarget, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useSelectionStore } from '@/sync/selection-store';
+import { resolveSessionScopeKey, useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useContextStore } from '@/stores/contextStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
@@ -330,7 +330,16 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     const queueEntries = Object.entries(queuedMessages);
     queueEntries.forEach(([key, queue]) => {
       const target = parseMessageQueueKey(key);
-      if (!target || target.runtimeKey !== getRuntimeKey() || target.directory !== currentDirectory) return;
+      // Scope guard: the queued target must belong to the session's current
+      // scope (workspace scope for workspace sessions, ambient runtime key
+      // otherwise — byte-identical legacy behavior). A capture on the current
+      // runtime key stays valid when the session gained a workspace binding
+      // after queueing; any other mismatch means the runtime or workspace
+      // changed.
+      if (!target || (
+        target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory)
+        && target.scopeKey !== getRuntimeKey()
+      ) || target.directory !== currentDirectory) return;
       const { sessionId } = target;
       const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);
       const previousStatusType = previousStatusRef.current.get(sessionId);

@@ -22,7 +22,7 @@ import { useConfigStore } from "@/stores/useConfigStore"
 import { useProjectsStore } from "@/stores/useProjectsStore"
 import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from "@/stores/useGlobalSessionsStore"
 import { useDirectoryStore } from "@/stores/useDirectoryStore"
-import { useSessionFoldersStore } from "@/stores/useSessionFoldersStore"
+import { useSessionFoldersStore, getActiveFolderScopeKey } from "@/stores/useSessionFoldersStore"
 import { useCommandsStore } from "@/stores/useCommandsStore"
 import { useSkillsStore } from "@/stores/useSkillsStore"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
@@ -77,7 +77,7 @@ import { useSessionGoalArmStore } from "@/stores/useSessionGoalArmStore"
 import { setSessionGoal } from "@/lib/sessionGoalActions"
 import { wrapSystemReminder } from "@/lib/systemReminder"
 import { useUIStore } from "@/stores/useUIStore"
-import { useSelectionStore } from "./selection-store"
+import { useSelectionStore, resolveSessionScopeKey } from "./selection-store"
 import { getViewportSessionMemory, useViewportStore, viewportSessionKey } from "./viewport-store"
 import { useSessionWorktreeStore } from "./session-worktree-store"
 import { getAttachedSessionDirectory } from "./session-worktree-contract"
@@ -222,7 +222,8 @@ export function routeMessage(params: {
 }
 
 type CapturedSendTarget = {
-  runtimeKey: string
+  /** Workspace scope key for workspace sessions, ambient runtime key otherwise. */
+  scopeKey: string
   sessionId: string
   directory: string
 }
@@ -398,9 +399,14 @@ const DRAFT_TARGET_STORAGE_KEY = "oc.chatInput.lastDraftTarget"
 
 type PersistedDraftTarget = { projectId: string | null; directory: string | null }
 
-const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
+/** Scope-suffixed draft-target key; the scope is the workspace scope of the
+ * session current when the draft is opened, else the ambient runtime key. */
+const draftTargetStorageKey = (scopeKey: string): string => `${DRAFT_TARGET_STORAGE_KEY}.${scopeKey}`
+
+const readPersistedDraftTarget = (scopeKey: string): PersistedDraftTarget | null => {
   try {
-    const raw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
+    // Dual read: the scope-suffixed key first, then the legacy unscoped key.
+    const raw = safeStorage.getItem(draftTargetStorageKey(scopeKey)) ?? safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown }
     return {
@@ -412,9 +418,9 @@ const readPersistedDraftTarget = (): PersistedDraftTarget | null => {
   }
 }
 
-const persistDraftTarget = (target: PersistedDraftTarget): void => {
+const persistDraftTarget = (target: PersistedDraftTarget, scopeKey: string): void => {
   try {
-    safeStorage.setItem(DRAFT_TARGET_STORAGE_KEY, JSON.stringify(target))
+    safeStorage.setItem(draftTargetStorageKey(scopeKey), JSON.stringify(target))
   } catch { /* ignored */ }
 }
 
@@ -458,7 +464,7 @@ export const getRememberedSessionDirectory = (sessionId: string): {
   runtime: string | null
   persisted: string | null
 } => {
-  const key = runtimeMemoryKey()
+  const key = scopeMemoryKey(sessionId)
   const runtimeMemory = runtimeSessionMemory.get(key)
   const persisted = readLastActiveSession(key)
   return {
@@ -565,6 +571,17 @@ const runtimeMemoryKey = (value?: string | null): string => {
   return key || "default"
 }
 
+/**
+ * Scope key for session-scoped UI memory: the workspace scope when the
+ * session index maps (sessionId, directory) to a workspace, otherwise the
+ * ambient runtime key — byte-identical to `runtimeMemoryKey()` in
+ * non-workspace mode.
+ */
+const scopeMemoryKey = (sessionId: string | null | undefined, directory?: string | null): string => {
+  const key = resolveSessionScopeKey(sessionId, directory)
+  return key.trim() || "default"
+}
+
 const cloneDraft = (draft: NewSessionDraftState): NewSessionDraftState => ({ ...draft })
 
 const writeRuntimeSessionMemory = (key: string, patch: Partial<RuntimeSessionMemory>): void => {
@@ -640,7 +657,7 @@ export async function materializeOpenDraftSession(selection: {
   persistDraftTarget({
     projectId: draftProjectId,
     directory: createdDirectory,
-  })
+  }, scopeMemoryKey(created.id, createdDirectory))
 
   const draftSyntheticParts = draft.syntheticParts
   const configState = useConfigStore.getState()
@@ -725,8 +742,18 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       get().closeNewSessionDraft()
     }
 
-    const key = runtimeMemoryKey()
+    // Scope bucket for the current session: the workspace scope when the
+    // session index maps (id, directoryHint) to a workspace, otherwise the
+    // ambient runtime key (legacy behavior, byte-identical keys).
+    const key = scopeMemoryKey(id, directoryHint)
     activeSessionByRuntime.set(key, id)
+    // The session folders store keys its persisted buckets by the same
+    // scope; switch its active bucket when the scope changes (once per
+    // workspace switch — a no-op in legacy mode).
+    const foldersStore = useSessionFoldersStore.getState()
+    if (key !== getActiveFolderScopeKey()) {
+      foldersStore.activateScope(key)
+    }
 
     const previousSessionId = get().currentSessionId
     const directoryState = useDirectoryStore.getState()
@@ -812,7 +839,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const currentSessionId = get().currentSessionId
     const directorySnapshot = directory ? getDirectoryState(directory) : null
     rememberRuntimeLiveStatus({
-      runtimeKey: key,
+      scopeKey: key,
       directory,
       sessionId: currentSessionId,
       status: currentSessionId ? directorySnapshot?.session_status?.[currentSessionId] : null,
@@ -869,14 +896,18 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // auto-draft at boot), which must NOT consume the pointer — the cold-launch
     // restore races exactly that auto-open.
     if (!options?.automatic) {
-      clearLastActiveSession(runtimeMemoryKey())
+      clearLastActiveSession(scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory))
     }
     const projectsState = useProjectsStore.getState()
     const projects = projectsState.projects
     const availableWorktreesByProject = get().availableWorktreesByProject
     const activeProject = projectsState.getActiveProject()
     const currentDirectory = normalizePath(useDirectoryStore.getState().currentDirectory ?? null)
-    const persistedTarget = readPersistedDraftTarget()
+    // The draft target is persisted under the scope of the session that was
+    // current when the draft opened (workspace scope or runtime key); the
+    // unscoped legacy key stays readable as a fallback.
+    const draftScopeKey = scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory)
+    const persistedTarget = readPersistedDraftTarget(draftScopeKey)
 
     const explicitDirectory = options?.directoryOverride !== undefined
       ? normalizePath(options.directoryOverride)
@@ -913,7 +944,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       return normalizePath(selectedProject?.path ?? null)
     })()
 
-    persistDraftTarget({ projectId: selectedProject?.id ?? null, directory })
+    persistDraftTarget({ projectId: selectedProject?.id ?? null, directory }, draftScopeKey)
 
     const nextDraft: NewSessionDraftState = {
       open: true,
@@ -1212,7 +1243,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     options?: SendMessageOptions,
   ) => {
     const capturedTarget = options?.target
-    if (capturedTarget && capturedTarget.runtimeKey !== getRuntimeKey()) {
+    if (capturedTarget && capturedTarget.scopeKey !== resolveSessionScopeKey(capturedTarget.sessionId, capturedTarget.directory)
+      && capturedTarget.scopeKey !== getRuntimeKey()) {
+      // A capture on the CURRENT runtime key stays valid even when the
+      // session has since gained a workspace binding (index-load race);
+      // any other mismatch means the runtime or the workspace changed.
       throw new Error("Message was not sent because the runtime changed.")
     }
 
@@ -1384,7 +1419,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       await applyArmedGoal(targetSessionId, currentSessionDirectory)
     }
     await routeMessage({
-      runtimeKey: capturedTarget?.runtimeKey,
+      // The SDK guard compares against the live runtime key; the scope guard
+      // above already rejected stale captures, so the current runtime key is
+      // authoritative here (in legacy mode it equals the captured scope key).
+      runtimeKey: capturedTarget ? getRuntimeKey() : undefined,
       sessionId: targetSessionId || "",
       directory: currentSessionDirectory,
       content,
@@ -1749,7 +1787,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 
   getCurrentAgent: (sessionId) => {
-    return useSelectionStore.getState().sessionAgentSelections.get(sessionId) ?? undefined
+    return useSelectionStore.getState().getSessionAgentSelection(sessionId) ?? undefined
   },
 
   debugSessionMessages: async (sessionId) => {
@@ -1788,7 +1826,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (authoritative !== get().currentSessionDirectory) {
       set({ currentSessionDirectory: authoritative })
     }
-    writeRuntimeSessionMemory(runtimeMemoryKey(), { sessionId: target, directory: authoritative })
+    writeRuntimeSessionMemory(scopeMemoryKey(target, authoritative), { sessionId: target, directory: authoritative })
   },
 
   setSessionDirectory: (sessionId, directory) => {
@@ -1800,7 +1838,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
     if (sessionId === get().currentSessionId) {
       set({ currentSessionDirectory: normalized })
-      writeRuntimeSessionMemory(runtimeMemoryKey(), { sessionId, directory: normalized })
+      writeRuntimeSessionMemory(scopeMemoryKey(sessionId, normalized), { sessionId, directory: normalized })
     }
   },
 
@@ -1831,15 +1869,17 @@ setSessionOpener((sessionID, directory) => {
 // Reference-equality guard filters hot session updates; the serialized
 // comparison avoids redundant localStorage writes when the Map reference
 // changed but the content is identical (e.g., re-discovery that found the
-// same worktrees).
+// same worktrees). Persisted per session scope (workspace scope when a
+// workspace session is current, ambient runtime key otherwise); the runtime
+// bucket remains the legacy read fallback at cold start.
 const lastPersistedWorktreeSerializedByRuntime = new Map<string, string>()
 useSessionUIStore.subscribe((state, prev) => {
   if (state.availableWorktreesByProject !== prev.availableWorktreesByProject) {
-    const runtimeKey = runtimeMemoryKey()
+    const scopeKey = scopeMemoryKey(state.currentSessionId, state.currentSessionDirectory)
     const serialized = JSON.stringify([...state.availableWorktreesByProject.entries()])
-    if (serialized !== lastPersistedWorktreeSerializedByRuntime.get(runtimeKey)) {
-      lastPersistedWorktreeSerializedByRuntime.set(runtimeKey, serialized)
-      persistWorktreeTopology(runtimeKey, state.availableWorktreesByProject)
+    if (serialized !== lastPersistedWorktreeSerializedByRuntime.get(scopeKey)) {
+      lastPersistedWorktreeSerializedByRuntime.set(scopeKey, serialized)
+      persistWorktreeTopology(scopeKey, state.availableWorktreesByProject)
     }
   }
 })

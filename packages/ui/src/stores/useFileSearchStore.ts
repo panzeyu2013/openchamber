@@ -2,6 +2,16 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient, type ProjectFileSearchHit } from '@/lib/opencode/client';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
+
+const resolveActiveWorkspaceScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+};
 
 const CACHE_TTL_MS = 30_000;
 const MAX_CACHE_ENTRIES = 40;
@@ -27,7 +37,7 @@ interface FileSearchStoreState {
 }
 
 const buildCacheKey = (
-  runtimeKey: string,
+  scopeKey: string,
   directory: string,
   query: string,
   limit: number,
@@ -37,13 +47,13 @@ const buildCacheKey = (
 ) => {
   const normalizedDirectory = directory.trim();
   const normalizedQuery = query.trim().toLowerCase();
-  return JSON.stringify([runtimeKey, normalizedDirectory, normalizedQuery, limit, includeHidden, respectGitignore, type]);
+  return JSON.stringify([scopeKey, normalizedDirectory, normalizedQuery, limit, includeHidden, respectGitignore, type]);
 };
 
 const cacheKeyMatchesDirectory = (cacheKey: string, directory: string) => {
   try {
     const value: unknown = JSON.parse(cacheKey);
-    return Array.isArray(value) && value[1] === directory;
+    return Array.isArray(value) && value[0] === resolveActiveWorkspaceScopeKey() && value[1] === directory;
   } catch {
     return false;
   }
@@ -61,12 +71,12 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
         }
 
         const normalizedDirectory = directory.trim();
-        const runtimeKey = getRuntimeKey();
+        const scopeKey = resolveActiveWorkspaceScopeKey();
         const normalizedQuery = typeof query === 'string' ? query.trim() : '';
         const includeHidden = Boolean(options?.includeHidden);
         const respectGitignore = options?.respectGitignore ?? true;
         const type = options?.type === 'directory' ? 'directory' : 'file';
-        const key = buildCacheKey(runtimeKey, normalizedDirectory, normalizedQuery, limit, includeHidden, respectGitignore, type);
+        const key = buildCacheKey(scopeKey, normalizedDirectory, normalizedQuery, limit, includeHidden, respectGitignore, type);
         const now = Date.now();
         const cached = get().cache[key];
 

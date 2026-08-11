@@ -6,7 +6,7 @@ import { useUIStore } from '@/stores/useUIStore';
 import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useSelectionStore } from '@/sync/selection-store';
+import { resolveSessionScopeKey, useSelectionStore } from '@/sync/selection-store';
 import { useInputStore } from '@/sync/input-store';
 import {
     ACCEPTED_ATTACHMENT_EXTENSIONS,
@@ -231,7 +231,7 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     const directory = sessionId
         ? sessionState.getDirectoryForSession(sessionId) ?? sessionState.currentSessionDirectory
         : newSessionDirectory ?? useDirectoryStore.getState().currentDirectory;
-    return createChatDraftIdentity(getRuntimeKey(), directory, sessionId);
+    return createChatDraftIdentity(resolveSessionScopeKey(sessionId, directory), directory, sessionId);
 };
 
 const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom }) => {
@@ -305,7 +305,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const currentSessionDirectoryForSync = useSessionUIStore(
         React.useCallback((s) => currentSessionId ? s.getDirectoryForSession(currentSessionId) : null, [currentSessionId]),
     );
-    const activeRuntimeKey = getRuntimeKey();
+    const activeRuntimeKey = resolveSessionScopeKey(
+        currentSessionId,
+        currentSessionDirectoryForSync ?? currentDirectory,
+    );
     const chatDraftIdentity = React.useMemo(
         () => createChatDraftIdentity(
             activeRuntimeKey,

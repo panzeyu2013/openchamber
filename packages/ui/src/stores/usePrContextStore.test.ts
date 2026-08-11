@@ -1,6 +1,10 @@
-import { describe, expect, test } from 'bun:test';
-import { usePrContextStore, getPrContextKey } from './usePrContextStore';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
 import type { GitHubAPI, GitHubPullRequestContextResult } from '@/lib/api/types';
+
+const { usePrContextStore, getPrContextKey } = await import('./usePrContextStore');
 
 const makeGithub = (result: GitHubPullRequestContextResult) => {
   let calls = 0;
@@ -91,5 +95,79 @@ describe('usePrContextStore', () => {
     const entry = usePrContextStore.getState().entries[getPrContextKey('/repo-e', 5)];
     expect(entry?.error).toBe('boom');
     expect(entry?.isLoading).toBe(false);
+  });
+});
+
+const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
+  const upstreamSessionId = `ses-${workspaceId}`;
+  return {
+    revision: 1,
+    sessions: [{
+      key: `${workspaceId}\u0000${upstreamSessionId}`,
+      workspaceId,
+      connectionId: 'conn',
+      upstreamSessionId,
+      directory: '/repo',
+      title: 'title',
+      updatedAt: 1,
+      archived: false,
+    }],
+    freshnessByConnection: {},
+  };
+};
+
+const setWorkspaceSession = (workspaceId: string) => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+};
+
+const clearWorkspaceSession = () => {
+  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+  useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
+};
+
+describe('usePrContextStore workspace scope', () => {
+  beforeEach(() => {
+    usePrContextStore.setState({ entries: {} });
+    clearWorkspaceSession();
+  });
+
+  afterEach(clearWorkspaceSession);
+
+  test('keeps PR context cache isolated per workspace for the same directory', async () => {
+    const { github, callCount } = makeGithub(RESULT);
+
+    setWorkspaceSession('ws-a');
+    const keyA = getPrContextKey('/repo', 1);
+    await usePrContextStore.getState().ensure(github, '/repo', 1);
+    expect(usePrContextStore.getState().entries[keyA]?.result).toEqual(RESULT);
+    expect(callCount()).toBe(1);
+
+    setWorkspaceSession('ws-b');
+    const keyB = getPrContextKey('/repo', 1);
+    expect(keyA).not.toBe(keyB);
+    expect(usePrContextStore.getState().entries[keyB] ?? null).toBe(null);
+    expect(usePrContextStore.getState().entries[keyA]?.result).toEqual(RESULT);
+
+    await usePrContextStore.getState().ensure(github, '/repo', 1);
+    expect(callCount()).toBe(2);
+  });
+
+  test('invalidate clears only the active workspace scope', async () => {
+    const { github } = makeGithub(RESULT);
+    const { ensure, invalidate } = usePrContextStore.getState();
+
+    setWorkspaceSession('ws-a');
+    const keyA = getPrContextKey('/repo', 1);
+    await ensure(github, '/repo', 1);
+
+    setWorkspaceSession('ws-b');
+    const keyB = getPrContextKey('/repo', 1);
+    await ensure(github, '/repo', 1);
+
+    invalidate('/repo', 1);
+
+    expect(usePrContextStore.getState().entries[keyB] ?? null).toBe(null);
+    expect(usePrContextStore.getState().entries[keyA]?.result).toEqual(RESULT);
   });
 });

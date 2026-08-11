@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { normalizePath } from '@/lib/pathNormalization';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 
@@ -61,13 +62,17 @@ type SerializedSizeIndex = {
 const serializedSizeByDrafts = new WeakMap<Record<string, InlineCommentDraft[]>, SerializedSizeIndex>();
 const EMPTY_ENVELOPE_BYTES = encoder.encode(JSON.stringify({ drafts: {}, touchedAt: {} })).byteLength;
 
-export const getInlineCommentDraftKey = (runtimeKey: string, directory: string, sessionKey: string): string | null => {
+export const getInlineCommentDraftKey = (scopeKey: string, directory: string, sessionKey: string): string | null => {
   const normalizedDirectory = normalizePath(directory);
-  if (!runtimeKey || !normalizedDirectory || !sessionKey) return null;
-  return JSON.stringify([runtimeKey, normalizedDirectory, sessionKey]);
+  if (!scopeKey || !normalizedDirectory || !sessionKey) return null;
+  return JSON.stringify([scopeKey, normalizedDirectory, sessionKey]);
 };
 
 const getCurrentKey = (target: InlineCommentDraftTarget): string | null =>
+  getInlineCommentDraftKey(resolveSessionScopeKey(target.sessionKey, target.directory), target.directory, target.sessionKey);
+
+/** Legacy key form: the ambient runtime key in the first tuple slot. */
+const getLegacyKey = (target: InlineCommentDraftTarget): string | null =>
   getInlineCommentDraftKey(getRuntimeKey(), target.directory, target.sessionKey);
 
 const serializedEntryBytes = (key: string, value: unknown): number =>
@@ -241,16 +246,40 @@ export const useInlineCommentDraftStore = create<InlineCommentDraftStore>()(
         clearDrafts: (target) => {
           const key = getCurrentKey(target);
           if (!key) return;
-          set((state) => removeDraftKey(state, key));
+          const legacyKey = getLegacyKey(target);
+          set((state) => {
+            if (!(key in state.drafts)
+              && (legacyKey === null || legacyKey === key || !(legacyKey in state.drafts))) {
+              return state;
+            }
+            let next: InlineCommentDraftState = key in state.drafts ? removeDraftKey(state, key) : state;
+            if (legacyKey !== null && legacyKey !== key && legacyKey in next.drafts) {
+              next = removeDraftKey(next, legacyKey);
+            }
+            return next;
+          });
         },
         getDrafts: (target) => {
           const key = getCurrentKey(target);
-          return key ? get().drafts[key] ?? EMPTY_INLINE_COMMENT_DRAFTS : EMPTY_INLINE_COMMENT_DRAFTS;
+          if (!key) return EMPTY_INLINE_COMMENT_DRAFTS;
+          // Dual read: workspace-scoped bucket first, then the legacy
+          // ambient-runtime-keyed bucket written before the migration.
+          const drafts = get().drafts[key] ?? get().drafts[getLegacyKey(target) ?? ''];
+          return drafts ?? EMPTY_INLINE_COMMENT_DRAFTS;
         },
         consumeDrafts: (target) => {
           const key = getCurrentKey(target);
           if (!key) return [];
+          const legacyKey = getLegacyKey(target);
           const drafts = [...(get().drafts[key] ?? [])].sort((left, right) => left.createdAt - right.createdAt);
+          if (drafts.length === 0 && legacyKey !== null && legacyKey !== key) {
+            const legacy = get().drafts[legacyKey] ?? [];
+            if (legacy.length > 0) {
+              const consumed = [...legacy].sort((left, right) => left.createdAt - right.createdAt);
+              set((state) => removeDraftKey(state, legacyKey));
+              return consumed;
+            }
+          }
           if (drafts.length > 0) set((state) => removeDraftKey(state, key));
           return drafts;
         },
@@ -272,10 +301,31 @@ export const useInlineCommentDraftStore = create<InlineCommentDraftStore>()(
         },
         getDraftCount: (target) => get().getDrafts(target).length,
         hasDrafts: (target) => get().getDrafts(target).length > 0,
-        clearSessionDrafts: (runtimeKey, directory, sessionId) => {
-          const key = getInlineCommentDraftKey(runtimeKey, directory, sessionId);
+        clearSessionDrafts: (scopeKey, directory, sessionId) => {
+          const key = getInlineCommentDraftKey(scopeKey, directory, sessionId);
           if (!key) return;
-          set((state) => removeDraftKey(state, key));
+          // When the identity carries the current runtime key (the legacy
+          // deletion path), also clear the workspace-scoped twin so
+          // runtime-captured cleanup reaches workspace-scoped drafts. A
+          // non-current or workspace scope never clears another owner's entry.
+          const resolvedKey = scopeKey === getRuntimeKey()
+            ? getInlineCommentDraftKey(
+                resolveSessionScopeKey(sessionId, directory),
+                directory,
+                sessionId,
+              )
+            : null;
+          set((state) => {
+            if (!(key in state.drafts)
+              && (resolvedKey === null || resolvedKey === key || !(resolvedKey in state.drafts))) {
+              return state;
+            }
+            let next: InlineCommentDraftState = key in state.drafts ? removeDraftKey(state, key) : state;
+            if (resolvedKey !== null && resolvedKey !== key && resolvedKey in next.drafts) {
+              next = removeDraftKey(next, resolvedKey);
+            }
+            return next;
+          });
         },
       }),
       {
