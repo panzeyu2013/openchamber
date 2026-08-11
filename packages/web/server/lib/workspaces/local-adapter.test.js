@@ -206,7 +206,7 @@ describe('createLocalWorkspaceAdapter', () => {
     });
   });
 
-  it('stubs Phase 2 forwarding with capability_unavailable', async () => {
+  it('reports capability_unavailable when HTTP/SSE/WS forwarding deps are missing', async () => {
     const adapter = createAdapter();
     for (const method of [adapter.fetch, adapter.openEventStream, adapter.openWebSocket]) {
       let error = null;
@@ -218,6 +218,57 @@ describe('createLocalWorkspaceAdapter', () => {
       expect(error.code).toBe('capability_unavailable');
       expect(error.status).toBe(501);
     }
+  });
+
+  describe('openWebSocket', () => {
+    const wsWorkspaceDir = () => {
+      const dir = path.join(tempDir, 'ws-workspace');
+      fs.mkdirSync(dir, { recursive: true });
+      return dir;
+    };
+
+    const createWsAdapter = (dependencies = {}) => createLocalWorkspaceAdapter({
+      fs: fsPromises,
+      path,
+      buildOpenCodeUrl: (restPath) => `http://opencode.test${restPath}`,
+      getOpenCodeAuthHeaders: async () => ({ 'x-openchamber-runtime-auth': 'secret' }),
+      ...dependencies,
+    });
+
+    it('resolves a ws spec to the local OpenCode runtime with injected auth', async () => {
+      const adapter = createWsAdapter();
+      const spec = await adapter.openWebSocket(
+        { canonicalPath: wsWorkspaceDir() },
+        { path: '/api/terminal/ws', headers: { cookie: 'oc_ui_session=leak' } },
+      );
+      expect(spec.url).toBe('ws://opencode.test/api/terminal/ws');
+      expect(spec.headers['x-openchamber-runtime-auth']).toBe('secret');
+      expect(spec.headers.cookie).toBeUndefined();
+      expect(spec.headers['x-opencode-directory']).toBe(wsWorkspaceDir());
+    });
+
+    it('overwrites the directory header with the canonical path', async () => {
+      const adapter = createWsAdapter();
+      const spec = await adapter.openWebSocket(
+        { canonicalPath: wsWorkspaceDir() },
+        { path: '/api/event/ws', headers: { 'x-opencode-directory': path.join(wsWorkspaceDir(), 'sub') } },
+      );
+      expect(spec.headers['x-opencode-directory']).toBe(wsWorkspaceDir());
+    });
+
+    it('rejects directory hints outside the workspace and non-/api paths', async () => {
+      const adapter = createWsAdapter();
+      await expectTypedError(
+        adapter.openWebSocket({ canonicalPath: wsWorkspaceDir() }, { path: '/api/terminal/ws', headers: { 'x-opencode-directory': '/etc' } }),
+        'catalog_path_outside_workspace',
+        403,
+      );
+      await expectTypedError(
+        adapter.openWebSocket({ canonicalPath: wsWorkspaceDir() }, { path: '/health' }),
+        'catalog_runtime_path_not_allowed',
+        404,
+      );
+    });
   });
 
   describe('fetch directory boundary enforcement', () => {

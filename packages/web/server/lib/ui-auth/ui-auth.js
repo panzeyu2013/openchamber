@@ -317,7 +317,11 @@ const isUrlAuthWebSocketPath = (pathname) => {
     || pathname === '/api/openchamber/realtime-proxy/ws'
     || pathname === '/api/terminal/ws'
     || pathname === '/api/dictation/ws'
-    || pathname.startsWith('/api/preview/proxy/');
+    || pathname.startsWith('/api/preview/proxy/')
+    // Workspace-prefixed runtime sockets (event/terminal WS forwarded through
+    // the workspace runtime proxy) use the same short-lived URL token as the
+    // non-prefixed paths they proxy to.
+    || /^\/api\/workspaces\/[^/]+\/runtime\/api\/(event\/ws|global\/event\/ws|terminal\/ws)$/.test(pathname);
 };
 
 const canUseUrlAuthTokenForRequest = (req) => {

@@ -31,6 +31,21 @@ const BLOCKED_UPSTREAM_HEADERS = new Set([
   'x-openchamber-url-token',
 ]);
 
+const getWsPathname = (inputPath) => {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) return '';
+  try {
+    return new URL(inputPath, 'http://localhost').pathname;
+  } catch {
+    return '';
+  }
+};
+
+const objectifyHeaders = (headers) => {
+  const result = {};
+  headers.forEach((value, name) => { result[name] = value; });
+  return result;
+};
+
 export const createSshWorkspaceConnectionAdapter = (dependencies) => {
   const {
     connectionId,
@@ -178,11 +193,28 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
     return response;
   };
 
-  const openWebSocket = async () => {
-    const error = new Error('WebSocket forwarding for SSH tunnels is not wired yet');
-    error.code = 'capability_unavailable';
-    error.status = 501;
-    throw error;
+  /**
+   * Resolves the upstream ws:// loopback spec for a workspace-scoped upgrade.
+   * The tunnel URL is produced by ssh-manager for the SAVED sshInstanceId and
+   * is never exposed to the renderer; the ws client is created by the
+   * workspace runtime proxy (packages/web owns the ws dependency). The
+   * tunnel's clientToken is injected server-side; `dispose` never tears the
+   * tunnel down.
+   */
+  const openWebSocket = async (context, request = {}) => {
+    const baseUrl = await resolveTunnelUrl(context?.profile?.target?.sshInstanceId);
+    const pathname = getWsPathname(request.path);
+    if (!pathname.startsWith('/api/')) {
+      const error = new Error('Path is not a forwardable workspace socket');
+      error.code = 'catalog_runtime_path_not_allowed';
+      error.status = 404;
+      throw error;
+    }
+    const headers = buildUpstreamHeaders(request?.headers, context?.profile?.target?.clientToken);
+    return {
+      url: `${baseUrl.replace(/^http/i, 'ws')}${pathname}`,
+      headers: objectifyHeaders(headers),
+    };
   };
 
   const dispose = async () => {

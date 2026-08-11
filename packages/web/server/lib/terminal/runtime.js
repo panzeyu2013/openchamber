@@ -11,6 +11,7 @@ import { sanitizeTerminalHistoryChunk } from './history.js';
 import { consumeTerminalThemeQueries, terminalThemeModeReport } from './theme-response.js';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
+import { WORKSPACE_RUNTIME_UPGRADE_MARKER, parseWorkspaceRuntimePath } from '../workspaces/runtime-proxy.js';
 
 const MAX_SESSIONS = 20;
 const MAX_HISTORY_BYTES = 512 * 1024;
@@ -203,22 +204,28 @@ export function createTerminalRuntime({
     wire(session, spawned.process);
   };
 
-  const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false }) => {
+  const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false, workspaceId = null, canonicalPath = null }) => {
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
     if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
     const normalizedShell = normalizeTerminalShell(shell);
     if (!normalizedShell) throw new Error('Invalid terminal shell');
     const id = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : randomUUID();
     if (id.length > 128) throw new Error('Invalid terminal session id');
+    // Workspace binding: sessions created through a workspace-prefixed path
+    // (workspaceId) belong to that workspace and are never reachable from any
+    // other scope; `null` keeps the legacy non-workspace behavior.
+    const boundWorkspaceId = workspaceId ?? null;
     const existing = sessions.get(id);
     const resolvedCwd = path.resolve(cwd);
     if (existing?.status === 'running') {
+      if (existing.workspaceId !== boundWorkspaceId) throw new Error('Terminal session belongs to a different workspace');
       if (path.resolve(existing.cwd) !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
       applyAppearance(existing, { themeMode, terminalBackground, terminalForeground });
       return existing;
     }
     const pending = pendingSessionCreates.get(id);
     if (pending) {
+      if (pending.workspaceId !== boundWorkspaceId) throw new Error('Terminal session belongs to a different workspace');
       if (pending.cwd !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
       if (pending.shell !== normalizedShell) throw new Error('Terminal session is already being created with a different shell');
       if (pending.loginShell !== loginShell) throw new Error('Terminal session is already being created with a different login mode');
@@ -229,18 +236,20 @@ export function createTerminalRuntime({
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
       const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
+      session.workspaceId = boundWorkspaceId;
+      session.canonicalPath = canonicalPath ?? null;
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
     })();
-    const pendingEntry = { cwd: resolvedCwd, shell: normalizedShell, loginShell, promise: creation };
+    const pendingEntry = { cwd: resolvedCwd, shell: normalizedShell, loginShell, workspaceId: boundWorkspaceId, promise: creation };
     pendingSessionCreates.set(id, pendingEntry);
     try { return await creation; }
     finally { if (pendingSessionCreates.get(id) === pendingEntry) pendingSessionCreates.delete(id); }
   };
 
-  wsServer.on('connection', (socket) => {
-    const connection = { socket, attachments: new Map() };
+  wsServer.on('connection', (socket, _req, workspaceId) => {
+    const connection = { socket, attachments: new Map(), workspaceId: workspaceId ?? null };
     connections.add(connection);
     send(socket, { t: 'hello', v: 3 });
     const heartbeat = setInterval(() => { try { socket.ping(); } catch { /* closed */ } }, TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS);
@@ -255,6 +264,13 @@ export function createTerminalRuntime({
       if (message.t === 'detach') { connection.attachments.delete(id); return; }
       const session = sessions.get(id);
       if (!session) { send(socket, { t: 'error', v: 3, s: id, code: 'SESSION_NOT_FOUND', message: 'Terminal session not found', fatal: true }); return; }
+      // A session bound to a workspace is only reachable from an upgrade that
+      // arrived through the SAME workspace prefix; cross-workspace and legacy
+      // connections cannot touch it (and vice versa).
+      if (session.workspaceId !== connection.workspaceId) {
+        send(socket, { t: 'error', v: 3, s: id, code: 'WORKSPACE_SCOPE_MISMATCH', message: 'Terminal session belongs to a different workspace', fatal: false });
+        return;
+      }
       if (message.t === 'attach') {
         const attachment = { initializing: true, pending: [] };
         connection.attachments.set(id, attachment);
@@ -275,7 +291,15 @@ export function createTerminalRuntime({
   });
 
   const upgradeHandler = (req, socket, head) => {
-    if (parseRequestPathname(req.url) !== TERMINAL_WS_PATH) return;
+    const pathname = parseRequestPathname(req.url);
+    const parsedWorkspace = parseWorkspaceRuntimePath(pathname);
+    const terminalPath = parsedWorkspace ? parsedWorkspace.restPath : pathname;
+    if (terminalPath !== TERMINAL_WS_PATH) return;
+    // Workspace-prefixed upgrades are owned by the central workspace upgrade
+    // dispatcher when it is installed (it registers first and marks the
+    // request); this listener never double-handles the same upgrade.
+    if (parsedWorkspace && req?.[WORKSPACE_RUNTIME_UPGRADE_MARKER]) return;
+    const workspaceId = parsedWorkspace?.workspaceId ?? null;
     void (async () => {
       try {
         if (uiAuthController?.enabled) {
@@ -283,11 +307,47 @@ export function createTerminalRuntime({
           if (!await isRequestOriginAllowed(req)) { rejectWebSocketUpgrade(socket, 403, 'Invalid origin'); return; }
         }
         if (!wsServer) { rejectWebSocketUpgrade(socket, 500, 'Terminal WebSocket unavailable'); return; }
-        wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req));
+        wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req, workspaceId));
       } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
     })();
   };
   server.on('upgrade', upgradeHandler);
+
+  /** Extracts the workspace binding from a workspace-prefixed request path
+   * (`/api/workspaces/:workspaceId/runtime/api/terminal/...`). Non-prefixed
+   * requests (legacy control-plane terminals) resolve to a null binding. The
+   * canonical path is read from the `x-opencode-directory` header, which the
+   * workspace runtime proxy overwrites with the workspace canonical path. */
+  const resolveWorkspaceScope = (req) => {
+    const rawUrl = req?.originalUrl || req?.url;
+    if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
+      return { workspaceId: null, canonicalPath: null };
+    }
+    let pathname;
+    try {
+      pathname = new URL(rawUrl, 'http://localhost').pathname;
+    } catch {
+      return { workspaceId: null, canonicalPath: null };
+    }
+    const parsed = parseWorkspaceRuntimePath(pathname);
+    if (!parsed) return { workspaceId: null, canonicalPath: null };
+    const directoryHeader = req?.headers?.['x-opencode-directory'];
+    return {
+      workspaceId: parsed.workspaceId,
+      canonicalPath: typeof directoryHeader === 'string' && directoryHeader.length > 0 ? directoryHeader : null,
+    };
+  };
+
+  /** Session lookup that also enforces the workspace scope of the request:
+   * a session bound to a workspace is only reachable through that workspace's
+   * prefix, and legacy requests only reach legacy sessions. */
+  const findSessionForRequest = (req, sessionId) => {
+    const session = sessions.get(sessionId);
+    if (!session) return null;
+    const { workspaceId } = resolveWorkspaceScope(req);
+    if (session.workspaceId !== workspaceId) return null;
+    return session;
+  };
 
   app.get('/api/terminal/shells', async (_req, res) => {
     try {
@@ -298,11 +358,15 @@ export function createTerminalRuntime({
     }
   });
   app.post('/api/terminal/create', async (req, res) => {
-    try { const session = await createSession(req.body ?? {}); res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status }); }
+    try {
+      const scope = resolveWorkspaceScope(req);
+      const session = await createSession({ ...(req.body ?? {}), workspaceId: scope.workspaceId, canonicalPath: scope.canonicalPath });
+      res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status });
+    }
     catch (error) { res.status(error?.message === 'Maximum terminal sessions reached' ? 429 : 400).json({ error: error?.message || 'Failed to create terminal session' }); }
   });
   app.post('/api/terminal/:sessionId/resize', (req, res) => {
-    const session = sessions.get(req.params.sessionId);
+    const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     const { cols, rows } = req.body ?? {};
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) return res.status(400).json({ error: 'Invalid terminal dimensions' });
@@ -310,13 +374,13 @@ export function createTerminalRuntime({
     catch (error) { res.status(500).json({ error: error?.message || 'Failed to resize terminal' }); }
   });
   app.post('/api/terminal/:sessionId/appearance', (req, res) => {
-    const session = sessions.get(req.params.sessionId);
+    const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     applyAppearance(session, req.body ?? {});
     res.json({ success: true });
   });
   app.post('/api/terminal/:sessionId/restart', async (req, res) => {
-    const session = sessions.get(req.params.sessionId);
+    const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     const cwd = req.body?.cwd ?? session.cwd;
     const cols = req.body?.cols ?? session.cols;
@@ -346,7 +410,7 @@ export function createTerminalRuntime({
     finally { if (pendingSessionRestarts.get(session.id) === restart) pendingSessionRestarts.delete(session.id); }
   });
   app.delete('/api/terminal/:sessionId', async (req, res) => {
-    const session = sessions.get(req.params.sessionId);
+    const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
     sessions.delete(session.id);
     closeAttachments(session.id, 'CLOSED', 'Terminal closed');

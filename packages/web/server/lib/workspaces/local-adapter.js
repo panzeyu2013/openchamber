@@ -21,6 +21,10 @@
  *   query/body fields) are validated against the workspace boundary and the
  *   `x-opencode-directory` header is ALWAYS overwritten with the canonical
  *   path, so no request can widen the directory to e.g. `/etc`.
+ * - `openWebSocket` resolves the upstream ws(s):// URL for the same
+ *   workspace-prefixed paths and applies the identical auth injection and
+ *   directory-boundary rules as `fetch`; the ws client itself is created by
+ *   the workspace runtime proxy.
  */
 
 import { isPathWithinRoot, readRequestDirectoryHints } from './path-boundary.js';
@@ -253,11 +257,58 @@ export const createLocalWorkspaceAdapter = (dependencies) => {
     return response;
   };
 
-  const openWebSocket = async () => {
-    const error = new Error('local adapter WebSocket forwarding is not wired yet');
-    error.code = 'capability_unavailable';
-    error.status = 501;
-    throw error;
+  /**
+   * Resolves the upstream WebSocket spec for a workspace-scoped upgrade
+   * (`/api/event/ws`, `/api/global/event/ws`, `/api/terminal/ws`). The
+   * browser never dials the control plane's OpenCode runtime directly: the
+   * caller (workspace runtime proxy) creates the upstream ws client from
+   * `{ url, headers }` and pipes it back. Upstream auth headers are injected
+   * server-side and never echoed to the browser; the workspace canonical path
+   * is enforced and the directory header is always overwritten, exactly like
+   * `fetch`.
+   */
+  const openWebSocket = async (context, request = {}) => {
+    if (!buildOpenCodeUrl || !getOpenCodeAuthHeaders) {
+      const error = new Error('local adapter WebSocket forwarding is not wired');
+      error.code = 'capability_unavailable';
+      error.status = 501;
+      throw error;
+    }
+    const pathname = getWsPathname(request.path);
+    if (!pathname.startsWith('/api/')) {
+      const error = new Error('Path is not a forwardable workspace socket');
+      error.code = 'catalog_runtime_path_not_allowed';
+      error.status = 404;
+      throw error;
+    }
+    const upstreamUrl = buildOpenCodeUrl(pathname, '').replace(/^http/i, 'ws');
+    const headers = new Headers();
+    const sourceHeaders = request?.headers;
+    if (sourceHeaders && typeof sourceHeaders === 'object') {
+      for (const [name, value] of Object.entries(sourceHeaders)) {
+        if (value === undefined || value === null) continue;
+        if (!BLOCKED_UPSTREAM_HEADERS.has(name.toLowerCase())) headers.set(name, String(value));
+      }
+    }
+    const openChamberHeaders = await getOpenCodeAuthHeaders();
+    if (openChamberHeaders && typeof openChamberHeaders === 'object') {
+      for (const [name, value] of Object.entries(openChamberHeaders)) {
+        if (value !== undefined && value !== null) headers.set(name, String(value));
+      }
+    }
+    const canonicalPath = context?.canonicalPath;
+    if (canonicalPath) {
+      // The workspace canonical path is the authoritative working directory;
+      // client-supplied directory hints (headers, query) must stay inside the
+      // workspace and the header is then overwritten unconditionally.
+      for (const hint of readRequestDirectoryHints(request)) {
+        await assertDirectoryWithin(canonicalPath, hint);
+      }
+      headers.set('x-opencode-directory', canonicalPath);
+      headers.set('x-openchamber-directory-encoding', 'none');
+      headers.delete('x-openchamber-directory');
+    }
+    return { url: upstreamUrl, headers: objectifyHeaders(headers) };
   };
 
   const dispose = async () => {};
@@ -285,6 +336,21 @@ const BLOCKED_UPSTREAM_HEADERS = new Set([
   'x-openchamber-runtime-headers',
   'x-openchamber-url-token',
 ]);
+
+const getWsPathname = (inputPath) => {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) return '';
+  try {
+    return new URL(inputPath, 'http://localhost').pathname;
+  } catch {
+    return '';
+  }
+};
+
+const objectifyHeaders = (headers) => {
+  const result = {};
+  headers.forEach((value, name) => { result[name] = value; });
+  return result;
+};
 
 const outsideWorkspaceError = () => {
   const error = new Error('directory is outside the workspace');

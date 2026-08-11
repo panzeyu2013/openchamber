@@ -1,15 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { Readable } from 'stream';
-import { parseWorkspaceRuntimePath, registerWorkspaceRuntimeProxyRoutes } from './runtime-proxy.js';
+import {
+  WORKSPACE_RUNTIME_UPGRADE_MARKER,
+  handleWorkspaceUpgrade,
+  isAllowedWorkspaceUpgradePath,
+  parseWorkspaceRuntimePath,
+  registerWorkspaceRuntimeProxyRoutes,
+} from './runtime-proxy.js';
 
 const createCatalogStoreStub = (workspaces) => ({
   getWorkspace: async (workspaceId) => workspaces.find((workspace) => workspace.id === workspaceId) ?? null,
 });
 
-const createAdapterStub = (fetchImpl, capabilities = { eventStream: true }) => ({
+const createAdapterStub = (fetchImpl, capabilities = { eventStream: true }, overrides = {}) => ({
   connectionId: 'local',
   capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true, ...capabilities },
   fetch: fetchImpl,
+  openWebSocket: async () => {
+    const error = new Error('upstream unavailable');
+    error.code = 'catalog_runtime_upstream_failed';
+    error.status = 502;
+    throw error;
+  },
+  ...overrides,
 });
 
 const createBrokerStub = (adapter) => ({
@@ -372,5 +385,112 @@ describe('workspace runtime proxy', () => {
 
     expect(response.statusCode()).toBe(502);
     expect(JSON.parse(response.body).code).toBe('catalog_runtime_upstream_failed');
+  });
+});
+
+describe('workspace WebSocket upgrade dispatcher', () => {
+  const workspace = {
+    id: 'ws-1', connectionId: 'local', canonicalPath: '/a', path: '/a', label: 'A', orderKey: '', createdAt: 1, updatedAt: 1,
+  };
+
+  const createUpgradeRequest = (url) => ({ url, headers: {}, originalUrl: url });
+
+  const runUpgrade = (url, deps) => handleWorkspaceUpgrade(createUpgradeRequest(url), {}, null, deps);
+
+  const createUpgradeDeps = (overrides = {}) => {
+    const rejections = [];
+    const deps = {
+      catalogStore: createCatalogStoreStub([workspace]),
+      connectionBroker: createBrokerStub(createAdapterStub(async () => new Response('x', { status: 200 }))),
+      getUiAuthController: () => null,
+      isRequestOriginAllowed: async () => true,
+      rejectWebSocketUpgrade: (socket, status, message) => { rejections.push({ status, message }); },
+      ...overrides,
+    };
+    return { deps, rejections };
+  };
+
+  it('allowlists only the workspace-prefixed event and terminal sockets', () => {
+    for (const allowed of [
+      '/api/event/ws',
+      '/api/global/event/ws',
+      '/api/terminal/ws',
+    ]) {
+      expect(isAllowedWorkspaceUpgradePath(allowed)).toBe(true);
+    }
+    for (const rejected of [
+      '/api/session',
+      '/api/event',
+      '/api/fs/list',
+      '/api/terminal/create',
+      '/api/preview/proxy/abc',
+      '/api/notifications/stream',
+    ]) {
+      expect(isAllowedWorkspaceUpgradePath(rejected)).toBe(false);
+    }
+  });
+
+  it('leaves non-workspace upgrades to the existing module listeners', async () => {
+    const { deps, rejections } = createUpgradeDeps();
+    expect(await runUpgrade('/api/terminal/ws', deps)).toBe(false);
+    expect(await runUpgrade('/api/event/ws', deps)).toBe(false);
+    expect(rejections).toHaveLength(0);
+  });
+
+  it('owns a workspace-prefixed upgrade once and never twice', async () => {
+    const { deps } = createUpgradeDeps();
+    const req = createUpgradeRequest('/api/workspaces/ws-1/runtime/api/event/ws');
+    const first = handleWorkspaceUpgrade(req, {}, null, deps);
+    expect(req[WORKSPACE_RUNTIME_UPGRADE_MARKER]).toBe(true);
+    expect(await handleWorkspaceUpgrade(req, {}, null, deps)).toBe(false);
+    expect(await first).toBe(true);
+  });
+
+  it('rejects unauthenticated workspace upgrades with 401', async () => {
+    const { deps, rejections } = createUpgradeDeps({
+      getUiAuthController: () => ({ enabled: true, ensureSessionToken: async () => null }),
+    });
+    expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/event/ws', deps)).toBe(true);
+    expect(rejections).toEqual([{ status: 401, message: expect.stringContaining('authentication') }]);
+  });
+
+  it('rejects workspace upgrades from disallowed origins with 403', async () => {
+    const { deps, rejections } = createUpgradeDeps({
+      getUiAuthController: () => ({ enabled: true, ensureSessionToken: async () => 'session' }),
+      isRequestOriginAllowed: async () => false,
+    });
+    expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/event/ws', deps)).toBe(true);
+    expect(rejections).toEqual([{ status: 403, message: expect.stringContaining('origin') }]);
+  });
+
+  it('rejects workspace upgrades for connections without the capability', async () => {
+    const adapter = createAdapterStub(async () => new Response('x', { status: 200 }), { terminal: false });
+    const { deps, rejections } = createUpgradeDeps({ connectionBroker: createBrokerStub(adapter) });
+    expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/terminal/ws', deps)).toBe(true);
+    expect(rejections).toEqual([{ status: 501, message: expect.stringContaining('terminal') }]);
+  });
+
+  it('rejects unknown workspaces and non-socket paths with 404', async () => {
+    const { deps: missingDeps, rejections: missingRejections } = createUpgradeDeps({ catalogStore: createCatalogStoreStub([]) });
+    expect(await runUpgrade('/api/workspaces/ghost/runtime/api/event/ws', missingDeps)).toBe(true);
+    expect(missingRejections).toEqual([{ status: 404, message: expect.stringContaining('Workspace') }]);
+
+    const { deps: pathDeps, rejections: pathRejections } = createUpgradeDeps();
+    expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/fs/list', pathDeps)).toBe(true);
+    expect(pathRejections).toEqual([{ status: 404, message: expect.stringContaining('socket') }]);
+  });
+
+  it('surfaces adapter errors as explicit upgrade rejections', async () => {
+    const adapter = createAdapterStub(async () => new Response('x', { status: 200 }), {}, {
+      openWebSocket: async () => {
+        const error = new Error('tunnel is not connected');
+        error.code = 'capability_unavailable';
+        error.status = 503;
+        throw error;
+      },
+    });
+    const { deps, rejections } = createUpgradeDeps({ connectionBroker: createBrokerStub(adapter) });
+    expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/event/ws', deps)).toBe(true);
+    expect(rejections).toEqual([{ status: 503, message: expect.stringContaining('tunnel') }]);
   });
 });

@@ -369,11 +369,44 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
     return response;
   };
 
-  const openWebSocket = async () => {
-    const error = new Error('WebSocket forwarding for direct connections is not wired yet');
-    error.code = 'capability_unavailable';
-    error.status = 501;
-    throw error;
+  /**
+   * Resolves the upstream ws(s):// URL for a workspace-scoped WebSocket
+   * upgrade. Applies the same SSRF gate (saved baseUrl must not resolve to
+   * private addresses), the same server-side credential injection and the
+   * same lexical directory-boundary enforcement as `fetch`. The ws client
+   * itself is created by the workspace runtime proxy, which applies the
+   * connect timeout.
+   */
+  const openWebSocket = async (context, request = {}) => {
+    const baseUrl = context?.profile?.target?.baseUrl;
+    if (!baseUrl) {
+      throw directError('direct_no_target', 500, 'Connection has no target URL');
+    }
+    await assertSafeUpstreamUrl(baseUrl);
+    const pathname = getWsPathname(request.path);
+    if (!pathname.startsWith('/api/')) {
+      throw directError('catalog_runtime_path_not_allowed', 404, 'Path is not a forwardable workspace socket');
+    }
+    const headers = await buildUpstreamHeaders(context, request?.headers);
+    const canonicalPath = context?.canonicalPath;
+    if (canonicalPath) {
+      // Remote paths cannot be symlink-resolved from the control plane; the
+      // lexical boundary check still blocks `..` traversal and arbitrary
+      // directories. Both directory-header conventions are overwritten with
+      // the workspace canonical path, matching `fetch`.
+      for (const hint of readRequestDirectoryHints(request)) {
+        if (!isPathWithinRoot(canonicalPath, hint)) {
+          throw directError('catalog_path_outside_workspace', 403, 'directory is outside the workspace');
+        }
+      }
+      headers.set('x-opencode-directory', canonicalPath);
+      headers.set('x-openchamber-directory', canonicalPath);
+    }
+    return {
+      url: `${baseUrl.replace(/\/+$/, '').replace(/^http/i, 'ws')}${pathname}`,
+      headers: objectifyHeaders(headers),
+      timeoutMs,
+    };
   };
 
   const dispose = async () => {};
@@ -397,6 +430,21 @@ const directError = (code, status, message) => {
   error.code = code;
   error.status = status;
   return error;
+};
+
+const getWsPathname = (inputPath) => {
+  if (typeof inputPath !== 'string' || inputPath.length === 0) return '';
+  try {
+    return new URL(inputPath, 'http://localhost').pathname;
+  } catch {
+    return '';
+  }
+};
+
+const objectifyHeaders = (headers) => {
+  const result = {};
+  headers.forEach((value, name) => { result[name] = value; });
+  return result;
 };
 
 const BLOCKED_UPSTREAM_HEADERS = new Set([

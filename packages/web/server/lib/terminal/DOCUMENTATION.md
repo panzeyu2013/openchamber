@@ -19,6 +19,31 @@
 
 HTTP remains the authenticated command plane for create, resize, appearance updates, restart, close, and force-kill. There is no SSE output or HTTP input compatibility path.
 
+## Workspace Binding
+
+Terminal sessions are explicitly bound to a workspace when they arrive
+through the workspace runtime prefix (`/api/workspaces/:workspaceId/runtime/`):
+
+- `POST /api/workspaces/:id/runtime/api/terminal/create` records
+  `workspaceId` + the canonical path (read from `x-opencode-directory`, which
+  the workspace runtime proxy overwrites with the workspace canonical path)
+  on the session record. Legacy creates through `/api/terminal/create` keep a
+  `null` binding.
+- A session bound to a workspace is ONLY reachable through that workspace's
+  prefix: attach/write/resize/restart/close through another workspace prefix,
+  or through the legacy path, are rejected (`WORKSPACE_SCOPE_MISMATCH` for
+  socket frames, 400/404 for HTTP). Cross-workspace IDs are never accessible.
+- WS upgrades: `/api/workspaces/:id/runtime/api/terminal/ws` is normally owned
+  by the central workspace upgrade dispatcher (which forwards to the
+  connection adapter). When the dispatcher is absent, this runtime handles
+  workspace-prefixed upgrades itself and binds the connection to the
+  workspaceId parsed from the path. The dispatcher marks owned upgrades
+  (`WORKSPACE_RUNTIME_UPGRADE_MARKER`) and this runtime skips marked
+  workspace-prefixed upgrades, so an upgrade never has two handlers regardless
+  of listener registration order.
+- Non-workspace behavior (direct `/api/terminal/ws` and `/api/terminal/*`)
+  is unchanged.
+
 ## PTY Lifecycle
 
 - IDs are client-provided or generated with `randomUUID()`.
@@ -36,7 +61,7 @@ HTTP remains the authenticated command plane for create, resize, appearance upda
 
 ## Security And Relay
 
-The WebSocket path must remain in both `isUrlAuthWebSocketPath` and relay `ALLOWED_WS_PATHS`. The client must use `getRuntimeUrlResolver().websocket()` and `openRuntimeWebSocket`; direct local URLs or raw browser WebSockets break relay and URL-token authentication.
+The WebSocket path must remain in both `isUrlAuthWebSocketPath` and relay `ALLOWED_WS_PATHS` (the workspace-prefixed variant `/api/workspaces/:id/runtime/api/terminal/ws` is allowlisted in both as well). The client must use `getRuntimeUrlResolver().websocket()` and `openRuntimeWebSocket`; direct local URLs or raw browser WebSockets break relay and URL-token authentication.
 
 ## Verification
 

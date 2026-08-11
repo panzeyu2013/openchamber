@@ -40,6 +40,12 @@ path allowlist. The workspace catalog read paths are token-readable
 mini-chat/tray surfaces that may only hold a token can render the unified
 tree. Catalog and session-index MUTATIONS are never token-usable; the
 security tests in `ui-auth.test.js` pin both sides of that contract.
+WebSocket upgrades are token-readable only on the socket allowlist
+(`isUrlAuthWebSocketPath`): the non-prefixed sockets plus their
+workspace-prefixed runtime variants
+(`/api/workspaces/:id/runtime/api/{event,global/event,terminal}/ws`), which
+the central workspace upgrade dispatcher authenticates exactly like the
+non-prefixed paths.
 
 ## Public exports (ui-passkeys.js)
 - `createUiPasskeys({ passwordBinding, readSettingsFromDiskMigrated, storeFile, rpName, challengeTtlMs })`: creates passkey runtime with methods:

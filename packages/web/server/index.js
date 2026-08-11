@@ -59,6 +59,7 @@ import { createSettingsHelpers } from './lib/opencode/settings-helpers.js';
 import { createThemeRuntime } from './lib/opencode/theme-runtime.js';
 import { createFeatureRoutesRuntime } from './lib/opencode/feature-routes-runtime.js';
 import { createWorkspacesRuntime } from './lib/workspaces/index.js';
+import { handleWorkspaceUpgrade } from './lib/workspaces/runtime-proxy.js';
 import { parseServeCliOptions } from './lib/opencode/cli-options.js';
 import {
   registerAuthAndAccessRoutes,
@@ -1482,6 +1483,29 @@ async function main(options = {}) {
   }));
   expressApp = app;
   server = http.createServer(app);
+  // Central workspace upgrade dispatcher. It owns every
+  // `/api/workspaces/:id/runtime...` WebSocket upgrade and leaves every other
+  // path untouched for the existing module upgrade listeners (terminal, event
+  // stream, dictation, realtime proxy, preview), which registered later still
+  // behave exactly as before. It is registered BEFORE those listeners so it
+  // runs first; module listeners that also match workspace-prefixed paths
+  // (the terminal runtime) skip requests the dispatcher marks as handled, so
+  // a workspace upgrade always has exactly one handler. The workspaces
+  // runtime and auth controller are late-bound because they are created after
+  // this point in startup.
+  server.on('upgrade', (req, socket, head) => {
+    const runtime = workspacesRuntime;
+    if (!runtime) return;
+    void handleWorkspaceUpgrade(req, socket, head, {
+      catalogStore: runtime.catalogStore,
+      connectionBroker: runtime.connectionBroker,
+      credentialProvider: null,
+      getUiAuthController: () => uiAuthController,
+      isRequestOriginAllowed,
+      rejectWebSocketUpgrade,
+      logger: null,
+    });
+  });
   let realtimeProxyRuntime = { stop: () => {} };
 
   // The relay service is constructed further below (it depends on the tunnel

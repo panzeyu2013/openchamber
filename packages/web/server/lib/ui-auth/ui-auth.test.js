@@ -281,6 +281,33 @@ describe('ui auth client credential seam', () => {
     });
     expect(createCalled).toBe(false);
     expect(createRes.statusCode).toBe(401);
+
+    // Workspace-prefixed runtime sockets (event/terminal WS through the
+    // workspace runtime proxy) authenticate with the same short-lived URL
+    // token as the non-prefixed socket paths they proxy to.
+    for (const tokenPath of [
+      '/api/workspaces/ws-1/runtime/api/event/ws',
+      '/api/workspaces/ws-1/runtime/api/global/event/ws',
+      '/api/workspaces/ws-1/runtime/api/terminal/ws',
+    ]) {
+      const separator = tokenPath.includes('?') ? '&' : '?';
+      const wsReq = { method: 'GET', path: tokenPath, url: `${tokenPath}${separator}oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
+      expect(await auth.ensureSessionToken(wsReq, null)).toBe('client:device-1');
+    }
+
+    // Workspace-prefixed paths that are NOT sockets never accept a URL token.
+    const nonSocketWsReq = { method: 'GET', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
+    expect(await auth.ensureSessionToken(nonSocketWsReq, null)).toBeNull();
+
+    // The plain HTTP workspace runtime paths are not URL-token readable.
+    const wsHttpReq = { method: 'GET', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+    const wsHttpRes = createResponse();
+    let wsHttpCalled = false;
+    await auth.requireAuth(wsHttpReq, wsHttpRes, () => {
+      wsHttpCalled = true;
+    });
+    expect(wsHttpCalled).toBe(false);
+    expect(wsHttpRes.statusCode).toBe(401);
   });
 
   it('issues desktop client tokens with the UI session expiry', async () => {

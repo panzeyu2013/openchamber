@@ -316,9 +316,66 @@ describe('direct adapter', () => {
     expect(response.headers.get('content-type')).toBe('text/event-stream');
   });
 
-  it('openWebSocket reports capability_unavailable', async () => {
+  it('openWebSocket resolves a ws spec with injected credentials and directory headers', async () => {
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => new Response(),
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = createContext({
+      profile: { id: 'conn-1', target: { kind: 'direct', baseUrl: 'https://api.example.com', clientToken: 'secret-token' } },
+      canonicalPath: '/remote/proj',
+    });
+    const spec = await adapter.openWebSocket(context, {
+      path: '/api/terminal/ws',
+      headers: { 'x-opencode-directory': '/remote/proj/sub' },
+    });
+    expect(spec.url).toBe('wss://api.example.com/api/terminal/ws');
+    expect(spec.headers.authorization).toBe('Bearer secret-token');
+    expect(spec.headers['x-opencode-directory']).toBe('/remote/proj');
+    expect(spec.headers['x-openchamber-directory']).toBe('/remote/proj');
+  });
+
+  it('openWebSocket blocks blocked auth headers and rejects out-of-workspace directory hints', async () => {
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => new Response(),
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = createContext({
+      profile: { id: 'conn-1', target: { kind: 'direct', baseUrl: 'https://api.example.com' } },
+      canonicalPath: '/remote/proj',
+    });
+    const spec = await adapter.openWebSocket(context, {
+      path: '/api/event/ws',
+      headers: { cookie: 'oc_ui_session=leak', authorization: 'Bearer browser' },
+    });
+    expect(spec.url).toBe('wss://api.example.com/api/event/ws');
+    expect(spec.headers.cookie).toBeUndefined();
+    expect(spec.headers.authorization).toBeUndefined();
+    await expect(adapter.openWebSocket(context, {
+      path: '/api/terminal/ws',
+      headers: { 'x-opencode-directory': '/etc' },
+    })).rejects.toMatchObject({ code: 'catalog_path_outside_workspace', status: 403 });
+  });
+
+  it('openWebSocket enforces the SSRF gate on the saved baseUrl', async () => {
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => new Response(),
+      lookupImpl: createLookup({ ...PUBLIC, ...BLOCKED }),
+    });
+    await expect(adapter.openWebSocket(createContext({
+      profile: { id: 'conn-1', target: { kind: 'direct', baseUrl: 'http://loopback.internal' } },
+    }), { path: '/api/terminal/ws' })).rejects.toMatchObject({ code: 'direct_unsafe_target' });
+  });
+
+  it('openWebSocket rejects missing targets and non-/api paths', async () => {
     const adapter = createDirectWorkspaceAdapter({ connectionId: 'conn-1', fetchImpl: async () => new Response(), lookupImpl: createLookup(PUBLIC) });
-    await expect(adapter.openWebSocket()).rejects.toMatchObject({ code: 'capability_unavailable', status: 501 });
+    await expect(adapter.openWebSocket(createContext({ profile: null }), { path: '/api/terminal/ws' }))
+      .rejects.toMatchObject({ code: 'direct_no_target' });
+    await expect(adapter.openWebSocket(createContext(), { path: '/health' }))
+      .rejects.toMatchObject({ code: 'catalog_runtime_path_not_allowed', status: 404 });
   });
 
   it('rejects requests when the profile has no target URL', async () => {
