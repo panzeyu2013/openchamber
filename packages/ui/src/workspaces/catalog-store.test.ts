@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test';
+import { beforeEach, describe, expect, test } from 'bun:test';
 import { useWorkspaceCatalogStore } from './catalog-store';
 import {
   CatalogClientError,
@@ -20,14 +20,48 @@ let deleteImpl: (workspaceId: string, ifMatchRevision: number) => Promise<number
 const fetchSnapshotCalls: number[] = [];
 const createCalls: Array<WorkspaceCreateInput> = [];
 
-mock.module('@/workspaces/catalog-client', () => ({
-  fetchCatalogSnapshot: async () => fetchSnapshotImpl(),
-  createWorkspace: async (input: WorkspaceCreateInput) => createImpl(input),
-  updateWorkspace: async (workspaceId: string, patch: WorkspaceUpdateInput, ifMatchRevision: number) => (
-    updateImpl(workspaceId, patch, ifMatchRevision)
-  ),
-  deleteWorkspace: async (workspaceId: string, ifMatchRevision: number) => deleteImpl(workspaceId, ifMatchRevision),
-}));
+// The store talks to the real catalog client, which fetches through the
+// control-plane-pinned fetch calling the global fetch at request time; stub
+// that with a minimal control-plane server whose per-route handlers are the
+// per-test impls below (so the test bodies keep their current observable
+// contract: response shapes, deferred resolutions, thrown errors, call
+// counts).
+const jsonResponse = (body: unknown, status = 200): Response => (
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+);
+
+const errorResponse = (error: unknown): Response => {
+  if (error instanceof CatalogClientError) {
+    return jsonResponse({ error: error.message, code: error.code }, error.status);
+  }
+  return jsonResponse({ error: error instanceof Error ? error.message : 'Request failed' }, 500);
+};
+
+const stubControlPlaneFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+  const raw = input instanceof Request ? input.url : String(input);
+  const path = raw.startsWith('http') ? new URL(raw).pathname : raw;
+  const method = (init?.method ?? 'GET').toUpperCase();
+  try {
+    if (path === '/api/workspaces') {
+      if (method === 'GET') return jsonResponse(await fetchSnapshotImpl());
+      if (method === 'POST') return jsonResponse(await createImpl(JSON.parse(String(init?.body))));
+    }
+    const mutation = path.match(/^\/api\/workspaces\/([^/]+)$/);
+    if (mutation) {
+      const workspaceId = decodeURIComponent(mutation[1]);
+      const ifMatchRevision = Number(new Headers(init?.headers).get('if-match'));
+      if (method === 'PATCH') {
+        return jsonResponse(await updateImpl(workspaceId, JSON.parse(String(init?.body)), ifMatchRevision));
+      }
+      if (method === 'DELETE') return jsonResponse({ revision: await deleteImpl(workspaceId, ifMatchRevision) });
+    }
+  } catch (error) {
+    return errorResponse(error);
+  }
+  return jsonResponse({ error: 'Not found', code: 'catalog_http_error' }, 404);
+};
+
+globalThis.fetch = stubControlPlaneFetch;
 
 const makeDescriptor = (id: string, overrides: Partial<WorkspaceDescriptor> = {}): WorkspaceDescriptor => ({
   id,
@@ -54,6 +88,7 @@ describe('workspace catalog store', () => {
     fetchSnapshotCalls.length = 0;
     createCalls.length = 0;
     useWorkspaceCatalogStore.setState({ snapshot: null, status: 'idle', lastError: null });
+    globalThis.fetch = stubControlPlaneFetch;
     fetchSnapshotImpl = async () => makeSnapshot(1, []);
     createImpl = async (input) => ({
       workspace: makeDescriptor('ws-created', { path: input.path, canonicalPath: input.path, label: input.label ?? 'Created workspace' }),

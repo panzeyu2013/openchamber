@@ -1,8 +1,13 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test"
 import type { Session } from "@opencode-ai/sdk/v2/client"
 import type { ProjectEntry } from "@/lib/api/types"
 import type { WorktreeMetadata } from "@/types/worktree"
 import { resolveProjectForSessionDirectory } from "@/lib/projectResolution"
+import { useConfigStore } from "@/stores/useConfigStore"
+import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { useSessionUIStore } from "../session-ui-store"
+import { clearSyncRefs, setSyncRefs } from "../sync-refs"
+import { setActionRefs, createSession } from "../session-actions"
 
 // Recorded call info
 const setCurrentSessionCalls: Array<{ id: string | null; directoryHint: string | null | undefined }> = []
@@ -10,76 +15,28 @@ const registerSessionDirectoryCalls: Array<{ sessionID: string; directory: strin
 const upsertSessionCalls: Session[] = []
 const markSessionAsOpenChamberCreatedCalls: string[] = []
 
-// Configurable opencodeClient.createSession — set per test
+// Configurable service.createSession — set per test. The service is injected
+// through setActionRefs (never mock.module, which is process-global and leaks
+// into other sync test files).
 let nextCreateSessionResponse: Session = { id: "ses_default", time: { created: 1 } } as Session
 let nextCreateSessionCalls: Array<{ params: unknown; directory: string | null | undefined }> = []
 
 // Configurable current directory (used as fallback when no directoryOverride is set)
 let currentDirectory: string | null = null
 
-mock.module("@/lib/opencode/client", () => ({
-  opencodeClient: {
-    getDirectory: () => currentDirectory,
-    setDirectory: mock(() => undefined),
-    createSession: mock(async (params: unknown, directory?: string | null) => {
-      nextCreateSessionCalls.push({ params, directory })
-      return nextCreateSessionResponse
-    }),
-  },
-}))
+const mockService = {
+  getDirectory: () => currentDirectory,
+  setDirectory: mock(() => undefined),
+  createSession: mock(async (params: unknown, directory?: string | null) => {
+    nextCreateSessionCalls.push({ params, directory })
+    return nextCreateSessionResponse
+  }),
+}
 
-mock.module("../session-ui-store", () => ({
-  useSessionUIStore: {
-    getState: () => ({
-      setCurrentSession: (id: string | null, directoryHint?: string | null) => {
-        setCurrentSessionCalls.push({ id, directoryHint })
-      },
-      markSessionAsOpenChamberCreated: (sessionId: string) => {
-        markSessionAsOpenChamberCreatedCalls.push(sessionId)
-      },
-    }),
-  },
-}))
-
-mock.module("../sync-refs", () => ({
-  getSyncSessionDirectory: () => null,
-  registerSessionDirectory: (sessionID: string, directory: string) => {
-    registerSessionDirectoryCalls.push({ sessionID, directory })
-  },
-}))
-
-mock.module("@/stores/useGlobalSessionsStore", () => ({
-  useGlobalSessionsStore: {
-    getState: () => ({
-      upsertSession: (session: Session) => {
-        upsertSessionCalls.push(session)
-      },
-    }),
-  },
-  mergeSessionDirectoryMetadata: (incoming: Session) => incoming,
-  mergeLiveSessionWithGlobalSession: (incoming: Session) => incoming,
-  resolveGlobalSessionDirectory: () => null,
-}))
-
-mock.module("@/stores/useConfigStore", () => ({
-  useConfigStore: {
-    getState: () => ({
-      isConnected: true,
-      hasEverConnected: true,
-    }),
-  },
-}))
-
-mock.module("../input-store", () => ({
-  useInputStore: {
-    getState: () => ({
-      clearAttachedFiles: () => undefined,
-      addRestoredAttachment: () => undefined,
-    }),
-  },
-}))
-
-const { createSession, setActionRefs } = await import("../session-actions")
+// Real store members captured once so per-test recorders can be restored.
+const realSessionUIState = useSessionUIStore.getState()
+const realGlobalState = useGlobalSessionsStore.getState()
+const initialConfigState = useConfigStore.getState()
 
 beforeEach(() => {
   setCurrentSessionCalls.length = 0
@@ -90,13 +47,53 @@ beforeEach(() => {
   nextCreateSessionResponse = { id: "ses_default", time: { created: 1 } } as Session
   currentDirectory = null
 
+  useConfigStore.setState({ isConnected: true, hasEverConnected: true })
+  useSessionUIStore.setState({
+    setCurrentSession: (id: string | null, directoryHint?: string | null) => {
+      setCurrentSessionCalls.push({ id, directoryHint })
+    },
+    markSessionAsOpenChamberCreated: (sessionId: string) => {
+      markSessionAsOpenChamberCreatedCalls.push(sessionId)
+    },
+  })
+  useGlobalSessionsStore.setState({
+    upsertSession: (session: Session) => {
+      upsertSessionCalls.push(session)
+    },
+  })
+  setSyncRefs(
+    {} as never,
+    { children: new Map(), ensureChild: () => ({}), getChild: () => undefined } as never,
+    "",
+    (sessionID: string, directory: string) => {
+      registerSessionDirectoryCalls.push({ sessionID, directory })
+    },
+    mockService as never,
+    "test-runtime",
+  )
+
   // Initialize action refs. The first two args (sdk, childStores) are not
   // exercised by `createSession` itself, only the directory getter is.
   setActionRefs(
     {} as never,
     { children: new Map(), ensureChild: () => ({}), getChild: () => undefined } as never,
     () => currentDirectory ?? "",
+    undefined,
+    mockService as never,
   )
+})
+
+afterAll(() => {
+  useConfigStore.setState({
+    isConnected: initialConfigState.isConnected,
+    hasEverConnected: initialConfigState.hasEverConnected,
+  })
+  useSessionUIStore.setState({
+    setCurrentSession: realSessionUIState.setCurrentSession,
+    markSessionAsOpenChamberCreated: realSessionUIState.markSessionAsOpenChamberCreated,
+  })
+  useGlobalSessionsStore.setState({ upsertSession: realGlobalState.upsertSession })
+  clearSyncRefs()
 })
 
 describe("issue #1637 — server omits directory, falls back to directoryOverride", () => {

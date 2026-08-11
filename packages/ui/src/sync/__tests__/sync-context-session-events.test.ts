@@ -1,39 +1,52 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 import type { Event, Session } from "@opencode-ai/sdk/v2/client"
+import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { getRuntimeApiBaseUrl, switchRuntimeEndpoint } from "@/lib/runtime-switch"
 
-let currentSessions: Session[] = []
 const upsertedSessions: Session[] = []
 const removedSessionIds: string[] = []
-let runtimeKey = "runtime-a"
-let runtimeWillChange: (() => void) | null = null
+let boundScopeKey = "runtime-a"
 
-mock.module("@/stores/useGlobalSessionsStore", () => ({
-  isGlobalSessionRecencyOnlyUpdate: (existing: Session, incoming: Session) => (
-    existing.title === incoming.title && existing.time?.updated !== incoming.time?.updated
-  ),
-  useGlobalSessionsStore: {
-    getState: () => ({
-      activeSessions: currentSessions,
-      archivedSessions: [] as Session[],
-      upsertSession: (session: Session) => {
-        upsertedSessions.push(session)
-      },
-      upsertSessions: (sessions: Session[]) => {
-        upsertedSessions.push(...sessions)
-      },
-      removeSessions: (ids: string[]) => {
-        removedSessionIds.push(...ids)
-      },
-    }),
-  },
-}))
-mock.module("@/lib/runtime-switch", () => ({
-  getRuntimeKey: () => runtimeKey,
-  subscribeRuntimeEndpointWillChange: (callback: () => void) => {
-    runtimeWillChange = callback
-    return () => undefined
-  },
-}))
+// Real store members captured once so per-test recorders can be restored.
+const realGlobalState = useGlobalSessionsStore.getState()
+const initialRuntimeApiBaseUrl = getRuntimeApiBaseUrl()
+
+// No mock.module here — registrations are process-global and leak into other
+// sync test files. The tests override the real store's state/actions via
+// setState and drive runtime changes through the real runtime-switch module.
+beforeEach(() => {
+  upsertedSessions.length = 0
+  removedSessionIds.length = 0
+  boundScopeKey = "runtime-a"
+  switchRuntimeEndpoint({ apiBaseUrl: "http://sync-events-a.test", runtimeKey: "runtime-a" })
+  useGlobalSessionsStore.setState({
+    scopeKey: boundScopeKey,
+    activeSessions: [],
+    archivedSessions: [],
+    upsertSession: (session: Session) => {
+      upsertedSessions.push(session)
+    },
+    upsertSessions: (sessions: Session[]) => {
+      upsertedSessions.push(...sessions)
+    },
+    removeSessions: (ids: Iterable<string>) => {
+      removedSessionIds.push(...ids)
+    },
+  })
+})
+
+afterAll(() => {
+  useGlobalSessionsStore.setState({
+    scopeKey: realGlobalState.scopeKey,
+    activeSessions: realGlobalState.activeSessions,
+    archivedSessions: realGlobalState.archivedSessions,
+    upsertSession: realGlobalState.upsertSession,
+    upsertSessions: realGlobalState.upsertSessions,
+    removeSessions: realGlobalState.removeSessions,
+  })
+  switchRuntimeEndpoint({ apiBaseUrl: initialRuntimeApiBaseUrl })
+})
+
 import { applySessionEventToGlobalSessions } from "../session-event-router"
 
 const buildSession = (title: string, time: Session["time"]): Session => ({
@@ -61,15 +74,18 @@ const buildLifecycleEvent = (type: "session.idle" | "session.error", sessionId: 
 
 describe("applySessionEventToGlobalSessions", () => {
   beforeEach(() => {
-    runtimeWillChange?.()
-    runtimeKey = "runtime-a"
-    currentSessions = []
+    boundScopeKey = "runtime-a"
+    useGlobalSessionsStore.setState({
+      scopeKey: boundScopeKey,
+      activeSessions: [],
+      archivedSessions: [],
+    })
     upsertedSessions.length = 0
     removedSessionIds.length = 0
   })
 
   test("skips stale global session.updated echoes after a newer rename", () => {
-    currentSessions = [buildSession("New Title", { created: 1, updated: 20 })]
+    useGlobalSessionsStore.setState({ activeSessions: [buildSession("New Title", { created: 1, updated: 20 })] })
 
     applySessionEventToGlobalSessions(buildEvent(buildSession("Old Title", { created: 1, updated: 10 })))
 
@@ -77,7 +93,7 @@ describe("applySessionEventToGlobalSessions", () => {
   })
 
   test("commits only the latest recency update when a session becomes idle", () => {
-    currentSessions = [buildSession("Initial", { created: 1, updated: 10 })]
+    useGlobalSessionsStore.setState({ activeSessions: [buildSession("Initial", { created: 1, updated: 10 })] })
 
     applySessionEventToGlobalSessions(buildEvent(buildSession("Initial", { created: 1, updated: 20 })))
     applySessionEventToGlobalSessions(buildEvent(buildSession("Initial", { created: 1, updated: 30 })))
@@ -88,7 +104,7 @@ describe("applySessionEventToGlobalSessions", () => {
   })
 
   test("applies substantive session updates immediately", () => {
-    currentSessions = [buildSession("Initial", { created: 1, updated: 10 })]
+    useGlobalSessionsStore.setState({ activeSessions: [buildSession("Initial", { created: 1, updated: 10 })] })
 
     applySessionEventToGlobalSessions(buildEvent(buildSession("Renamed", { created: 1, updated: 20 })))
 
@@ -96,7 +112,7 @@ describe("applySessionEventToGlobalSessions", () => {
   })
 
   test("cancels a pending global update when the session is deleted", () => {
-    currentSessions = [buildSession("Initial", { created: 1, updated: 10 })]
+    useGlobalSessionsStore.setState({ activeSessions: [buildSession("Initial", { created: 1, updated: 10 })] })
 
     applySessionEventToGlobalSessions(buildEvent(buildSession("Initial", { created: 1, updated: 20 })))
     applySessionEventToGlobalSessions(buildDeleteEvent("ses_1"))
@@ -107,13 +123,31 @@ describe("applySessionEventToGlobalSessions", () => {
   })
 
   test("discards pending global updates when the runtime changes", () => {
-    currentSessions = [buildSession("Initial", { created: 1, updated: 10 })]
+    useGlobalSessionsStore.setState({ activeSessions: [buildSession("Initial", { created: 1, updated: 10 })] })
     applySessionEventToGlobalSessions(buildEvent(buildSession("Initial", { created: 1, updated: 20 })))
 
-    runtimeKey = "runtime-b"
-    runtimeWillChange?.()
+    // The pending update is keyed by the scope it was captured under; the
+    // lifecycle event after the switch resolves a different scope key, so the
+    // stale pending update is never committed.
+    switchRuntimeEndpoint({ apiBaseUrl: "http://sync-events-b.test", runtimeKey: "runtime-b" })
     applySessionEventToGlobalSessions(buildLifecycleEvent("session.idle", "ses_1"))
 
     expect(upsertedSessions).toEqual([])
+  })
+
+  test("ignores events captured for another workspace scope", () => {
+    boundScopeKey = "workspace:current"
+    useGlobalSessionsStore.setState({
+      scopeKey: boundScopeKey,
+      activeSessions: [buildSession("Initial", { created: 1, updated: 10 })],
+    })
+
+    applySessionEventToGlobalSessions(
+      buildEvent(buildSession("Foreign", { created: 1, updated: 20 })),
+      "workspace:foreign",
+    )
+
+    expect(upsertedSessions).toEqual([])
+    expect(removedSessionIds).toEqual([])
   })
 })
