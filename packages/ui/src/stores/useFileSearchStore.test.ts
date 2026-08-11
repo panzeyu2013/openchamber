@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
+import type { ProjectFileSearchHit } from '@/lib/opencode/client';
 import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
 
 type Deferred<T> = {
@@ -10,6 +12,7 @@ type Deferred<T> = {
 };
 
 const searchRequests: Array<Deferred<Array<{ path: string }>>> = [];
+const boundSearchRequests: Array<Deferred<ProjectFileSearchHit[]>> = [];
 let runtimeKey = 'runtime-a';
 
 const createDeferred = <T>(): Deferred<T> => {
@@ -25,6 +28,17 @@ const createDeferred = <T>(): Deferred<T> => {
 const searchFilesMock = mock(() => {
   const request = createDeferred<Array<{ path: string }>>();
   searchRequests.push(request);
+  return request.promise;
+});
+
+const boundSearchFilesMock = mock((
+  query: string,
+  options?: { directory?: string | null; limit?: number; includeHidden?: boolean; respectGitignore?: boolean; dirs?: boolean; type?: 'file' | 'directory' },
+) => {
+  void query;
+  void options;
+  const request = createDeferred<ProjectFileSearchHit[]>();
+  boundSearchRequests.push(request);
   return request.promise;
 });
 
@@ -44,6 +58,7 @@ const { useFileSearchStore } = await import('./useFileSearchStore');
 describe('useFileSearchStore', () => {
   beforeEach(() => {
     searchRequests.length = 0;
+    boundSearchRequests.length = 0;
     runtimeKey = 'runtime-a';
     useFileSearchStore.setState({
       cache: {},
@@ -160,6 +175,7 @@ const clearWorkspaceSession = () => {
 describe('useFileSearchStore workspace scope', () => {
   beforeEach(() => {
     searchRequests.length = 0;
+    boundSearchRequests.length = 0;
     runtimeKey = 'runtime-a';
     useFileSearchStore.setState({ cache: {}, cacheKeys: [], inFlight: {} });
     clearWorkspaceSession();
@@ -181,6 +197,25 @@ describe('useFileSearchStore workspace scope', () => {
 
     expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'ws-b.ts' }]);
     expect(searchRequests).toHaveLength(2);
+  });
+
+  test('uses the bound workspace transport instead of the ambient client', async () => {
+    setWorkspaceSession('ws-a');
+    const promise = useFileSearchStore.getState().searchFiles(
+      '/project',
+      'foo',
+      60,
+      undefined,
+      {
+        scopeKey: workspaceScopeKey('ws-a'),
+        transport: { searchFiles: boundSearchFilesMock },
+      },
+    );
+
+    expect(searchRequests).toHaveLength(0);
+    expect(boundSearchRequests).toHaveLength(1);
+    boundSearchRequests[0].resolve([{ name: 'bound.ts', path: 'bound.ts', relativePath: 'bound.ts' }]);
+    expect(await promise).toEqual([{ name: 'bound.ts', path: 'bound.ts', relativePath: 'bound.ts' }]);
   });
 
   test('invalidateDirectory clears only the active workspace scope', async () => {

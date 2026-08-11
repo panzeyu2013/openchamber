@@ -1,6 +1,6 @@
 import React from 'react';
 import { cn, truncatePathMiddle } from '@/lib/utils';
-import { useFileSearchStore } from '@/stores/useFileSearchStore';
+import { useScopedFileSearch } from '@/stores/useFileSearchStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
@@ -61,7 +61,7 @@ export const FileMentionAutocomplete = React.forwardRef<FileMentionHandle, FileM
     ),
   );
   const getVisibleAgents = useConfigStore((state) => state.getVisibleAgents);
-  const searchFiles = useFileSearchStore((state) => state.searchFiles);
+  const searchFiles = useScopedFileSearch();
   const debouncedQuery = useDebouncedValue(searchQuery, 180);
   const showHidden = useDirectoryShowHidden();
   const showGitignored = useFilesViewShowGitignored();

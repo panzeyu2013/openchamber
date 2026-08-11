@@ -37,7 +37,7 @@ import { ContextUsageDisplay } from '@/components/ui/ContextUsageDisplay';
 import { WindowsWindowControls } from '@/components/desktop/WindowsWindowControls';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
 import { useDeviceInfo, useTabletStandalonePwaRuntime } from '@/lib/device';
-import { useActiveWorkspaceCapabilities } from '@/workspaces/useActiveWorkspace';
+import { useActiveWorkspaceCapabilities, useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { cn, hasModifier } from '@/lib/utils';
 import { McpDropdownContent } from '@/components/mcp/McpDropdown';
 import { McpIcon } from '@/components/icons/McpIcon';
@@ -504,6 +504,7 @@ export const Header: React.FC<HeaderProps> = ({
   const getContextUsage = useSessionUIStore((state) => state.getContextUsage);
   const isNewSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const currentSessionMessagesResolved = useSessionMessagesResolved(currentSessionId ?? '');
   const currentSessionStatus = useGlobalSessionStatus(currentSessionId ?? '');
   const isCurrentSessionMovingToWorktree = useIsSessionWorktreeMovePending(currentSessionId ?? '');
@@ -1431,11 +1432,12 @@ export const Header: React.FC<HeaderProps> = ({
     void invokeDesktop('desktop_open_draft_mini_chat_window', {
       directory: normalize(openDirectory || activeProject?.path || ''),
       projectId: activeProject?.id ?? null,
+      workspaceId: activeWorkspaceId ?? null,
       ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[header] failed to open draft mini chat window', error);
     });
-  }, [activeProject?.id, activeProject?.path, openDirectory]);
+  }, [activeProject?.id, activeProject?.path, activeWorkspaceId, openDirectory]);
 
   const handleOpenCurrentMiniChat = React.useCallback(() => {
     if (isNewSessionDraftOpen) {
@@ -1449,11 +1451,12 @@ export const Header: React.FC<HeaderProps> = ({
     void invokeDesktop('desktop_open_session_mini_chat_window', {
       sessionId: currentSessionId,
       directory: normalize(openDirectory || activeProject?.path || ''),
+      workspaceId: activeWorkspaceId ?? null,
       ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[header] failed to open session mini chat window', error);
     });
-  }, [activeProject?.path, currentSessionId, handleOpenDraftMiniChat, isNewSessionDraftOpen, openDirectory]);
+  }, [activeProject?.path, activeWorkspaceId, currentSessionId, handleOpenDraftMiniChat, isNewSessionDraftOpen, openDirectory]);
 
   const handleOpenContextPanel = React.useCallback(() => {
     const directory = normalize(openDirectory || '');

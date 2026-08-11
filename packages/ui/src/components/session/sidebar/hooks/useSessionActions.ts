@@ -32,7 +32,8 @@ type Args = {
   setIsSessionSearchOpen: (open: boolean) => void;
   setActiveMainTab: (tab: MainTab) => void;
   setSessionSwitcherOpen: (open: boolean) => void;
-  setCurrentSession: (sessionId: string | null, directoryHint?: string | null) => void;
+  setCurrentSession: (sessionId: string | null, directoryHint?: string | null, workspaceId?: string | null) => void;
+  workspaceId: string | null;
   updateSessionTitle: (id: string, title: string) => Promise<void>;
   shareSession: (id: string) => Promise<Session | null>;
   unshareSession: (id: string) => Promise<Session | null>;
@@ -83,7 +84,11 @@ export const useSessionActions = (args: Args) => {
         args.setSessionSwitcherOpen(false);
       }
 
-      if (sessionId === useSessionUIStore.getState().currentSessionId) {
+      const currentSelection = useSessionUIStore.getState();
+      if (
+        sessionId === currentSelection.currentSessionId
+        && (args.workspaceId ?? null) === (currentSelection.currentWorkspaceId ?? null)
+      ) {
         if (args.allowReselect) {
           args.onSessionSelected?.(sessionId);
         }
@@ -91,7 +96,7 @@ export const useSessionActions = (args: Args) => {
         return;
       }
       streamPerfMark('navigation.session_state_set');
-      args.setCurrentSession(sessionId, sessionDirectory ?? null);
+      args.setCurrentSession(sessionId, sessionDirectory ?? null, args.workspaceId);
       args.onSessionSelected?.(sessionId);
       resetSessionSearch();
     },

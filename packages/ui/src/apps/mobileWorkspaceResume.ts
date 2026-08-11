@@ -54,7 +54,7 @@ export const refreshWorkspaceStateAfterResume = async (): Promise<WorkspaceResum
 
   const latest = useSessionUIStore.getState();
   if (!latest.currentSessionId) {
-    latest.setCurrentSession(persisted.sessionId, persisted.directory ?? undefined);
+    latest.setCurrentSession(persisted.sessionId, persisted.directory ?? undefined, workspaceId);
   }
   return { restored: true, workspaceId, sessionId: persisted.sessionId };
 };

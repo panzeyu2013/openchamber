@@ -61,7 +61,9 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
 
   const resolveTunnelUrl = async (sshInstanceId) => {
     const statuses = await sshManager.statusesWithDefaults(sshInstanceId);
-    const status = statuses?.[sshInstanceId] ?? null;
+    const status = Array.isArray(statuses)
+      ? statuses.find((entry) => entry?.id === sshInstanceId) ?? null
+      : statuses?.[sshInstanceId] ?? null;
     if (!status || status.status !== 'connected' || typeof status.localUrl !== 'string' || status.localUrl.length === 0) {
       const error = new Error('SSH tunnel is not connected');
       error.code = 'capability_unavailable';
@@ -80,6 +82,15 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
     }
     if (clientToken) headers.set('authorization', `Bearer ${clientToken}`);
     return headers;
+  };
+
+  const resolveClientToken = (context) => {
+    const fromProfile = context?.profile?.target?.clientToken;
+    if (typeof fromProfile === 'string' && fromProfile.trim()) return fromProfile.trim();
+    if (typeof sshManager.runtimeCredentialsForInstance === 'function') {
+      return sshManager.runtimeCredentialsForInstance(sshInstanceId)?.clientToken?.trim?.() ?? '';
+    }
+    return '';
   };
 
   const canonicalizePath = async (_context, inputPath) => {
@@ -128,7 +139,7 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
 
   const listChildren = async (context, directoryPath) => {
     const baseUrl = await resolveTunnelUrl(context?.profile?.target?.sshInstanceId);
-    const headers = buildUpstreamHeaders(null, context?.profile?.target?.clientToken);
+    const headers = buildUpstreamHeaders(null, resolveClientToken(context));
     headers.set('x-openchamber-directory', String(directoryPath).replace(/\\/g, '/').replace(/\/+$/, ''));
     headers.set('accept', 'application/json');
     const response = await fetchImpl(`${baseUrl}/api/fs/list`, { method: 'GET', headers });
@@ -160,7 +171,7 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
 
   const fetch = async (context, request, restPath) => {
     const baseUrl = await resolveTunnelUrl(context?.profile?.target?.sshInstanceId);
-    const headers = buildUpstreamHeaders(request?.headers, context?.profile?.target?.clientToken);
+    const headers = buildUpstreamHeaders(request?.headers, resolveClientToken(context));
     let body;
     const method = request?.method ?? 'GET';
     if (method !== 'GET' && method !== 'HEAD' && request?.body !== undefined && request.body !== null) {
@@ -181,7 +192,7 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
 
   const openEventStream = async (context, restPath, signal) => {
     const baseUrl = await resolveTunnelUrl(context?.profile?.target?.sshInstanceId);
-    const headers = buildUpstreamHeaders(null, context?.profile?.target?.clientToken);
+    const headers = buildUpstreamHeaders(null, resolveClientToken(context));
     headers.set('accept', 'text/event-stream');
     const response = await fetchImpl(`${baseUrl}${restPath}`, { method: 'GET', headers, signal });
     if (!response.ok || !response.body) {
@@ -210,7 +221,7 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
       error.status = 404;
       throw error;
     }
-    const headers = buildUpstreamHeaders(request?.headers, context?.profile?.target?.clientToken);
+    const headers = buildUpstreamHeaders(request?.headers, resolveClientToken(context));
     return {
       url: `${baseUrl.replace(/^http/i, 'ws')}${pathname}`,
       headers: objectifyHeaders(headers),

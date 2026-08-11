@@ -857,6 +857,22 @@ export class ElectronSshManager {
     this.emit('openchamber:desktop-hosts-changed');
   }
 
+  /**
+   * Returns only the server credential needed by the in-process workspace
+   * adapter. The renderer never receives this value through the SSH status
+   * event or the workspace catalog.
+   */
+  runtimeCredentialsForInstance(instanceId) {
+    const id = String(instanceId || '').trim();
+    if (!id) return { clientToken: '' };
+    const root = readJsonRoot(this.settingsFilePath);
+    const host = (Array.isArray(root.desktopHosts) ? root.desktopHosts : [])
+      .find((entry) => entry?.id === id);
+    return {
+      clientToken: typeof host?.clientToken === 'string' ? host.clientToken.trim() : '',
+    };
+  }
+
   async issueClientToken(localUrl, openchamberPassword) {
     const password = typeof openchamberPassword === 'string' ? openchamberPassword.trim() : '';
     if (!password) return '';

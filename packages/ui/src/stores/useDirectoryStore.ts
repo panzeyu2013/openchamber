@@ -3,6 +3,7 @@ import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
 import { getDesktopHomeDirectory, isVSCodeRuntime } from '@/lib/desktop';
 import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
@@ -262,6 +263,10 @@ export const useDirectoryStore = create<DirectoryStore>()(
       isSwitchingDirectory: false,
 
       setDirectory: (path: string, options?: { showOverlay?: boolean }) => {
+        // A workspace handle owns its directory. Keep the legacy directory
+        // store inert while that scope is mounted so late UI effects cannot
+        // rewrite the ambient runtime behind the selected workspace.
+        if (isWorkspaceRuntimeActive()) return;
         void options;
         const homeDir = cachedHomeDirectory || get().homeDirectory || safeStorage.getItem('homeDirectory');
         const resolvedPath = resolveDirectoryPath(path, homeDir);
@@ -290,6 +295,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
       },
 
       goBack: () => {
+        if (isWorkspaceRuntimeActive()) return;
         const state = get();
         if (state.historyIndex > 0) {
           const newIndex = state.historyIndex - 1;
@@ -313,6 +319,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
       },
 
       goForward: () => {
+        if (isWorkspaceRuntimeActive()) return;
         const state = get();
         if (state.historyIndex < state.directoryHistory.length - 1) {
           const newIndex = state.historyIndex + 1;
@@ -437,6 +444,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
 
 if (typeof window !== 'undefined') {
   initializeHomeDirectory().then((home) => {
+    if (isWorkspaceRuntimeActive()) return;
     useDirectoryStore.getState().synchronizeHomeDirectory(home);
   });
 
@@ -444,10 +452,15 @@ if (typeof window !== 'undefined') {
   // must be re-resolved from the new runtime's authoritative source instead
   // of keeping the previous host's value cached.
   subscribeRuntimeEndpointChanged(() => {
+    // A workspace provider owns its directory and service. Runtime endpoint
+    // changes are a legacy ambient concern; applying them here would rewrite
+    // the compatibility directory while a workspace session is mounted.
+    if (isWorkspaceRuntimeActive()) return;
     cachedHomeDirectory = null;
     const generation = ++homeResolveGeneration;
     initializeHomeDirectory().then((home) => {
       if (generation !== homeResolveGeneration) return;
+      if (isWorkspaceRuntimeActive()) return;
       useDirectoryStore.getState().synchronizeHomeDirectory(home);
     });
   });

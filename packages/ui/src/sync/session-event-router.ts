@@ -5,19 +5,21 @@ import { streamPerfCount, streamPerfMark } from "@/stores/utils/streamDebug"
 import { stripSessionDiffSnapshots } from "./sanitize"
 import { shouldSkipStaleSessionEvent } from "./session-event-freshness"
 
-const pendingGlobalSessionUpdates = new Map<string, { runtimeKey: string; session: Session }>()
+const pendingGlobalSessionUpdates = new Map<string, { scopeKey: string; session: Session }>()
+
+const pendingKey = (scopeKey: string, sessionId: string): string => `${scopeKey}\0${sessionId}`
 
 const clearPendingGlobalSessionUpdates = (): void => {
   pendingGlobalSessionUpdates.clear()
 }
 
-const flushPendingGlobalSessionUpdate = (sessionID: string): void => {
-  const update = pendingGlobalSessionUpdates.get(sessionID)
-  pendingGlobalSessionUpdates.delete(sessionID)
+const flushPendingGlobalSessionUpdate = (scopeKey: string, sessionID: string): void => {
+  const key = pendingKey(scopeKey, sessionID)
+  const update = pendingGlobalSessionUpdates.get(key)
+  pendingGlobalSessionUpdates.delete(key)
   if (!update) return
-  const runtimeKey = getRuntimeKey()
-  if (update.runtimeKey !== runtimeKey) return
-  const currentSession = getGlobalSessionSnapshot(update.session.id)
+  if (update.scopeKey !== scopeKey) return
+  const currentSession = getGlobalSessionSnapshot(scopeKey, update.session.id)
   if (
     !currentSession
     || shouldSkipStaleSessionEvent(currentSession, update.session)
@@ -28,8 +30,8 @@ const flushPendingGlobalSessionUpdate = (sessionID: string): void => {
   streamPerfCount("ui.global_sessions.event_update_publication")
 }
 
-const scheduleGlobalSessionUpdate = (session: Session): void => {
-  pendingGlobalSessionUpdates.set(session.id, { runtimeKey: getRuntimeKey(), session })
+const scheduleGlobalSessionUpdate = (scopeKey: string, session: Session): void => {
+  pendingGlobalSessionUpdates.set(pendingKey(scopeKey, session.id), { scopeKey, session })
   streamPerfCount("ui.global_sessions.event_update_deferred")
 }
 
@@ -58,22 +60,29 @@ const getSessionInfoFromPayload = (event: Event): Session | null => {
   return stripSessionDiffSnapshots(session as Session)
 }
 
-const getGlobalSessionSnapshot = (sessionId: string): Session | null => {
+const getGlobalSessionSnapshot = (scopeKey: string, sessionId: string): Session | null => {
   const global = useGlobalSessionsStore.getState()
+  // Compatibility mocks and detached legacy surfaces may not expose the new
+  // scope field. Real store instances always do, and an explicitly bound
+  // event from another workspace must never mutate this facade.
+  if (global.scopeKey && global.scopeKey !== scopeKey) return null
   return [...global.activeSessions, ...global.archivedSessions].find((session) => session.id === sessionId) ?? null
 }
 
-export const applySessionEventToGlobalSessions = (payload: Event): void => {
+export const applySessionEventToGlobalSessions = (payload: Event, scopeKey = getRuntimeKey()): void => {
+  const globalStore = useGlobalSessionsStore.getState()
+  if (globalStore.scopeKey && globalStore.scopeKey !== scopeKey) return
+
   if (payload.type === "session.idle" || payload.type === "session.error") {
     const sessionID = (payload as { properties?: { sessionID?: unknown } }).properties?.sessionID
-    if (typeof sessionID === "string") flushPendingGlobalSessionUpdate(sessionID)
+    if (typeof sessionID === "string") flushPendingGlobalSessionUpdate(scopeKey, sessionID)
     return
   }
 
   if (payload.type === "session.created") {
     const session = getSessionInfoFromPayload(payload)
     if (session) {
-      const currentSession = getGlobalSessionSnapshot(session.id)
+      const currentSession = getGlobalSessionSnapshot(scopeKey, session.id)
       if (!shouldSkipStaleSessionEvent(currentSession, session)) {
         useGlobalSessionsStore.getState().upsertSession(session)
       }
@@ -84,12 +93,12 @@ export const applySessionEventToGlobalSessions = (payload: Event): void => {
   if (payload.type === "session.updated") {
     const session = getSessionInfoFromPayload(payload)
     if (session) {
-      const currentSession = getGlobalSessionSnapshot(session.id)
+      const currentSession = getGlobalSessionSnapshot(scopeKey, session.id)
       if (!shouldSkipStaleSessionEvent(currentSession, session)) {
         if (currentSession && isGlobalSessionRecencyOnlyUpdate(currentSession, session)) {
-          scheduleGlobalSessionUpdate(session)
+          scheduleGlobalSessionUpdate(scopeKey, session)
         } else {
-          pendingGlobalSessionUpdates.delete(session.id)
+          pendingGlobalSessionUpdates.delete(pendingKey(scopeKey, session.id))
           useGlobalSessionsStore.getState().upsertSession(session)
           streamPerfCount("ui.global_sessions.event_update_immediate")
         }
@@ -101,7 +110,7 @@ export const applySessionEventToGlobalSessions = (payload: Event): void => {
   if (payload.type === "session.deleted") {
     const sessionID = (payload as { properties?: { sessionID?: string } }).properties?.sessionID ?? getSessionInfoFromPayload(payload)?.id
     if (sessionID) {
-      pendingGlobalSessionUpdates.delete(sessionID)
+      pendingGlobalSessionUpdates.delete(pendingKey(scopeKey, sessionID))
       useGlobalSessionsStore.getState().removeSessions([sessionID])
     }
   }

@@ -463,6 +463,9 @@ interface GitWorktreeAPI {
 export interface GitAPI {
   checkIsGitRepository(directory: string): Promise<boolean>;
   getGitStatus(directory: string, options?: { mode?: 'light' }): Promise<GitStatus>;
+  /** Resolve worktree roots through the workspace-bound runtime when present. */
+  resolveGitPrimaryRoot?(directory: string): Promise<{ root: string }>;
+  resolveGitTopLevel?(directory: string): Promise<{ root: string }>;
   getGitDiff(directory: string, options: GetGitDiffOptions): Promise<GitDiffResponse>;
   getGitFileDiff(directory: string, options: GetGitFileDiffOptions): Promise<GitFileDiffResponse>;
   getGitRangeDiff?(directory: string, options: GetGitRangeDiffOptions): Promise<GitDiffResponse>;
@@ -735,6 +738,7 @@ export interface NotificationPayload {
 
   tag?: string;
   kind?: string;
+  workspaceId?: string;
   sessionId?: string;
   directory?: string;
   requireHidden?: boolean;

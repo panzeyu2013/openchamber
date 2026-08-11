@@ -14,6 +14,14 @@ Same-origin session-chat iframes complete an authenticated parent-frame handshak
 
 The preload bridge exposes desktop-only APIs to the web UI through `window.__OPENCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI. Remote runtime pages are limited to operations on their own native window; host enumeration, network probing, runtime switching, filesystem, shell, and app-global window operations require the packaged or verified-local UI.
 
+Tray session rows, deep links, and Mini Chat open/focus actions carry the
+composite `workspaceId`/`sessionId` target when Session Index metadata can
+resolve it. Main-process routing still uses the snapshot's runtime key to
+select a safe renderer. Workspace-targeted Mini Chat windows hydrate the local
+Catalog and bind their own workspace handle; if a handle cannot be resolved
+they render unavailable, and tray routing falls back to the full app rather
+than sending a session ID to the wrong runtime.
+
 ## Main Files
 
 | File | Purpose |
@@ -22,7 +30,7 @@ The preload bridge exposes desktop-only APIs to the web UI through `window.__OPE
 | `startup-url-selection.mjs` | Pure bundled/HMR startup probe and loopback connection-limit policy |
 | `preload.mjs` | Safe bridge from the rendered UI to Electron IPC |
 | `ssh-manager.mjs` | SSH host import, connection lifecycle, tunnel/port forwarding helpers |
-| `workspace-connection-adapter.mjs` | Injects one workspace Connection Broker adapter per saved SSH instance into the in-process server (`startWebUiServer({ workspaceConnectionAdapters })`). Forwards only to ssh-manager-produced tunnel URLs; tunnel lifecycle stays with `ssh-manager`; renderers never see tunnel URLs or SSH material. |
+| `workspace-connection-adapter.mjs` | Injects one workspace Connection Broker adapter per saved SSH instance into the in-process server (`startWebUiServer({ workspaceConnectionAdapters })`). Resolves the current array-shaped SSH status and private desktop-host client token on every operation, then forwards HTTP/SSE/WS only to ssh-manager-produced tunnel URLs; tunnel lifecycle stays with `ssh-manager`; renderers never see tunnel URLs or SSH material. |
 | `scripts/electron-dev.mjs` | Desktop dev launcher with Vite HMR support |
 | `scripts/ensure-electron.mjs` | Verifies the installed Electron binary is complete and repairs it via the postinstall under Bun |
 | `scripts/build-web-assets.mjs` | Builds `packages/web` and stages UI assets into `resources/web-dist` |

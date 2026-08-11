@@ -40,6 +40,14 @@ Examples:
 
 These stores coordinate visible app state, navigation, selected tabs, dialogs, and lightweight feature flags.
 
+`useUIStore` keeps context-panel tabs path-keyed inside the active scope for
+compatibility with existing consumers. The active scope is
+`workspace:<workspaceId>` when the selected session resolves through the
+Workspace Session Index, otherwise the ambient runtime key. Workspace/runtime
+switches move the current directory map into a bounded set of scope snapshots
+and activate only the target snapshot; legacy `ui-store` data without a scope
+key is read as the old runtime bucket during migration.
+
 ### Session / project coordination stores
 
 Examples:
@@ -54,16 +62,81 @@ These stores coordinate persistent project/session metadata across multiple view
 Unified-workspace migration note: the Workspace Catalog
 (`packages/ui/src/workspaces/catalog-store.ts`) and the Session Index
 (`packages/ui/src/workspaces/session-index-store.ts`) are the forward
-contract for workspace/session identity; `useProjectsStore` (path-derived
-ids, API-base-URL-sliced storage), `useGlobalSessionsStore` and the
-runtime-scoped keys below remain in the compatibility period (dual read).
-New code must not add new runtime/path-scoped persistence for workspace or
-session identity — use workspace scope keys from
+contract for workspace/session identity. `useProjectsStore` is now a
+Catalog-first compatibility projection: when a successful Catalog snapshot
+exists it projects only the built-in `local` connection into the old
+project-shaped API, writes workspace identity and label/color/order mutations
+to the Catalog, and keeps legacy project metadata (icons and default models)
+as a dual-read/compatibility bridge. When the Catalog is unavailable, the
+remaining project-shaped fallback uses one recoverable local cache; it no
+longer reads or writes a cache partition derived from the selected remote
+runtime API URL and no longer reacts to runtime endpoint changes. Remote
+workspaces stay in the Catalog/Session Index path, while the VS Code folder
+mapping remains an explicit compatibility adapter.
+`useGlobalSessionsStore` and the runtime-scoped keys below remain in the
+compatibility period (dual read). New code must not add new runtime/path-scoped
+persistence for workspace or session identity — use workspace scope keys from
 `packages/ui/src/workspaces/identity.ts`.
+
+`useConfigStore`'s persisted worktree-to-project lookup follows the current
+SyncProvider scope when one exists, with the ambient runtime key retained for
+legacy bootstrap/VS Code mounts. Provider/agent reads capture that same scope
+and bound `OpencodeService`; workspace roots may load directly even when they
+are not present in the legacy project tree, and late results are discarded
+after a scope switch. OpenChamber settings and provider/agent CRUD remain on
+their documented compatibility routes until a workspace settings contract is
+available.
 
 `messageQueueStore.ts` keeps a queued message until its own send resolves, so between dispatch and resolution the entry is still visible to every reader. Dispatchers must therefore mark the send (`markSending`/`clearSending`) and read `getSendableQueue()` — or filter `sendingIds` themselves — instead of dispatching straight from `queuedMessages`; otherwise a composer submit merges a message the auto-send hook is already delivering and it is sent twice (the window is seconds over a relay). `clearQueue()` retains in-flight entries for the same reason. `sendingIds` is deliberately not persisted: a restart has no in-flight sends, and a stale flag would strand a queued message.
 
-`useGlobalSessionsStore.ts` owns cold/global active and archived session coverage, including `sessionsByDirectory`. It is complementary to directory child stores: it is not the source of live busy/retry status or session messages.
+`useGlobalSessionsStore.ts` owns cold/global active and archived session coverage, including `sessionsByDirectory`. It is complementary to directory child stores: it is not the source of live busy/retry status or session messages. During the unified-workspace migration its public state is a current-scope compatibility view: `SyncProvider` binds it to `workspace:<workspaceId>` with the workspace SDK, while legacy mounts bind the ambient runtime key. The backing partitions retain prior workspace/runtime snapshots, so an endpoint or workspace switch does not clear unrelated full-session data; loads and event updates are rejected or committed against their captured scope.
+
+The Agent Manager's `useAgentGroupsStore` follows the same ownership rule for
+worktree session discovery: each load captures the mounted SyncProvider's
+bound `OpencodeService` and scope, and a later workspace switch or newer load
+cannot publish the old result into the current group list. Its worktree
+topology still comes from `worktreeManager`, whose Git calls use the same bound
+runtime API when available.
+
+Multi-Run creation and fusion likewise capture the current bound service and
+scope before creating sessions or sending prompts. A workspace change during
+the operation aborts the old owner instead of creating/registering a session or
+sending its prompt through the newly selected workspace.
+
+The live busy/retry facade in `sync/global-session-status.ts` follows the same
+binding rule. Its visible `statusById` map is the current SyncProvider scope;
+equal session IDs in other workspace/runtime partitions remain isolated, and
+foreign late events cannot publish into the current map. Runtime endpoint
+reset therefore does not clear this index; rebinding selects the new scope.
+
+`useProjectsStore.ts` remains a compatibility facade for project-oriented
+surfaces. A successful Catalog snapshot is authoritative for the projected
+list and order; remote workspaces are not copied into this path-based project
+tree because the unified sidebar reads the Catalog directly. A failed or
+unavailable Catalog refresh never becomes an authoritative empty project list:
+the prior legacy projection remains available for recovery. Catalog
+create/delete and label/color/order updates are routed through
+`useWorkspaceCatalogStore`; legacy settings are retained only for fields the
+Catalog does not own (currently icons and default models). The one-time
+compatibility reader may import the old local-runtime cache into the single
+legacy key, but selected remote runtime URLs never create another project
+identity or storage namespace.
+
+Store and persistence callers that still resolve `RuntimeAPIs` through the
+registry receive typed `capability_unavailable` settings while a workspace is
+active. Direct `runtimeFetch` calls to `/api/config/*` are rejected with the
+same explicit 501 response, so a missing workspace config contract cannot
+fall through to the ambient runtime.
+
+File browsing caches use the same scope boundary. `useFilesViewTabsStore`
+maintains a current projection plus bounded snapshots keyed by the active
+workspace scope (falling back to the ambient runtime scope for legacy mounts),
+and listens to both workspace selection and runtime-endpoint changes before
+publishing a new projection. The sidebar file-tree cache uses
+`[scopeKey, root]`, where a workspace scope comes from the bound
+`WorkspaceRuntimeHandle`; equal paths on different workspaces therefore never
+reuse directory listings. These caches may retain old scope snapshots, but a
+current-scope reader never falls back to another scope's path-only data.
 
 User-visible session ordering is also not owned by the global cache array order. `sync/session-ordering.ts` combines lifecycle rank with timestamp fallbacks, and session surfaces must use that shared comparator instead of independently sorting global sessions by `time.updated`.
 
@@ -73,11 +146,11 @@ Global refresh rules:
 - Per-directory refresh issues one inclusive request per directory (previously two), bounded to two requests across callers and prioritizing the current directory.
 - Each directory is an independent completeness scope. A failed directory preserves its previous sessions while successful directories reconcile normally.
 - Fetch failure must remain distinguishable from a successful empty list; failed scopes cannot destructively clear cached sessions.
-- Runtime switch increments the load generation and clears the previous runtime's snapshot so stale in-flight work cannot commit.
+- Scope binding increments the load generation when a workspace handle/SDK is replaced, so stale in-flight work cannot commit into the new owner. Switching scopes preserves the old partition; the legacy `resetForRuntimeSwitch` action remains only for explicit compatibility callers and is no longer part of ordinary endpoint-change handling.
 - Live session mutations update the cache directly after successful SDK actions; they preserve stable directory metadata when lighter event payloads omit it.
 - Full and per-directory loads capture a mutation revision. At commit time they overlay only per-session create/update/archive/delete/move mutations newer than that baseline, including no-op deletion tombstones, so an older response cannot undo newer local authority.
 
-Permission auto-accept policy is authoritative in the active Web server or VS Code extension host. Owner snapshots carry a monotonic revision; the UI rejects lower revisions and any hydration or mutation completion captured before a runtime reset. Persisted UI policy is not live authority. The version-2 store retains an old unscoped policy only as a one-runtime legacy migration candidate, then removes it after successful migration.
+Permission auto-accept policy is authoritative in the active Web server or VS Code extension host. It remains unavailable for workspace-bound sessions until an explicit workspace-owned endpoint exists; the store must not send the ambient policy request on their behalf. Owner snapshots carry a monotonic revision; the UI rejects lower revisions and any hydration or mutation completion captured before a runtime/workspace reset. The in-memory policy is tagged with the active SyncProvider scope and is cleared before a different scope can use it, so a same-ID session in a new workspace cannot inherit an old toggle while the compatibility endpoint is loading. Persisted UI policy is not live authority. The version-2 store retains an old unscoped policy only as a one-runtime legacy migration candidate, then removes it after successful migration.
 
 Shared safe storage treats durable failures per key. A quota or access failure creates an ephemeral override or tombstone for that key without disabling reads and writes for unrelated keys; later writes retry the durable backend. Deferred adapters retain failed operations for a later flush, and malformed Zustand JSON is removed and treated as missing so hydration can recover.
 
@@ -104,6 +177,8 @@ release cycle before removal.
 | `useTodosPersistStore.ts` | `JSON.stringify([scopeKey, directory, sessionId])` | `getSessionTodos` falls back to the runtime-keyed key; writes delete the legacy twin |
 | `useInlineCommentDraftStore.ts` | `JSON.stringify([scopeKey, directory, sessionKey])` | `getDrafts`/`consumeDrafts` fall back to the runtime-keyed bucket; `clearDrafts`/`clearSessionDrafts` clean both |
 | `useSessionFoldersStore.ts` | Outer browser bucket `oc.sessions.folders.v2:<scopeKey>`; inner `foldersMap` keys stay directory strings (passed by `SessionSidebar`) | `readPersistedFolders`/`readPersistedCollapsed` fall back to the runtime bucket; `activateScope` switches the active bucket (called from `setCurrentSession`), `resetForRuntimeSwitch` remains the legacy switch path |
+| `useFileSearchStore.ts` | JSON tuple `[scopeKey, directory, query, limit, flags...]`; UI callers use `useScopedFileSearch` and the bound workspace service | Direct store callers use `getSyncOpencodeService()` (which falls back to the ambient service only without a workspace); endpoint reset still clears that compatibility cache and in-flight work |
+| `useMcpStore.ts` | Composite in-memory key `` `${scopeKey}\0${directory}` ``; request owner captures the same scope and bound SyncProvider service | `getSyncOpencodeService()` falls back to the ambient singleton only when no workspace-bound SyncProvider is mounted |
 
 Scope resolution is centralized in `resolveSessionScopeKey(sessionId, directory?)`
 (`packages/ui/src/sync/selection-store.ts`), which reads the workspace session
@@ -114,7 +189,9 @@ store's inner scope key remains the caller-provided directory string
 (`SessionSidebar` groups by project/worktree directory); the outer bucket is
 the only scope dimension changed there.
 
-Session folders persist in runtime-specific v2 browser keys without silently evicting older runtime namespaces. Runtime switch, page hide, app freeze, and unload synchronously flush the pending browser snapshot before lifecycle suspension or namespace replacement. A runtime switch then cancels stale old-runtime disk work and starts generation-owned disk hydration. Missing or malformed server files are not authoritative empty snapshots; disk data may replace browser state only when it carries a real revision and no newer local folder mutation occurred. Server writes are serialized and reject non-newer revisions so delayed or duplicate requests cannot overwrite the current state. File-search cache and in-flight keys include runtime plus directory and are cleared on endpoint reset.
+Session folders persist in runtime-specific v2 browser keys without silently evicting older runtime namespaces. Runtime switch, page hide, app freeze, and unload synchronously flush the pending browser snapshot before lifecycle suspension or namespace replacement. A runtime switch then cancels stale old-runtime disk work and starts generation-owned disk hydration. Missing or malformed server files are not authoritative empty snapshots; disk data may replace browser state only when it carries a real revision and no newer local folder mutation occurred. Server writes are serialized and reject non-newer revisions so delayed or duplicate requests cannot overwrite the current state. File-search cache and in-flight keys include runtime plus directory and are cleared on endpoint reset; workspace UI callers use an explicit bound search transport, while direct legacy store callers retain the compatibility client until the reset facade is removed.
+
+MCP status, diagnostics, loading and error state use the same composite scope/directory key. MCP actions capture both the scope and `OpencodeService` before awaiting a request, so a response from a previous workspace can update only that workspace's inert snapshot and cannot become the current workspace's status. The service comes from the mounted `SyncProvider` for workspace navigation; non-workspace and OAuth/legacy mounts continue through the singleton fallback.
 
 Persisted session todos use a bounded composite key of runtime, normalized directory, and session ID. Ambiguous legacy todo entries are discarded rather than claimed by whichever runtime starts first. Authoritative deletion uses an explicit runtime identity, and session-folder deletion scans every scope in the active runtime so archived assignments cannot survive after their session is gone.
 
@@ -125,6 +202,14 @@ Composer draft edits remain immediate in memory and use a trailing durable-write
 ### `useTerminalStore.ts`
 
 `useTerminalStore` owns terminal tab arrangement per directory plus PTY scrollback.
+
+The active state is partitioned by `workspaceScopeKey(workspaceId)` when a session
+resolves to a workspace, and by the active runtime key for non-workspace/legacy
+surfaces. Scope switches preserve in-memory tab and scrollback snapshots for
+other scopes; `resetForRuntimeSwitch()` clears only the newly active runtime scope
+while `clearAll()` remains an explicit destructive test/cleanup helper. The terminal
+scope listener watches both workspace-session changes and runtime endpoint changes so
+the visible tabs cannot inherit another workspace's directory state.
 
 Scrollback is deliberately **not** stored on the tab. `buffers` is a separate map keyed by
 directory and tab id, and `getBuffer()` returns a shared frozen empty buffer for tabs that
@@ -151,11 +236,11 @@ The Git and PR stores are the most important stores to understand before editing
 
 ### `useGitStore.ts`
 
-`useGitStore` is a centralized active-runtime, per-directory Git cache.
+`useGitStore` is a centralized current-scope, per-directory Git cache.
 
 Core model:
 
-- active runtime owns one `directories` map keyed by directory
+- the active workspace/runtime scope owns one `directories` map keyed by directory
 - each directory entry contains:
   - repo detection
   - status
@@ -172,7 +257,10 @@ Important properties:
 - loading state is per-directory, not global
 - `ensureStatus()` and `ensureAll()` are the preferred entry points for consumers
 - in-flight dedupe exists for status and `ensureAll()`
-- runtime reset replaces all live entries with that runtime's persisted branch seeds and invalidates old completions
+- scope changes preserve the previous `directories` map in a bounded scope snapshot and activate the target scope's map (seeding branches only when that scope has no snapshot)
+- endpoint reset advances the request generation and clears in-flight bookkeeping, but does not erase unrelated scope snapshots; old completions remain rejected by scope/generation guards
+- `RuntimeAPIProvider` supplies the selected workspace's bound Git API to these callers; the store still accepts an explicit API argument so legacy/VS Code mounts retain their existing contract
+- `PullRequestView` keys its remotes/remote-URL warm cache by the same workspace/runtime scope plus directory, so equal repository paths do not reuse another workspace's remote metadata
 - status, branches, log, identity, repository probes, and prefetch diffs commit through runtime and per-channel generations
 - status mutations advance a revision so older refreshes cannot undo optimistic or confirmed index changes
 - branch persistence is versioned, bounded, runtime-scoped, and claims the ambiguous legacy cache once
@@ -200,7 +288,8 @@ Important properties:
 - parameter changes advance an entry revision; stale queued, successful, and failed requests cannot update a newer authority
 - `startWatching()` / `stopWatching()` are for true live PR consumers only
 - `refreshTargets()` supports one-shot multi-target bootstrap without turning on live watching
-- runtime reset disposes timers, watchers, API references, and request ownership while inert namespaced snapshots remain isolated
+- a runtime reset invalidates request ownership globally but only clears timers/watchers/params for the requested scope(s); status snapshots for unrelated workspace scopes remain inert and isolated
+- GitHub remains a compatibility capability without a workspace-bound API route; `RuntimeAPIProvider` intentionally overlays workspace-owned files/Git/terminal/permissions only until the GitHub workspace contract lands
 - persisted cache is versioned, TTL-filtered, and bounded for page refresh continuity, not broad background syncing
 
 ## Ownership Rules

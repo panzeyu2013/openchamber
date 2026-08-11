@@ -1,8 +1,15 @@
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export const applyPersistedDirectoryPreferences = async (): Promise<void> => {
   if (typeof window === 'undefined') {
+    return;
+  }
+
+  // Workspace SyncProvider owns its directory. Replaying the legacy runtime
+  // preference here would let startup overwrite the bound workspace target.
+  if (isWorkspaceRuntimeActive()) {
     return;
   }
 

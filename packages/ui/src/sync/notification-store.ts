@@ -6,12 +6,15 @@
 // ---------------------------------------------------------------------------
 
 import { create } from "zustand"
+import { workspaceSessionKey } from "@/workspaces/identity"
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 type NotificationBase = {
+  /** Explicit workspace identity for unified-workspace sessions. */
+  workspaceId?: string
   directory?: string
   session?: string
   time: number
@@ -68,8 +71,9 @@ function buildIndex(list: Notification[]): NotificationIndex {
     if (n.viewed) continue
 
     if (n.session) {
-      index.session.unseenCount[n.session] = (index.session.unseenCount[n.session] ?? 0) + 1
-      if (n.type === "error") index.session.unseenHasError[n.session] = true
+      const key = getNotificationSessionKey(n.session, n.workspaceId)
+      index.session.unseenCount[key] = (index.session.unseenCount[key] ?? 0) + 1
+      if (n.type === "error") index.session.unseenHasError[key] = true
     }
     if (n.directory) {
       index.project.unseenCount[n.directory] = (index.project.unseenCount[n.directory] ?? 0) + 1
@@ -78,6 +82,16 @@ function buildIndex(list: Notification[]): NotificationIndex {
   }
 
   return index
+}
+
+/**
+ * Returns the collision-safe notification key for a session. Bare session
+ * IDs remain readable for legacy ambient-runtime notifications; workspace
+ * notifications always use the same composite identity as Session Index.
+ */
+export const getNotificationSessionKey = (sessionId: string, workspaceId?: string | null): string => {
+  const normalizedWorkspaceId = typeof workspaceId === "string" ? workspaceId.trim() : ""
+  return normalizedWorkspaceId ? workspaceSessionKey(normalizedWorkspaceId, sessionId) : sessionId
 }
 
 // ---------------------------------------------------------------------------
@@ -90,12 +104,12 @@ interface NotificationStore {
 
   // Mutations
   append: (notification: Notification) => void
-  markSessionViewed: (sessionId: string) => void
+  markSessionViewed: (sessionId: string, workspaceId?: string | null) => void
   markProjectViewed: (directory: string) => void
 
   // Selectors
-  sessionUnseenCount: (sessionId: string) => number
-  sessionHasError: (sessionId: string) => boolean
+  sessionUnseenCount: (sessionId: string, workspaceId?: string | null) => number
+  sessionHasError: (sessionId: string, workspaceId?: string | null) => boolean
   projectUnseenCount: (directory: string) => number
   projectHasError: (directory: string) => boolean
 }
@@ -113,13 +127,18 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     set({ list: next, index: buildIndex(next) })
   },
 
-  markSessionViewed: (sessionId) => {
+  markSessionViewed: (sessionId, workspaceId) => {
     const current = get()
-    const count = current.index.session.unseenCount[sessionId] ?? 0
+    const key = getNotificationSessionKey(sessionId, workspaceId)
+    const count = current.index.session.unseenCount[key] ?? 0
     if (count === 0) return
 
     const next = current.list.map((n) =>
-      n.session === sessionId && !n.viewed ? { ...n, viewed: true } : n,
+      n.session === sessionId
+        && getNotificationSessionKey(n.session, n.workspaceId) === key
+        && !n.viewed
+        ? { ...n, viewed: true }
+        : n,
     )
     set({ list: next, index: buildIndex(next) })
   },
@@ -135,8 +154,8 @@ export const useNotificationStore = create<NotificationStore>((set, get) => ({
     set({ list: next, index: buildIndex(next) })
   },
 
-  sessionUnseenCount: (sessionId) => get().index.session.unseenCount[sessionId] ?? 0,
-  sessionHasError: (sessionId) => get().index.session.unseenHasError[sessionId] ?? false,
+  sessionUnseenCount: (sessionId, workspaceId) => get().index.session.unseenCount[getNotificationSessionKey(sessionId, workspaceId)] ?? 0,
+  sessionHasError: (sessionId, workspaceId) => get().index.session.unseenHasError[getNotificationSessionKey(sessionId, workspaceId)] ?? false,
   projectUnseenCount: (directory) => get().index.project.unseenCount[directory] ?? 0,
   projectHasError: (directory) => get().index.project.unseenHasError[directory] ?? false,
 }))
@@ -149,15 +168,15 @@ export function appendNotification(notification: Notification) {
   useNotificationStore.getState().append(notification)
 }
 
-export function markSessionViewed(sessionId: string) {
-  useNotificationStore.getState().markSessionViewed(sessionId)
+export function markSessionViewed(sessionId: string, workspaceId?: string | null) {
+  useNotificationStore.getState().markSessionViewed(sessionId, workspaceId)
 }
 
 // ---------------------------------------------------------------------------
 // React hooks for fine-grained subscriptions
 // ---------------------------------------------------------------------------
 
-export function useSessionUnseenCount(sessionId: string): number {
-  return useNotificationStore((s) => s.index.session.unseenCount[sessionId] ?? 0)
+export function useSessionUnseenCount(sessionId: string, workspaceId?: string | null): number {
+  const key = getNotificationSessionKey(sessionId, workspaceId)
+  return useNotificationStore((s) => s.index.session.unseenCount[key] ?? 0)
 }
-

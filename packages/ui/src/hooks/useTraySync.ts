@@ -3,11 +3,10 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive } from '@/lib/desktop';
 import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
-import { getSyncChildStores, getAllSyncSessions } from '@/sync/sync-refs';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncChildStores, getAllSyncSessions, getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import { useGlobalSessionStatusStore, applyGlobalSessionStatusSnapshot } from '@/sync/global-session-status';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
-import { useNotificationStore } from '@/sync/notification-store';
+import { getNotificationSessionKey, useNotificationStore } from '@/sync/notification-store';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { respondToPermission } from '@/sync/session-actions';
 import {
@@ -23,6 +22,8 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useGitStore } from '@/stores/useGitStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { resolveProjectForSessionDirectory, normalizeProjectPath } from '@/lib/projectResolution';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { toast } from '@/components/ui';
@@ -50,6 +51,7 @@ type TraySessionStatus = 'idle' | 'busy' | 'retry';
 
 type TraySession = {
   id: string;
+  workspaceId?: string;
   title: string;
   status: TraySessionStatus;
   branch: string;
@@ -64,6 +66,7 @@ type TrayApproval = {
   kind: 'permission' | 'question';
   id: string;
   sessionId: string;
+  workspaceId?: string;
   sessionTitle: string;
   label: string;
   directory: string;
@@ -95,7 +98,8 @@ type TraySnapshot = {
 // the existing `openchamber:open-session` / `openchamber:open-draft-session`
 // events (handled in App.tsx). Only respond-permission needs handling here.
 type TrayAction =
-  | { type: 'respond-permission'; sessionId: string; id: string; response: 'once' | 'always' | 'reject' };
+  | { type: 'respond-permission'; sessionId: string; workspaceId?: string; directory?: string; id: string; response: 'once' | 'always' | 'reject' }
+  | { type: 'focus-session'; sessionId: string; workspaceId?: string; directory?: string };
 
 type DesktopBridgeGlobal = {
   listen?: (
@@ -206,11 +210,43 @@ const buildUsage = (): TrayUsage => {
   return { mode, groups };
 };
 
-// Mirrors the header's instance resolution (Header.refreshCurrentInstanceLabel):
-// the local origin shows as "Local OpenChamber"; a remote host shows its
-// configured name. Async because the host config is read over IPC.
+const resolveCurrentWorkspaceId = (): string | null => {
+  const session = useSessionUIStore.getState();
+  if (session.currentWorkspaceId) return session.currentWorkspaceId;
+  return resolveActiveWorkspaceId(
+    useWorkspaceSessionIndexStore.getState().snapshot?.sessions,
+    session.currentSessionId,
+    session.currentSessionDirectory,
+  );
+};
+
+const resolveWorkspaceInstanceName = (workspaceId: string): string | null => {
+  const snapshot = useWorkspaceCatalogStore.getState().snapshot;
+  if (!snapshot) return null;
+  const workspace = snapshot.workspaces.find((entry) => entry.id === workspaceId);
+  if (!workspace) return null;
+  if (workspace.connectionId === 'local') return 'Local OpenChamber';
+  const connection = snapshot.connections.find((entry) => entry.id === workspace.connectionId);
+  return redactSensitiveUrl(connection?.label?.trim() || 'Workspace');
+};
+
+const resolveWorkspaceIdForSession = (sessionId: string, directory: string): string | undefined => {
+  const summaries = useWorkspaceSessionIndexStore.getState().snapshot?.sessions
+    .filter((summary) => summary.upstreamSessionId === sessionId) ?? [];
+  if (summaries.length === 0) return undefined;
+  const exact = summaries.find((summary) => summary.directory === directory);
+  return (exact ?? (summaries.length === 1 ? summaries[0] : undefined))?.workspaceId;
+};
+
+// Resolve workspace identity from the Catalog first. The legacy host matching
+// path remains only for non-workspace sessions during the migration; runtime
+// key is still carried separately for Electron's safe-window routing.
 const resolveInstanceName = async (): Promise<string> => {
   try {
+    const workspaceId = resolveCurrentWorkspaceId();
+    if (workspaceId) {
+      return resolveWorkspaceInstanceName(workspaceId) ?? 'Workspace';
+    }
     if (isDesktopLocalOriginActive()) return 'Local OpenChamber';
     const localOrigin = (window as unknown as { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__
       || window.location.origin;
@@ -394,19 +430,25 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     .map((session) => {
       const family = [session.id, ...collectDescendants(session.id)];
       const directory = resolveGlobalSessionDirectory(session) ?? '';
+      const workspaceId = resolveWorkspaceIdForSession(session.id, directory);
       return {
         id: session.id,
+        workspaceId,
         title: session.title || 'Untitled session',
         status: rollupStatus(family),
         branch: directory ? (live.branchByDirectory.get(directory) ?? '') : '',
-        unseen: family.reduce((sum, id) => sum + (notif.unseenCount[id] ?? 0), 0),
-        hasError: family.some((id) => notif.unseenHasError[id] ?? false),
+        unseen: family.reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, workspaceId)] ?? 0), 0),
+        hasError: family.some((id) => notif.unseenHasError[getNotificationSessionKey(id, workspaceId)] ?? false),
         directory,
         subtitle: resolveSessionSubtitle(directory, session, projects, worktreesByProject, live.branchByDirectory),
       };
     });
 
-  const approvals = live.approvals.map((a) => ({ ...a, sessionTitle: titleById.get(a.sessionId) || '' }));
+  const approvals = live.approvals.map((a) => ({
+    ...a,
+    workspaceId: a.workspaceId ?? resolveWorkspaceIdForSession(a.sessionId, a.directory),
+    sessionTitle: titleById.get(a.sessionId) || '',
+  }));
 
   // Dock badge: count chats (root sessions) with unseen activity over the FULL
   // cross-project list — not the MAX_SESSIONS-capped `sessions` above — so the
@@ -418,10 +460,11 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   if (ui.dockBadgeEnabled) {
     for (const session of allSessions) {
       if (!session?.id || session.parentID) continue; // roots only
-      let familyUnseen = notif.unseenCount[session.id] ?? 0;
+      const workspaceId = resolveWorkspaceIdForSession(session.id, resolveGlobalSessionDirectory(session) ?? '');
+      let familyUnseen = notif.unseenCount[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
       if (familyUnseen === 0 && ui.notifyOnSubtasks) {
         familyUnseen = collectDescendants(session.id)
-          .reduce((sum, id) => sum + (notif.unseenCount[id] ?? 0), 0);
+          .reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, workspaceId)] ?? 0), 0);
       }
       if (familyUnseen > 0) dockBadgeCount += 1;
     }
@@ -463,12 +506,14 @@ export const useTraySync = (): void => {
     // sessions already busy before this window opened and any missed events.
     // Cheap: ~ms per directory, bounded by the tray's visible session count.
     const refreshGlobalStatus = async () => {
+      const operationScopeKey = getSyncScopeKey();
+      const operationService = getSyncOpencodeService();
       const targets = collectStatusPollDirectories();
       await Promise.all([...targets.entries()].map(async ([directory, sessionIds]) => {
         // null = fetch failed → keep that directory's current entries;
         // {} = authoritative "everything here is idle".
-        const raw = await opencodeClient.getSessionStatusForDirectory(directory).catch(() => null);
-        if (disposed || raw === null) return;
+        const raw = await operationService.getSessionStatusForDirectory(directory).catch(() => null);
+        if (disposed || getSyncScopeKey() !== operationScopeKey || raw === null) return;
         applyGlobalSessionStatusSnapshot(directory, raw, sessionIds);
       }));
     };
@@ -607,7 +652,14 @@ export const useTraySync = (): void => {
     const handle = (action: TrayAction) => {
       switch (action.type) {
         case 'respond-permission':
-          void respondToPermission(action.sessionId, action.id, action.response).catch(() => {
+          if (action.workspaceId) {
+            useSessionUIStore.getState().setCurrentSession(
+              action.sessionId,
+              action.directory ?? null,
+              action.workspaceId,
+            );
+          }
+          void respondToPermission(action.sessionId, action.id, action.response, action.directory, action.workspaceId).catch(() => {
             toast.error('Failed to respond to permission request');
           });
           break;

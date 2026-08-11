@@ -308,7 +308,47 @@ const isUrlAuthReadableHttpPath = (pathname) => {
     || /^\/api\/workspaces\/[^/]+\/children$/.test(pathname)
     || pathname === '/api/connections'
     || pathname === '/api/workspace-sessions/snapshot'
-    || pathname === '/api/workspace-sessions/events';
+    || pathname === '/api/workspace-sessions/events'
+    || isUrlAuthWorkspaceRuntimeReadablePath(pathname);
+};
+
+const isUrlAuthWorkspaceRuntimeReadablePath = (pathname) => {
+  const match = /^\/api\/workspaces\/[^/]+\/runtime(\/.*)$/.exec(pathname);
+  if (!match) return false;
+  const readablePath = match[1];
+  const prefixes = [
+    '/api/agent',
+    '/api/config/agents',
+    '/api/config/providers',
+    '/api/event',
+    '/api/file',
+    '/api/find',
+    '/api/fs/find',
+    '/api/fs/list',
+    '/api/fs/raw',
+    '/api/fs/read',
+    '/api/fs/serve',
+    '/api/fs/stat',
+    '/api/git',
+    '/api/global/event',
+    '/api/global/health',
+    '/api/health',
+    '/api/model',
+    '/api/opencode/health',
+    '/api/path',
+    '/api/permission',
+    '/api/project',
+    '/api/provider',
+    '/api/pty',
+    '/api/question',
+    '/api/reference',
+    '/api/session',
+    '/api/session-activity',
+    '/api/terminal/shells',
+    '/api/vcs',
+    '/api/version',
+  ];
+  return prefixes.some((prefix) => readablePath === prefix || readablePath.startsWith(`${prefix}/`));
 };
 
 const isUrlAuthWebSocketPath = (pathname) => {

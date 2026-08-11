@@ -13,7 +13,8 @@ import { runBackgroundNetworkTask } from "@/lib/background-network";
 import { noteDeferredRestartFromPayload } from "@/lib/opencode/deferredRestart";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 
-import { opencodeClient } from '@/lib/opencode/client';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { filterSkillsByRuntimeFlags } from './skillVisibility';
 
 // Prefer the active project path so Settings/Skills discovery matches the
@@ -22,6 +23,15 @@ import { filterSkillsByRuntimeFlags } from './skillVisibility';
 // is unset or points elsewhere while an active project exists.
 const getRequestDirectory = (): string | null => {
   try {
+    const boundService = getSyncOpencodeService();
+    if (isWorkspaceRuntimeActive()) {
+      // Workspace config/skills CRUD has no workspace-owned API contract yet.
+      // Keep the directory bound for diagnostics/typed-unavailable responses,
+      // but never borrow the legacy project or ambient client directory.
+      const workspaceDirectory = boundService.getDirectory();
+      return workspaceDirectory?.trim() || null;
+    }
+
     const projectsStore = useProjectsStore.getState();
     const activeProject = projectsStore.getActiveProject?.();
 
@@ -29,7 +39,7 @@ const getRequestDirectory = (): string | null => {
       return activeProject.path.trim();
     }
 
-    const clientDir = opencodeClient.getDirectory();
+    const clientDir = boundService.getDirectory();
     if (clientDir?.trim()) {
       return clientDir.trim();
     }
@@ -671,7 +681,7 @@ async function waitForOpenCodeConnection(delayMs?: number) {
     updateConfigUpdateMessage(`Waiting for OpenCode… (attempt ${attempt})`);
 
     try {
-      const isHealthy = await opencodeClient.checkHealth();
+      const isHealthy = await getSyncOpencodeService().checkHealth();
       if (isHealthy) {
         return;
       }

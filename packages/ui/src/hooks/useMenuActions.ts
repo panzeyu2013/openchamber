@@ -11,6 +11,8 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 
 const getActiveElementSelectedText = (): string => {
   if (typeof document === 'undefined') {
@@ -96,6 +98,8 @@ type MenuAction =
 export const useMenuActions = (
   onToggleMemoryDebug?: () => void
 ) => {
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const effectiveDirectory = useEffectiveDirectory();
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
   const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
@@ -153,8 +157,8 @@ export const useMenuActions = (
 
     setActiveMainTab('chat');
     setSessionSwitcherOpen(false);
-    useSessionUIStore.getState().setCurrentSession(nextSession.id);
-  }, [setActiveMainTab, setSessionSwitcherOpen]);
+    useSessionUIStore.getState().setCurrentSession(nextSession.id, null, activeWorkspaceId);
+  }, [activeWorkspaceId, setActiveMainTab, setSessionSwitcherOpen]);
 
   const navigateProject = React.useCallback((direction: -1 | 1) => {
     const { activeProjectId, projects, setActiveProject } = useProjectsStore.getState();
@@ -209,7 +213,7 @@ export const useMenuActions = (
         // Legacy right-sidebar menu items now target the context surfaces
         // that replaced the sidebar's tabs.
         case 'toggle-right-sidebar': {
-          const directory = useDirectoryStore.getState().currentDirectory;
+          const directory = effectiveDirectory;
           if (!directory) break;
           const uiState = useUIStore.getState();
           const directoryKey = normalizeContextPanelDirectoryKey(directory);
@@ -225,28 +229,28 @@ export const useMenuActions = (
         }
 
         case 'open-right-sidebar-git': {
-          const directory = useDirectoryStore.getState().currentDirectory;
+          const directory = effectiveDirectory;
           if (!directory) break;
           useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'git');
           break;
         }
 
         case 'open-right-sidebar-files': {
-          const directory = useDirectoryStore.getState().currentDirectory;
+          const directory = effectiveDirectory;
           if (!directory) break;
           useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'file');
           break;
         }
 
         case 'toggle-terminal': {
-          const directory = useDirectoryStore.getState().currentDirectory;
+          const directory = effectiveDirectory;
           if (!directory) break;
           useUIStore.getState().openContextSurface(normalizeContextPanelDirectoryKey(directory), 'terminal');
           break;
         }
 
         case 'toggle-terminal-expanded': {
-          const directory = useDirectoryStore.getState().currentDirectory;
+          const directory = effectiveDirectory;
           if (!directory) break;
           const key = normalizeContextPanelDirectoryKey(directory);
           const uiState = useUIStore.getState();
@@ -293,10 +297,12 @@ export const useMenuActions = (
           break;
 
         case 'go-back':
+          if (activeWorkspaceId) break;
           useDirectoryStore.getState().goBack();
           break;
 
         case 'go-forward':
+          if (activeWorkspaceId) break;
           useDirectoryStore.getState().goForward();
           break;
 
@@ -330,6 +336,8 @@ export const useMenuActions = (
     },
     [
       handleChangeWorkspace,
+      activeWorkspaceId,
+      effectiveDirectory,
       navigateProject,
       navigateSession,
       onToggleMemoryDebug,

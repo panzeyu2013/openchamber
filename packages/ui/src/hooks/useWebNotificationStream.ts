@@ -23,6 +23,9 @@ const toNotificationPayload = (value: unknown): NotificationPayload | null => {
     title: typeof properties.title === 'string' ? properties.title : undefined,
     body: typeof properties.body === 'string' ? properties.body : undefined,
     tag: typeof properties.tag === 'string' ? properties.tag : undefined,
+    workspaceId: typeof properties.workspaceId === 'string' ? properties.workspaceId : undefined,
+    sessionId: typeof properties.sessionId === 'string' ? properties.sessionId : undefined,
+    directory: typeof properties.directory === 'string' ? properties.directory : undefined,
   };
 };
 

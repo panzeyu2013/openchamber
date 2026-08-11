@@ -204,18 +204,18 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
           return {
             label: approvalLabel(approval),
             submenu: [
-              { label: 'Allow once', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, id: approval.id, response: 'once' }) },
-              { label: 'Allow always', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, id: approval.id, response: 'always' }) },
+              { label: 'Allow once', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, workspaceId: approval.workspaceId, directory: approval.directory || '', id: approval.id, response: 'once' }) },
+              { label: 'Allow always', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, workspaceId: approval.workspaceId, directory: approval.directory || '', id: approval.id, response: 'always' }) },
               { type: 'separator' },
-              { label: 'Deny', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, id: approval.id, response: 'reject' }) },
+              { label: 'Deny', click: () => onAction({ type: 'respond-permission', sessionId: approval.sessionId, workspaceId: approval.workspaceId, directory: approval.directory || '', id: approval.id, response: 'reject' }) },
               { type: 'separator' },
-              { label: 'Open in app', click: () => onAction({ type: 'focus-session', sessionId: approval.sessionId, directory: approval.directory || '' }) },
+              { label: 'Open in app', click: () => onAction({ type: 'focus-session', sessionId: approval.sessionId, workspaceId: approval.workspaceId, directory: approval.directory || '' }) },
             ],
           };
         }
         return {
           label: approvalLabel(approval),
-          click: () => onAction({ type: 'focus-session', sessionId: approval.sessionId, directory: approval.directory || '' }),
+          click: () => onAction({ type: 'focus-session', sessionId: approval.sessionId, workspaceId: approval.workspaceId, directory: approval.directory || '' }),
         };
       };
       for (const approval of approvals.slice(0, MAX_APPROVALS)) {
@@ -238,7 +238,7 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
       icon: statusIcons[statusIconKey(session)] || statusIcons.blank,
       // Secondary smaller line (macOS): project · branch.
       ...(session.subtitle ? { sublabel: truncate(session.subtitle, 48) } : {}),
-      click: () => onAction({ type: 'focus-session', sessionId: session.id, directory: session.directory || '' }),
+      click: () => onAction({ type: 'focus-session', sessionId: session.id, workspaceId: session.workspaceId, directory: session.directory || '' }),
     });
 
     if (sessions.length > 0) {
@@ -319,8 +319,8 @@ export const createTrayController = ({ idleIconPath, unseenIconPath, breathIconP
     const groups = Array.isArray(usage.groups) ? usage.groups : [];
     return JSON.stringify({
       h: typeof snapshot.instanceName === 'string' ? snapshot.instanceName : '',
-      s: sessions.map((s) => `${s.id}|${s.title}|${s.status}|${s.unseen}|${s.hasError}|${s.subtitle}|${s.directory}`),
-      a: approvals.map((a) => `${a.id}|${a.kind}|${a.sessionId}|${a.sessionTitle}|${a.label}|${a.directory}`),
+      s: sessions.map((s) => `${s.id}|${s.workspaceId || ''}|${s.title}|${s.status}|${s.unseen}|${s.hasError}|${s.subtitle}|${s.directory}`),
+      a: approvals.map((a) => `${a.id}|${a.kind}|${a.sessionId}|${a.workspaceId || ''}|${a.sessionTitle}|${a.label}|${a.directory}`),
       u: usage.mode || '',
       g: groups.map((g) => `${g.provider}|${g.status}|${(Array.isArray(g.rows) ? g.rows : []).map((r) => `${r.label}|${r.value}`).join(',')}`),
     });

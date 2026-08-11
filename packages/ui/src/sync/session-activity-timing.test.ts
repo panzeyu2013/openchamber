@@ -307,4 +307,24 @@ describe('session activity timing', () => {
     expect(after.startedAt).toBe(before.startedAt);
     expect(after.settledMs).toBe(before.settledMs);
   });
+
+  test('keeps equal session ids in separate workspace timing partitions', () => {
+    const defaultScope = useSessionActivityTimingStore.getState().scopeKey;
+    const firstScope = 'workspace:timing-a';
+    const secondScope = 'workspace:timing-b';
+
+    useSessionActivityTimingStore.getState().bindScope(firstScope);
+    observeSessionActivityTiming('same-session', 'active', firstScope);
+    const firstStart = startedAt('same-session');
+    expect(Object.keys(readPersisted() ?? {}).some((key) => key.includes(firstScope))).toBe(true);
+
+    useSessionActivityTimingStore.getState().bindScope(secondScope);
+    expect(startedAt('same-session')).toBeUndefined();
+    observeSessionActivityTiming('same-session', 'active', secondScope);
+    expect(startedAt('same-session')).toBeDefined();
+
+    useSessionActivityTimingStore.getState().bindScope(firstScope);
+    expect(startedAt('same-session')).toBe(firstStart);
+    useSessionActivityTimingStore.getState().bindScope(defaultScope);
+  });
 });

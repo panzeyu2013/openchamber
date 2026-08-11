@@ -7,10 +7,13 @@ import type { ShortcutCombo } from '@/lib/shortcuts';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOption } from '@/lib/fontOptions';
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import type { TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
+import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceScopeKey } from '@/workspaces/identity';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
 export type PendingDiffScope = 'working' | 'staged' | 'turn';
@@ -128,6 +131,16 @@ const runtimeMemoryKey = (value?: string | null): string => {
   const key = (value ?? getRuntimeKey()).trim();
   return key || 'default';
 };
+
+const resolveContextPanelScopeKey = (): string => {
+  const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
+  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
+  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
+  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+};
+
+const initialContextPanelScopeKey = getRuntimeKey();
+const CONTEXT_PANEL_SCOPE_SNAPSHOT_LIMIT = 8;
 
 // Shared with rail/panel consumers so contextPanelByDirectory lookups agree on keys.
 export const normalizeContextPanelDirectoryKey = (value: string): string => normalizeDirectoryPath(value);
@@ -564,6 +577,40 @@ const clampContextPanelRoots = (
   return next;
 };
 
+const sanitizeContextPanelByScope = (value: unknown): Record<string, Record<string, ContextPanelDirectoryState>> => {
+  if (!value || typeof value !== 'object') {
+    return {};
+  }
+
+  const next: Record<string, Record<string, ContextPanelDirectoryState>> = {};
+  for (const [scopeKey, rawDirectories] of Object.entries(value as Record<string, unknown>)) {
+    if (!scopeKey || !rawDirectories || typeof rawDirectories !== 'object') {
+      continue;
+    }
+    next[scopeKey] = sanitizeContextPanelByDirectory(rawDirectories);
+  }
+  return next;
+};
+
+const saveContextPanelScopeSnapshot = (
+  snapshots: Record<string, Record<string, ContextPanelDirectoryState>>,
+  scopeKey: string,
+  directories: Record<string, ContextPanelDirectoryState>,
+): Record<string, Record<string, ContextPanelDirectoryState>> => {
+  const next = { ...snapshots };
+  delete next[scopeKey];
+  next[scopeKey] = directories;
+
+  const keys = Object.keys(next);
+  while (keys.length > CONTEXT_PANEL_SCOPE_SNAPSHOT_LIMIT) {
+    const oldest = keys.shift();
+    if (oldest) {
+      delete next[oldest];
+    }
+  }
+  return next;
+};
+
 interface UIStore {
 
   theme: 'light' | 'dark' | 'system';
@@ -572,7 +619,9 @@ interface UIStore {
   isSidebarOpen: boolean;
   sidebarWidth: number;
   hasManuallyResizedLeftSidebar: boolean;
+  contextPanelScopeKey: string;
   contextPanelByDirectory: Record<string, ContextPanelDirectoryState>;
+  contextPanelByScope: Record<string, Record<string, ContextPanelDirectoryState>>;
   contextRailOrder: string[];
   contextEditorTreeVisible: boolean;
   contextEditorTreeWidth: number;
@@ -934,7 +983,9 @@ export const useUIStore = create<UIStore>()(
         isSidebarOpen: true,
         sidebarWidth: LEFT_SIDEBAR_MIN_WIDTH,
         hasManuallyResizedLeftSidebar: false,
+        contextPanelScopeKey: initialContextPanelScopeKey,
         contextPanelByDirectory: {},
+        contextPanelByScope: {},
         contextRailOrder: [],
         contextEditorTreeVisible: true,
         contextEditorTreeWidth: 240,
@@ -2368,7 +2419,7 @@ export const useUIStore = create<UIStore>()(
       {
         name: 'ui-store',
         storage: createDeferredSafeJSONStorage(),
-        version: 13,
+        version: 14,
         migrate: (persistedState, version) => {
           if (!persistedState || typeof persistedState !== 'object') {
             return persistedState;
@@ -2472,7 +2523,21 @@ export const useUIStore = create<UIStore>()(
           delete state.rightSidebarWidth;
           delete state.rightSidebarTab;
 
-          state.contextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
+          const persistedContextScopeKey = typeof state.contextPanelScopeKey === 'string'
+            && state.contextPanelScopeKey.trim().length > 0
+            ? state.contextPanelScopeKey
+            : getRuntimeKey();
+          const currentContextScopeKey = resolveContextPanelScopeKey();
+          const activeContextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
+          const contextPanelByScope = sanitizeContextPanelByScope(state.contextPanelByScope);
+          if (!contextPanelByScope[persistedContextScopeKey] && Object.keys(activeContextPanelByDirectory).length > 0) {
+            contextPanelByScope[persistedContextScopeKey] = activeContextPanelByDirectory;
+          }
+          state.contextPanelScopeKey = currentContextScopeKey;
+          state.contextPanelByScope = contextPanelByScope;
+          state.contextPanelByDirectory = contextPanelByScope[currentContextScopeKey]
+            ?? (persistedContextScopeKey === currentContextScopeKey ? activeContextPanelByDirectory : {});
+          delete contextPanelByScope[currentContextScopeKey];
 
           if (version < 5) {
             if (!state.shortcutOverrides || typeof state.shortcutOverrides !== 'object') {
@@ -2519,7 +2584,9 @@ export const useUIStore = create<UIStore>()(
           theme: state.theme,
           isSidebarOpen: state.isSidebarOpen,
           sidebarWidth: state.sidebarWidth,
+          contextPanelScopeKey: state.contextPanelScopeKey,
           contextPanelByDirectory: state.contextPanelByDirectory,
+          contextPanelByScope: state.contextPanelByScope,
           contextRailOrder: state.contextRailOrder,
           contextEditorTreeVisible: state.contextEditorTreeVisible,
           contextEditorTreeWidth: state.contextEditorTreeWidth,
@@ -2622,3 +2689,44 @@ export const useUIStore = create<UIStore>()(
     }
   )
 );
+
+const swapContextPanelScope = (scopeKey: string): void => {
+  const state = useUIStore.getState();
+  if (state.contextPanelScopeKey === scopeKey) {
+    return;
+  }
+
+  const nextDirectoryState = state.contextPanelByScope[scopeKey] ?? {};
+  const snapshots = saveContextPanelScopeSnapshot(
+    state.contextPanelByScope,
+    state.contextPanelScopeKey,
+    state.contextPanelByDirectory,
+  );
+  delete snapshots[scopeKey];
+
+  useUIStore.setState({
+    contextPanelScopeKey: scopeKey,
+    contextPanelByDirectory: nextDirectoryState,
+    contextPanelByScope: snapshots,
+  });
+};
+
+let contextPanelScopeSubscriptionInstalled = false;
+const installContextPanelScopeSubscription = (): void => {
+  if (contextPanelScopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
+  contextPanelScopeSubscriptionInstalled = true;
+  queueMicrotask(() => {
+    let lastScope = resolveContextPanelScopeKey();
+    const check = () => {
+      const nextScope = resolveContextPanelScopeKey();
+      if (nextScope !== lastScope) {
+        lastScope = nextScope;
+        swapContextPanelScope(nextScope);
+      }
+    };
+    useSessionUIStore?.subscribe?.(check);
+    useWorkspaceSessionIndexStore?.subscribe?.(check);
+    subscribeRuntimeEndpointChanged(check);
+  });
+};
+installContextPanelScopeSubscription();

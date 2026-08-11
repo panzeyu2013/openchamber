@@ -1468,6 +1468,8 @@ export const dict = {
   'workspaces.sidebar.serverHasMoreSessions': 'D’autres sessions sont disponibles sur ce serveur',
   'workspaces.sidebar.openSessionAria': 'Ouvrir {title} dans {workspace}',
   'workspaces.sidebar.unavailable': 'Les espaces de travail ne sont pas disponibles dans cet environnement.',
+  'workspaces.sidebar.capabilityDisabled.title': 'Le catalogue des espaces de travail est désactivé',
+  'workspaces.sidebar.capabilityDisabled.description': "L'administrateur du serveur a désactivé le catalogue des espaces de travail. Vos espaces de travail restent enregistrés et s'affichent en lecture seule — l'ajout, la modification et l'ouverture des espaces de travail sont indisponibles.",
   'workspaces.capability.terminalUnavailable': 'Le terminal n\'est pas disponible pour la connexion de cet espace de travail.',
   'workspaces.dialog.description': 'Choisissez un serveur et un chemin sur ce serveur. Les espaces de travail de tous les serveurs figurent dans une seule liste.',
   'workspaces.dialog.server.label': 'Serveur',

@@ -362,7 +362,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     const branch = node.worktree?.branch?.trim();
     const directory = normalizePath(node.worktree?.path ?? null);
     return branch && directory ? getGitHubPrStatusKey(directory, branch) : null;
-  }, [activeWorkspaceId, isVSCode, node.worktree]);
+  }, [isVSCode, node.worktree]);
   const prSummary = usePrVisualSummary(prLookupKey);
   const prIconColor = prSummary ? `var(--pr-${prSummary.visualState})` : undefined;
   const sessionGroupingMode = useSessionDisplayStore((state) => state.sessionGroupingMode);
@@ -476,7 +476,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   );
   const pendingQuestionCount = useSessionQuestionCount(questionBadgeSessionScopes);
   const isSubtaskSession = Boolean((resolvedSession as Session & { parentID?: string | null }).parentID);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
   const needsAttention = unseenCount > 0 && (!isSubtaskSession || notifyOnSubtasks);
   const sessionTimestamp = resolvedSession.time?.updated || resolvedSession.time?.created || Date.now();
   const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
@@ -587,11 +587,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     void invokeDesktop('desktop_open_session_mini_chat_window', {
       sessionId: session.id,
       directory: sessionDirectory,
+      workspaceId: activeWorkspaceId ?? null,
       ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[session-sidebar] failed to open mini chat window', error);
     });
-  }, [session.id, sessionDirectory]);
+  }, [activeWorkspaceId, session.id, sessionDirectory]);
 
   // Capture outside-clicks to save edits — immune to focus-race with onBlur.
   React.useEffect(() => {

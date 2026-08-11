@@ -299,15 +299,47 @@ describe('ui auth client credential seam', () => {
     const nonSocketWsReq = { method: 'GET', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
     expect(await auth.ensureSessionToken(nonSocketWsReq, null)).toBeNull();
 
-    // The plain HTTP workspace runtime paths are not URL-token readable.
-    const wsHttpReq = { method: 'GET', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
-    const wsHttpRes = createResponse();
-    let wsHttpCalled = false;
-    await auth.requireAuth(wsHttpReq, wsHttpRes, () => {
-      wsHttpCalled = true;
+    // Read-only workspace runtime paths also accept the short-lived control-
+    // plane token; this covers cookie-less mobile/tray HTTP and SSE clients.
+    for (const tokenPath of [
+      '/api/workspaces/ws-1/runtime/api/session',
+      '/api/workspaces/ws-1/runtime/api/fs/read?path=%2Fworkspace%2Ffile.ts',
+      '/api/workspaces/ws-1/runtime/api/global/event',
+    ]) {
+      const separator = tokenPath.includes('?') ? '&' : '?';
+      const wsHttpReq = { method: 'GET', path: tokenPath.split('?')[0], url: `${tokenPath}${separator}oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+      const wsHttpRes = createResponse();
+      let wsHttpCalled = false;
+      await auth.requireAuth(wsHttpReq, wsHttpRes, () => {
+        wsHttpCalled = true;
+      });
+      expect(wsHttpCalled).toBe(true);
+    }
+
+    // Control-plane runtime namespaces and mutations remain unavailable via a
+    // URL token.
+    for (const tokenPath of [
+      '/api/workspaces/ws-1/runtime/api/config/settings',
+      '/api/workspaces/ws-1/runtime/api/fs/home',
+    ]) {
+      const wsHttpReq = { method: 'GET', path: tokenPath, url: `${tokenPath}?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+      const wsHttpRes = createResponse();
+      let wsHttpCalled = false;
+      await auth.requireAuth(wsHttpReq, wsHttpRes, () => {
+        wsHttpCalled = true;
+      });
+      expect(wsHttpCalled).toBe(false);
+      expect(wsHttpRes.statusCode).toBe(401);
+    }
+
+    const wsWriteReq = { method: 'POST', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+    const wsWriteRes = createResponse();
+    let wsWriteCalled = false;
+    await auth.requireAuth(wsWriteReq, wsWriteRes, () => {
+      wsWriteCalled = true;
     });
-    expect(wsHttpCalled).toBe(false);
-    expect(wsHttpRes.statusCode).toBe(401);
+    expect(wsWriteCalled).toBe(false);
+    expect(wsWriteRes.statusCode).toBe(401);
   });
 
   it('issues desktop client tokens with the UI session expiry', async () => {

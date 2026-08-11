@@ -73,8 +73,18 @@ const createGitApi = (getGitStatus: GitAPI['getGitStatus']): GitAPI => ({
   getGitFileDiff: async (_directory, options) => ({ original: '', modified: '', path: options.path }),
 });
 
+const clearGitStoreState = () => {
+  useGitStore.setState({
+    scopeKey: getRuntimeKey(),
+    directories: new Map(),
+    directoriesByScope: {},
+    activeDirectory: null,
+  });
+};
+
 describe('useGitStore', () => {
   beforeEach(() => {
+    clearGitStoreState();
     useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
   });
 
@@ -157,11 +167,11 @@ describe('useGitStore', () => {
     await loading;
 
     expect(useGitStore.getState().scopeKey).toBe(getRuntimeKey());
-    expect(useGitStore.getState().getDirectoryState('/repo')?.status ?? null).toBe(null);
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files).toEqual([]);
   });
 
   test('rejects direct diff commits captured for another runtime', () => {
-    useGitStore.getState().setDiff('/repo', 'stale.ts', { original: 'a', modified: 'b' }, 'runtime-a');
+    useGitStore.getState().setDiff('/repo', 'stale.ts', { original: 'a', modified: 'b' }, 'foreign-scope');
     expect(useGitStore.getState().getDiff('/repo', 'stale.ts')).toBe(null);
   });
 
@@ -374,6 +384,7 @@ const currentWorkspaceId = (): string | null =>
 describe('useGitStore workspace scope', () => {
   beforeEach(() => {
     clearWorkspaceSession();
+    clearGitStoreState();
     useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
   });
 

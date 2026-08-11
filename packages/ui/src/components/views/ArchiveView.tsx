@@ -12,6 +12,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { formatSessionDateLabel, normalizePath } from '@/components/session/sidebar/utils';
 import { useShallow } from 'zustand/react/shallow';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 type DirectoryBucket = {
   directory: string;
@@ -29,6 +30,7 @@ export function ArchiveView(): React.ReactNode {
   const setOpen = useUIStore((state) => state.setArchivePageOpen);
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const unarchiveSession = useSessionUIStore((state) => state.unarchiveSession);
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
   const archivedSessions = useGlobalSessionsStore(useShallow((state) => open ? state.archivedSessions : []));
@@ -84,10 +86,10 @@ export function ArchiveView(): React.ReactNode {
 
   const openSession = React.useCallback((session: Session) => {
     const directory = normalizePath(resolveGlobalSessionDirectory(session));
-    setCurrentSession(session.id, directory ?? undefined);
+    setCurrentSession(session.id, directory ?? undefined, activeWorkspaceId);
     setActiveMainTab('chat');
     setOpen(false);
-  }, [setActiveMainTab, setCurrentSession, setOpen]);
+  }, [activeWorkspaceId, setActiveMainTab, setCurrentSession, setOpen]);
 
   const restoreSession = React.useCallback((session: Session) => {
     void unarchiveSession(session.id).then((success) => {

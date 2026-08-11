@@ -21,17 +21,17 @@ mock.module('@/workspaces/session-index-client', () => ({
   fetchWorkspaceSessionSnapshot: async () => indexSnapshotImpl(),
 }));
 
-const runtimeWindow = globalThis as unknown as {
-  window?: { location: { origin: string }; localStorage?: Storage } | undefined;
-};
-
 const stubWindowOrigin = (origin: string): void => {
   const eventTarget = new EventTarget();
-  runtimeWindow.window = {
-    location: { origin },
-    dispatchEvent: (event: Event) => eventTarget.dispatchEvent(event),
-    addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.addEventListener(type, listener),
-  } as typeof runtimeWindow.window;
+  Object.defineProperty(globalThis, 'window', {
+    configurable: true,
+    writable: true,
+    value: {
+      location: { origin },
+      dispatchEvent: (event: Event) => eventTarget.dispatchEvent(event),
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.addEventListener(type, listener),
+    },
+  });
 };
 
 const makeCatalogSnapshot = (): WorkspaceCatalogSnapshot => ({
@@ -101,7 +101,11 @@ describe('refreshWorkspaceStateAfterResume', () => {
   });
 
   afterEach(() => {
-    runtimeWindow.window = undefined;
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
     setControlPlaneOrigin(null);
   });
 

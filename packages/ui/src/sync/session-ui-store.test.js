@@ -5,6 +5,7 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionWorktreeStore } from './session-worktree-store';
 import { expandSlashCommandGoalObjective, routeMessage, useSessionUIStore } from './session-ui-store';
 import { setActionRefs, setOptimisticRefs } from './session-actions';
+import { clearSyncRefs, setSyncRefs } from './sync-refs';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -228,6 +229,46 @@ describe('routeMessage directory scoping', () => {
     expect(calls[0].directory).toBe('/session/project');
   });
 
+  test('routes a workspace send through the bound service instead of ambient opencodeClient', async () => {
+    const calls = [];
+    const childStores = {
+      children: new Map(),
+    };
+    const boundService = {
+      shellSession: async (params) => {
+        calls.push(params);
+        return { info: {}, parts: [] };
+      },
+    };
+    setSyncRefs(
+      opencodeClient.getSdkClient(),
+      childStores,
+      '/workspace/project',
+      undefined,
+      boundService,
+      'workspace:ws-route',
+    );
+
+    try {
+      await routeMessage({
+        runtimeKey: 'workspace:ws-route',
+        sessionId: 'session-workspace',
+        directory: '/workspace/project',
+        content: 'pwd',
+        providerID: 'provider-workspace',
+        modelID: 'model-workspace',
+        inputMode: 'shell',
+      });
+    } finally {
+      clearSyncRefs(opencodeClient.getSdkClient(), childStores);
+    }
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sessionId).toBe('session-workspace');
+    expect(calls[0].runtimeKey).toBe('workspace:ws-route');
+    expect(calls[0].directory).toBe('/workspace/project');
+  });
+
 });
 
 describe('sendMessage captured target', () => {
@@ -405,6 +446,44 @@ describe('openNewSessionDraft project binding', () => {
     expect(draft.open).toBe(true);
     expect(draft.selectedProjectId).toBe(projectB.id);
   });
+
+  test('keeps an explicit workspace draft out of the ambient project and directory scope', () => {
+    const before = useDirectoryStore.getState().currentDirectory;
+
+    useSessionUIStore.getState().openNewSessionDraft({
+      workspaceId: 'workspace-draft',
+      directoryOverride: '/workspace-draft/project',
+      selectedProjectId: projectA.id,
+    });
+
+    const draft = useSessionUIStore.getState().newSessionDraft;
+    expect(draft.workspaceId).toBe('workspace-draft');
+    expect(draft.selectedProjectId).toBeNull();
+    expect(draft.directoryOverride).toBe('/workspace-draft/project');
+    expect(useDirectoryStore.getState().currentDirectory).toBe(before);
+  });
+
+  test('keeps later workspace draft target updates out of the ambient directory', () => {
+    const before = useDirectoryStore.getState().currentDirectory;
+    useSessionUIStore.setState({
+      newSessionDraft: {
+        open: true,
+        workspaceId: 'workspace-draft',
+        directoryOverride: '/workspace-draft/project',
+        parentID: null,
+      },
+    });
+
+    useSessionUIStore.getState().overrideNewSessionDraftTarget({
+      directoryOverride: '/workspace-draft/worktree',
+    });
+    useSessionUIStore.getState().setNewSessionDraftTarget({
+      directoryOverride: '/workspace-draft/final',
+    });
+
+    expect(useSessionUIStore.getState().newSessionDraft.directoryOverride).toBe('/workspace-draft/final');
+    expect(useDirectoryStore.getState().currentDirectory).toBe(before);
+  });
 });
 
 describe('createSession draft lifecycle', () => {
@@ -544,6 +623,53 @@ describe('routeMessage skill invocation', () => {
 
     expect(sendMessageCalls).toHaveLength(1);
     expect(sendCommandCalls).toHaveLength(0);
+  });
+});
+
+describe('workspace session directory boundary', () => {
+  test('does not mutate the ambient directory when selecting a workspace session', () => {
+    const childStores = { children: new Map() };
+    const serviceDirectories = [];
+    const boundService = {
+      getDirectory: () => '/workspace/project',
+      setDirectory: (directory) => serviceDirectories.push(directory),
+    };
+    const sdk = opencodeClient.getSdkClient();
+    const before = useDirectoryStore.getState().currentDirectory;
+
+    setSyncRefs(
+      sdk,
+      childStores,
+      '/workspace/project',
+      undefined,
+      boundService,
+      'workspace:workspace-boundary',
+    );
+
+    try {
+      useSessionUIStore.setState({
+        currentSessionId: null,
+        currentSessionDirectory: null,
+        currentWorkspaceId: null,
+        newSessionDraft: { open: false, directoryOverride: null, parentID: null },
+      });
+      useSessionUIStore.getState().setCurrentSession(
+        'session-workspace-boundary',
+        '/workspace/project',
+        'workspace-boundary',
+      );
+
+      expect(useDirectoryStore.getState().currentDirectory).toBe(before);
+      expect(serviceDirectories).toEqual(['/workspace/project']);
+      expect(useSessionUIStore.getState().currentWorkspaceId).toBe('workspace-boundary');
+    } finally {
+      useSessionUIStore.setState({
+        currentSessionId: null,
+        currentSessionDirectory: null,
+        currentWorkspaceId: null,
+      });
+      clearSyncRefs(sdk, childStores);
+    }
   });
 });
 

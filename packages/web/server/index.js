@@ -1499,7 +1499,7 @@ async function main(options = {}) {
     void handleWorkspaceUpgrade(req, socket, head, {
       catalogStore: runtime.catalogStore,
       connectionBroker: runtime.connectionBroker,
-      credentialProvider: null,
+      credentialProvider: options.workspaceCredentialProvider ?? null,
       getUiAuthController: () => uiAuthController,
       isRequestOriginAllowed,
       rejectWebSocketUpgrade,
@@ -1727,6 +1727,10 @@ async function main(options = {}) {
     normalizeDirectoryPath,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
+    // Optional privileged resolver for server-side Relay workspace profiles.
+    // It returns only private data to the adapter and is never exposed through
+    // the Catalog API (credentialRef -> { relay, token, headers }).
+    credentialProvider: options.workspaceCredentialProvider ?? null,
     // Privileged adapters injected by the Electron main process (SSH
     // tunnels). Web/headless servers never receive these.
     injectedAdapters: Array.isArray(options.workspaceConnectionAdapters) ? options.workspaceConnectionAdapters : [],

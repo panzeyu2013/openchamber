@@ -15,10 +15,20 @@ export function parseRoute(searchParams?: URLSearchParams): RouteState {
 
   return {
     sessionId: parseSessionId(params),
+    workspaceId: parseWorkspaceId(params),
     tab: parseTab(params),
     settingsPath: parseSettingsPath(params),
     diffFile: parseDiffFile(params),
   };
+}
+
+/** Parse an explicit workspace target, preserving legacy URLs without it. */
+function parseWorkspaceId(params: URLSearchParams): string | null {
+  const value = params.get(ROUTE_PARAMS.WORKSPACE);
+  if (!value || value.trim().length === 0) {
+    return null;
+  }
+  return value.trim();
 }
 
 /**
@@ -126,6 +136,7 @@ export function hasRouteParams(): boolean {
     const params = new URLSearchParams(window.location.search);
     return (
       params.has(ROUTE_PARAMS.SESSION) ||
+      params.has(ROUTE_PARAMS.WORKSPACE) ||
       params.has(ROUTE_PARAMS.TAB) ||
       params.has(ROUTE_PARAMS.SETTINGS) ||
       params.has(ROUTE_PARAMS.FILE)

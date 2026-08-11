@@ -4,9 +4,10 @@ import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import { startConfigUpdate } from '@/lib/configUpdate';
 import { refreshAfterOpenCodeRestart } from '@/stores/useAgentsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { noteDeferredRestartFromPayload } from '@/lib/opencode/deferredRestart';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export type McpScope = 'user' | 'project';
 
@@ -21,13 +22,21 @@ type McpMutationResult = {
 
 const getConfigDirectory = (): string | null => {
   try {
+    const boundService = getSyncOpencodeService();
+    if (isWorkspaceRuntimeActive()) {
+      // MCP config CRUD has no workspace-owned route yet. Keep the request
+      // tied to the mounted workspace so the typed unavailable response cannot
+      // accidentally describe the legacy active project.
+      return boundService.getDirectory()?.trim() || null;
+    }
+
     const projectsStore = useProjectsStore.getState();
     const activeProject = projectsStore.getActiveProject?.();
     if (activeProject?.path?.trim()) {
       return activeProject.path.trim();
     }
 
-    const clientDir = opencodeClient.getDirectory();
+    const clientDir = boundService.getDirectory();
     if (clientDir?.trim()) {
       return clientDir.trim();
     }

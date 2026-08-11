@@ -6,7 +6,6 @@ import { MessageFreshnessDetector } from '@/lib/messageFreshness';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 import { useUIStore } from '@/stores/useUIStore';
-import { useContextStore } from '@/stores/contextStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useDeviceInfo } from '@/lib/device';
@@ -208,13 +207,19 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const sessionId = message.info.sessionID;
     const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
 
-    // Keep non-active-turn rows detached from context-store churn.
-    const { currentContextAgent, savedSessionAgentSelection } = useContextStore(
-        useShallow((state) => ({
-            currentContextAgent: isInActiveTurn && sessionId ? state.currentAgentContext.get(sessionId) : undefined,
-            savedSessionAgentSelection: isInActiveTurn && sessionId ? state.sessionAgentSelections.get(sessionId) : undefined,
-        }))
+    // Keep non-active-turn rows detached from selection-store churn. The
+    // scope-aware store is authoritative; contextStore is a legacy mirror and
+    // must not decide the agent for a workspace session.
+    const selectedSessionAgent = useSelectionStore(
+        React.useCallback(
+            (state) => isInActiveTurn && sessionId
+                ? state.getSessionAgentSelection(sessionId) ?? undefined
+                : undefined,
+            [isInActiveTurn, sessionId],
+        ),
     );
+    const currentContextAgent = selectedSessionAgent;
+    const savedSessionAgentSelection = selectedSessionAgent;
 
     const normalizedParts = React.useMemo(() => {
         const safeParts = normalizeParts(message.parts);

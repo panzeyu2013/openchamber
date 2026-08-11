@@ -200,6 +200,7 @@ mock.module('@/lib/opencode/client', () => ({
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: mock(() => null),
+  isWorkspaceRuntimeActive: mock(() => false),
 }));
 
 mock.module('@/lib/runtime-fetch', () => ({
@@ -261,6 +262,7 @@ describe('useConfigStore provider persistence', () => {
     });
     useSessionUIStore.setState({ currentSessionId: null });
     useConfigStore.setState({
+      scopeKey: 'local',
       activeDirectoryKey: DIRECTORY,
       directoryScoped: {},
       providers: [],
@@ -709,6 +711,173 @@ describe('useConfigStore provider persistence', () => {
     expect(state.directoryScoped[DIRECTORY]?.opencodeDefaultAgent).toBe('review');
     expect(state.directoryScoped[worktree]).toBe(undefined);
     expect(state.currentAgentName).toBe('review');
+  });
+
+  test('worktree project mapping is isolated by SyncProvider scope', () => {
+    const worktree = '/workspace/shared-worktree';
+    storage.set('oc.worktreeProjectMap.v2', JSON.stringify({
+      version: 2,
+      legacyClaimed: true,
+      runtimes: {
+        'workspace:one': { updatedAt: 1, entries: { [worktree]: DIRECTORY } },
+        'workspace:two': { updatedAt: 2, entries: { [worktree]: OTHER_DIRECTORY } },
+      },
+    }));
+
+    const makeSnapshot = () => ({
+      providers: [provider('openai', 'gpt-5.5')],
+      agents: [testAgent('build'), testAgent('review')],
+      currentProviderId: 'openai',
+      currentModelId: 'gpt-5.5',
+      currentAgentName: 'build',
+      selectedProviderId: 'openai',
+      agentModelSelections: {},
+      defaultProviders: {},
+      selectionSource: 'auto' as const,
+    });
+
+    useConfigStore.setState({
+      activeDirectoryKey: DIRECTORY,
+      providers: [provider('openai', 'gpt-5.5')],
+      agents: [testAgent('build'), testAgent('review')],
+      currentProviderId: 'openai',
+      currentModelId: 'gpt-5.5',
+      currentAgentName: 'build',
+      selectedProviderId: 'openai',
+      selectionSource: 'auto',
+      directoryScoped: {
+        [DIRECTORY]: makeSnapshot(),
+        [OTHER_DIRECTORY]: makeSnapshot(),
+      },
+    });
+
+    setSyncRefs({} as never, { children: new Map(), getState: () => undefined } as never, DIRECTORY, undefined, undefined, 'workspace:one');
+    emitSyncConfigChanged(worktree, { default_agent: 'review', model: 'openai/gpt-5.5' });
+    expect(useConfigStore.getState().directoryScoped[DIRECTORY]?.opencodeDefaultAgent).toBe('review');
+    expect(useConfigStore.getState().directoryScoped[OTHER_DIRECTORY]?.opencodeDefaultAgent).toBe(undefined);
+
+    setSyncRefs({} as never, { children: new Map(), getState: () => undefined } as never, OTHER_DIRECTORY, undefined, undefined, 'workspace:two');
+    useConfigStore.setState({
+      activeDirectoryKey: OTHER_DIRECTORY,
+      currentAgentName: 'build',
+      opencodeDefaultAgent: undefined,
+      opencodeDefaultModel: undefined,
+    });
+    emitSyncConfigChanged(worktree, { default_agent: 'review', model: 'openai/gpt-5.5' });
+
+    const state = useConfigStore.getState();
+    expect(state.directoryScoped[DIRECTORY]?.opencodeDefaultAgent).toBe('review');
+    expect(state.directoryScoped[OTHER_DIRECTORY]?.opencodeDefaultAgent).toBe('review');
+  });
+
+  test('workspace provider loads use the bound service for unregistered roots', async () => {
+    const workspaceDirectory = '/remote/workspace';
+    const boundService = {
+      getDirectory: mock(() => workspaceDirectory),
+      getProvidersForConfig: mock(async (directory?: string | null) => {
+        expect(directory).toBe(workspaceDirectory);
+        return { providers: [providerResponse('workspace-provider')], default: { default: 'workspace-provider' } };
+      }),
+      checkHealth: mock(async () => true),
+    };
+
+    setSyncRefs(
+      {} as never,
+      { children: new Map(), getState: () => undefined } as never,
+      workspaceDirectory,
+      undefined,
+      boundService as never,
+      'workspace:bound-service',
+    );
+    useConfigStore.getState().bindScope('workspace:bound-service');
+    useConfigStore.setState({ isConnected: true });
+
+    await useConfigStore.getState().loadProviders({ directory: workspaceDirectory, source: 'workspace-test' });
+
+    expect(useConfigStore.getState().directoryScoped[workspaceDirectory]?.providers.map((entry) => entry.id))
+      .toEqual(['workspace-provider']);
+  });
+
+  test('workspace initialization derives config from the bound directory', async () => {
+    const workspaceDirectory = '/remote/initialization';
+    const providerDirectories: Array<string | null | undefined> = [];
+    const agentDirectories: Array<string | null | undefined> = [];
+    const boundService = {
+      getDirectory: mock(() => workspaceDirectory),
+      checkHealth: mock(async () => true),
+      getProvidersForConfig: mock(async (directory?: string | null) => {
+        providerDirectories.push(directory);
+        return { providers: [providerResponse('workspace-init-provider')], default: { default: 'workspace-init-provider' } };
+      }),
+      listAgents: mock(async (directory?: string | null) => {
+        agentDirectories.push(directory);
+        return [testAgent('workspace-init-agent')];
+      }),
+    };
+
+    setSyncRefs(
+      {} as never,
+      { children: new Map(), getState: () => undefined } as never,
+      workspaceDirectory,
+      undefined,
+      boundService as never,
+      'workspace:initialization',
+    );
+    useConfigStore.getState().bindScope('workspace:initialization');
+
+    await useConfigStore.getState().initializeApp();
+
+    expect(providerDirectories).toEqual([workspaceDirectory]);
+    expect(agentDirectories).toEqual([workspaceDirectory]);
+    expect(useConfigStore.getState().directoryScoped[workspaceDirectory]?.providers.map((entry) => entry.id))
+      .toEqual(['workspace-init-provider']);
+  });
+
+  test('workspace provider load drops a result after the scope changes', async () => {
+    const workspaceDirectory = '/remote/workspace';
+    const pending = deferred<{ providers: ReturnType<typeof providerResponse>[]; default: Record<string, string> }>();
+    const firstService = {
+      getDirectory: mock(() => workspaceDirectory),
+      getProvidersForConfig: mock(() => pending.promise),
+      checkHealth: mock(async () => true),
+    };
+
+    setSyncRefs(
+      {} as never,
+      { children: new Map(), getState: () => undefined } as never,
+      workspaceDirectory,
+      undefined,
+      firstService as never,
+      'workspace:before-switch',
+    );
+    useConfigStore.getState().bindScope('workspace:before-switch');
+    useConfigStore.setState({ isConnected: true });
+
+    const loading = useConfigStore.getState().loadProviders({ directory: workspaceDirectory, source: 'stale-scope-test' });
+
+    const secondService = {
+      getDirectory: mock(() => workspaceDirectory),
+      getProvidersForConfig: mock(async () => ({
+        providers: [providerResponse('new-workspace-provider')],
+        default: { default: 'new-workspace-provider' },
+      })),
+      checkHealth: mock(async () => true),
+    };
+    setSyncRefs(
+      {} as never,
+      { children: new Map(), getState: () => undefined } as never,
+      workspaceDirectory,
+      undefined,
+      secondService as never,
+      'workspace:after-switch',
+    );
+    useConfigStore.getState().bindScope('workspace:after-switch');
+
+    pending.resolve({ providers: [providerResponse('old-workspace-provider')], default: { default: 'old-workspace-provider' } });
+    await loading;
+
+    expect(useConfigStore.getState().scopeKey).toBe('workspace:after-switch');
+    expect(useConfigStore.getState().providers).toEqual([]);
   });
 
   test('sync config defaults do not close the add-provider settings flow', () => {

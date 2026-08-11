@@ -1,6 +1,16 @@
 import { describe, expect, test } from "bun:test"
 import type { GitAPI, GitStatus } from "./api/types"
-import { getGitStatus, stageGitFile, stageGitFiles, unstageGitFile, unstageGitFiles } from "./gitApi"
+import {
+  getGitStatus,
+  generateCommitMessage,
+  generatePullRequestDescription,
+  resolveGitPrimaryRoot,
+  resolveGitTopLevel,
+  stageGitFile,
+  stageGitFiles,
+  unstageGitFile,
+  unstageGitFiles,
+} from "./gitApi"
 
 const status: GitStatus = {
   current: "main",
@@ -46,6 +56,92 @@ describe("getGitStatus", () => {
     })
 
     expect(received).toEqual({ directory: "/repo", options: { mode: "light" } })
+  })
+})
+
+describe("workspace-bound git root resolution", () => {
+  test("forwards primary-root resolution to the bound runtime API", async () => {
+    let received: string | null = null
+    const runtimeGit = {
+      resolveGitPrimaryRoot: async (directory: string) => {
+        received = directory
+        return { root: "/workspace/root" }
+      },
+    } as Partial<GitAPI> as GitAPI
+
+    await withRuntimeGit(runtimeGit, async () => {
+      const result = await resolveGitPrimaryRoot("/workspace/root/feature")
+      expect(result).toBe("/workspace/root")
+    })
+
+    expect(received).toBe("/workspace/root/feature")
+  })
+
+  test("forwards worktree toplevel resolution to the bound runtime API", async () => {
+    let received: string | null = null
+    const runtimeGit = {
+      resolveGitTopLevel: async (directory: string) => {
+        received = directory
+        return { root: "/workspace/root/feature" }
+      },
+    } as Partial<GitAPI> as GitAPI
+
+    await withRuntimeGit(runtimeGit, async () => {
+      const result = await resolveGitTopLevel("/workspace/root/feature/src")
+      expect(result).toBe("/workspace/root/feature")
+    })
+
+    expect(received).toBe("/workspace/root/feature/src")
+  })
+})
+
+describe("workspace-bound git generation", () => {
+  test("routes commit generation through the registered runtime adapter", async () => {
+    let received: { directory: string; files: string[]; options?: { providerId?: string } } | null = null
+    const runtimeGit = {
+      generateCommitMessage: async (directory: string, files: string[], options?: { providerId?: string }) => {
+        received = { directory, files, options }
+        return { message: { subject: "workspace commit", highlights: [] } }
+      },
+    } as Partial<GitAPI> as GitAPI
+
+    await withRuntimeGit(runtimeGit, async () => {
+      const result = await generateCommitMessage("/remote/workspace", ["src/app.ts"], { providerId: "provider" })
+      expect(result.message.subject).toBe("workspace commit")
+    })
+
+    expect(received).toEqual({
+      directory: "/remote/workspace",
+      files: ["src/app.ts"],
+      options: { providerId: "provider" },
+    })
+  })
+
+  test("routes pull-request generation through the registered runtime adapter", async () => {
+    let received: { directory: string; payload: { base: string; head: string; context?: string } } | null = null
+    const runtimeGit = {
+      generatePullRequestDescription: async (
+        directory: string,
+        payload: { base: string; head: string; context?: string },
+      ) => {
+        received = { directory, payload }
+        return { title: "workspace PR", body: "Generated remotely" }
+      },
+    } as Partial<GitAPI> as GitAPI
+
+    await withRuntimeGit(runtimeGit, async () => {
+      const result = await generatePullRequestDescription("/remote/workspace", {
+        base: "main",
+        head: "feature",
+        context: "release",
+      })
+      expect(result.title).toBe("workspace PR")
+    })
+
+    expect(received).toEqual({
+      directory: "/remote/workspace",
+      payload: { base: "main", head: "feature", context: "release" },
+    })
   })
 })
 

@@ -12,7 +12,7 @@ import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { openExternalUrl } from '@/lib/url';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import {
   collectPromptInputs,
   defaultPromptValues,
@@ -104,7 +104,7 @@ export const ProviderOAuthMethods: React.FC<ProviderOAuthMethodsProps> = ({
     callbackAbortRef.current = controller;
 
     try {
-      const result = await opencodeClient.getSdkClient().provider.oauth.callback(
+      const result = await getSyncOpencodeService().getSdkClient().provider.oauth.callback(
         {
           providerID: providerId,
           method: methodIndex,
@@ -144,7 +144,7 @@ export const ProviderOAuthMethods: React.FC<ProviderOAuthMethodsProps> = ({
 
     let authorization: OAuthAuthorization;
     try {
-      const result = await opencodeClient.getSdkClient().provider.oauth.authorize({
+      const result = await getSyncOpencodeService().getSdkClient().provider.oauth.authorize({
         providerID: providerId,
         method: methodIndex,
         ...(Object.keys(inputs).length > 0 ? { inputs } : {}),

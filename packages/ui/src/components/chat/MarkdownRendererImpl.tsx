@@ -14,7 +14,8 @@ import { FadeInOnReveal } from './message/FadeInOnReveal';
 import { useUIStore } from '@/stores/useUIStore';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import type { EditorAPI } from '@/lib/api/types';
+import { getSyncScopeKey } from '@/sync/sync-refs';
+import type { EditorAPI, FilesAPI } from '@/lib/api/types';
 import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime } from '@/lib/desktop';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import { ensureOutsideFileGrantForDesktop } from '@/lib/outsideFileGrants';
@@ -356,34 +357,35 @@ const getResolvedReference = (rawValue: string, effectiveDirectory: string): (Pa
   };
 };
 
-const fileReferenceExists = (resolvedPath: string): Promise<boolean> => {
+const fileReferenceExists = (resolvedPath: string, files?: FilesAPI): Promise<boolean> => {
   const normalizedPath = normalizePath(resolvedPath);
   if (!normalizedPath) {
     return Promise.resolve(false);
   }
 
-  const cached = FILE_REFERENCE_STAT_CACHE.get(normalizedPath);
+  const cacheKey = JSON.stringify([getSyncScopeKey(), normalizedPath]);
+  const cached = FILE_REFERENCE_STAT_CACHE.get(cacheKey);
   if (cached) {
-    FILE_REFERENCE_STAT_CACHE.delete(normalizedPath);
-    FILE_REFERENCE_STAT_CACHE.set(normalizedPath, cached);
+    FILE_REFERENCE_STAT_CACHE.delete(cacheKey);
+    FILE_REFERENCE_STAT_CACHE.set(cacheKey, cached);
     return cached;
   }
 
   const request = new Promise<boolean>((resolve) => {
     const run = () => {
       activeFileReferenceStatCount += 1;
-      void runtimeFetch(`/api/fs/stat?path=${encodeURIComponent(normalizedPath)}&optional=true`, {
-        method: 'GET',
-        cache: 'no-store',
-      })
-        .then(async (response) => {
-          if (!response.ok) {
-            resolve(false);
-            return;
-          }
+      const statPromise = files?.statFile
+        ? files.statFile(normalizedPath, { optional: true }).then(() => true)
+        : runtimeFetch(`/api/fs/stat?path=${encodeURIComponent(normalizedPath)}&optional=true`, {
+          method: 'GET',
+          cache: 'no-store',
+        }).then(async (response) => {
+          if (!response.ok) return false;
           const payload = await response.json().catch(() => null) as { exists?: unknown } | null;
-          resolve(payload?.exists !== false);
-        })
+          return payload?.exists !== false;
+        });
+      void statPromise
+        .then(resolve)
         .catch(() => resolve(false))
         .finally(() => {
           activeFileReferenceStatCount = Math.max(0, activeFileReferenceStatCount - 1);
@@ -407,7 +409,7 @@ const fileReferenceExists = (resolvedPath: string): Promise<boolean> => {
     }
     FILE_REFERENCE_STAT_CACHE.delete(oldest);
   }
-  FILE_REFERENCE_STAT_CACHE.set(normalizedPath, request);
+  FILE_REFERENCE_STAT_CACHE.set(cacheKey, request);
   return request;
 };
 
@@ -419,12 +421,14 @@ const useFileReferenceInteractions = ({
   containerRef,
   effectiveDirectory,
   editor,
+  files,
   preferRuntimeEditor,
   enabled,
 }: {
   containerRef: React.RefObject<HTMLDivElement | null>;
   effectiveDirectory: string;
   editor?: EditorAPI;
+  files?: FilesAPI;
   preferRuntimeEditor?: boolean;
   enabled: boolean;
 }) => {
@@ -516,7 +520,7 @@ const useFileReferenceInteractions = ({
           && !isFilePathWithinDirectory(resolved.resolvedPath, effectiveDirectory);
         const existsPromise = canGrantOutsideFile
           ? Promise.resolve(true)
-          : fileReferenceExists(resolved.resolvedPath);
+          : fileReferenceExists(resolved.resolvedPath, files);
 
         void existsPromise.then((exists) => {
           if (cancelled || !exists || !container.contains(candidate)) {
@@ -637,7 +641,7 @@ const useFileReferenceInteractions = ({
       container.removeEventListener('click', handleClick);
       container.removeEventListener('keydown', handleKeyDown);
     };
-  }, [containerRef, editor, effectiveDirectory, preferRuntimeEditor, enabled]);
+  }, [containerRef, editor, effectiveDirectory, files, preferRuntimeEditor, enabled]);
 };
 
 const useMermaidInlineInteractions = ({
@@ -1004,7 +1008,7 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
   if (isStreaming) streamPerfCount('ui.markdown_renderer.render.streaming');
   streamPerfObserve('ui.markdown_renderer.content_len', content.length);
   const currentTheme = useCurrentMermaidTheme();
-  const { editor, runtime } = useRuntimeAPIs();
+  const { editor, files, runtime } = useRuntimeAPIs();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const openContextPreview = useUIStore((state) => state.openContextPreview);
@@ -1026,6 +1030,7 @@ const MarkdownRendererImpl: React.FC<MarkdownRendererProps> = ({
     containerRef,
     effectiveDirectory,
     editor,
+    files,
     preferRuntimeEditor: runtime.isVSCode,
     enabled: enableFileReferences && !isStreaming,
   });
@@ -1089,7 +1094,7 @@ const SimpleMarkdownRendererImpl: React.FC<{
   allowMermaidWheelEvents = false,
   enableFileReferences = true,
 }) => {
-  const { editor, runtime } = useRuntimeAPIs();
+  const { editor, files, runtime } = useRuntimeAPIs();
   const currentTheme = useCurrentMermaidTheme();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
@@ -1110,6 +1115,7 @@ const SimpleMarkdownRendererImpl: React.FC<{
     containerRef,
     effectiveDirectory,
     editor,
+    files,
     preferRuntimeEditor: runtime.isVSCode,
     enabled: enableFileReferences,
   });

@@ -6,7 +6,7 @@ import { toast } from '@/components/ui';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import { useWorkspaceSessionIndexStore, selectSessionsForWorkspace } from '@/workspaces/session-index-store';
 import { createWorkspaceSession } from '@/workspaces/session-index-client';
-import type { ConnectionProfileSummary, WorkspaceDescriptor, WorkspaceSessionSummary } from '@/workspaces/types';
+import type { ConnectionProfileSummary, SourceFreshness, WorkspaceDescriptor, WorkspaceSessionSummary } from '@/workspaces/types';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { openWorkspaceSession } from './workspaceSessionOpen';
 
@@ -35,19 +35,16 @@ const WorkspaceSessionRow: React.FC<{
 }> = React.memo(({ workspace, connection, session, isLocalConnection }) => {
   const { t } = useI18n();
   const [selected, setSelected] = React.useState(false);
-  const sessionIndexStatus = useWorkspaceSessionIndexStore((state) => state.status);
 
   const onOpen = () => {
     setSelected(true);
     // Local AND remote sessions open through the same selection path; the
     // sync runs against the workspace-bound runtime handle (SSE via the
     // workspace runtime proxy), never the global runtime endpoint.
-    openWorkspaceSession(session, (sessionId, directory) => {
-      useSessionUIStore.getState().setCurrentSession(sessionId, directory);
+    openWorkspaceSession(session, (sessionId, directory, workspaceId) => {
+      useSessionUIStore.getState().setCurrentSession(sessionId, directory, workspaceId);
     });
   };
-
-  const freshness = sessionIndexStatus === 'error' ? 'stale' : null;
 
   return (
     <button
@@ -58,9 +55,6 @@ const WorkspaceSessionRow: React.FC<{
     >
       <Icon name={activityIcon(session.activity)} className={`h-3.5 w-3.5 shrink-0 ${activityClass(session.activity)}`} />
       <span className="min-w-0 flex-1 truncate">{session.title}</span>
-      {freshness === 'stale' ? (
-        <span className="shrink-0 text-muted-foreground">{t('workspaces.sidebar.stale')}</span>
-      ) : null}
       {!isLocalConnection && connection ? (
         <span className="hidden shrink-0 text-muted-foreground/70 group-hover:inline lg:inline">
           {t('workspaces.sidebar.serverOf', { server: connection.label })}
@@ -77,13 +71,19 @@ const WorkspaceGroup: React.FC<{
   sessions: WorkspaceSessionSummary[];
   truncated: boolean;
   connectionTruncated: boolean;
+  freshness: SourceFreshness | undefined;
   isLocalConnection: boolean;
-}> = React.memo(({ workspace, connection, sessions, truncated, connectionTruncated, isLocalConnection }) => {
+}> = React.memo(({ workspace, connection, sessions, truncated, connectionTruncated, freshness, isLocalConnection }) => {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   const needsServerDisambiguation = !isLocalConnection && Boolean(connection);
   const shownSessions = sessions.slice(0, RENDER_SESSION_LIMIT);
+  const freshnessLabel = freshness?.stale
+    ? t('workspaces.sidebar.stale')
+    : freshness && (freshness.offline || !freshness.complete)
+      ? t('workspaces.sidebar.unavailable')
+      : null;
 
   // Creates a session on the workspace's server through the session index
   // (`POST /api/workspaces/:id/sessions`). The new session appears through
@@ -119,6 +119,11 @@ const WorkspaceGroup: React.FC<{
             <Icon name="folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
+          {freshnessLabel ? (
+            <span className="shrink-0 text-muted-foreground">
+              {freshnessLabel}
+            </span>
+          ) : null}
           {needsServerDisambiguation ? (
             <span className="shrink-0 text-muted-foreground/70">{connection?.label}</span>
           ) : null}
@@ -169,22 +174,29 @@ WorkspaceGroup.displayName = 'WorkspaceGroup';
  * last snapshot and shows its own error state; other workspaces are
  * unaffected.
  */
-export const WorkspaceSessionsSection: React.FC = () => {
+export const WorkspaceSessionsSection: React.FC<{ searchQuery?: string }> = ({ searchQuery = '' }) => {
   const { t } = useI18n();
   const snapshot = useWorkspaceCatalogStore((state) => state.snapshot);
   const catalogStatus = useWorkspaceCatalogStore((state) => state.status);
   const catalogError = useWorkspaceCatalogStore((state) => state.lastError);
   const sessionSnapshot = useWorkspaceSessionIndexStore(useShallow((state) => state.snapshot));
+  const sessionIndexStatus = useWorkspaceSessionIndexStore((state) => state.status);
   const requestAddWorkspace = () => {
     void import('@/lib/sessionEvents').then(({ sessionEvents }) => sessionEvents.requestAddWorkspaceDialog());
   };
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
 
   const groups = React.useMemo(() => {
     if (!snapshot || !sessionSnapshot) return [];
     const connectionsById = new Map(snapshot.connections.map((connection) => [connection.id, connection]));
     return snapshot.workspaces
       .map((workspace) => {
-        const sessions = selectSessionsForWorkspace(sessionSnapshot, workspace.id)
+        const allSessions = selectSessionsForWorkspace(sessionSnapshot, workspace.id);
+        const sessions = (normalizedSearchQuery
+          ? allSessions.filter((session) => (
+            `${session.title} ${session.directory}`.toLowerCase().includes(normalizedSearchQuery)
+          ))
+          : allSessions)
           .sort((left, right) => right.updatedAt - left.updatedAt);
         const freshness = sessionSnapshot.freshnessByConnection[workspace.connectionId];
         return {
@@ -197,8 +209,11 @@ export const WorkspaceSessionsSection: React.FC = () => {
           isLocalConnection: workspace.connectionId === 'local',
         };
       })
+      .filter((group) => !normalizedSearchQuery
+        || group.workspace.label.toLowerCase().includes(normalizedSearchQuery)
+        || group.sessions.length > 0)
       .sort((left, right) => left.workspace.orderKey.localeCompare(right.workspace.orderKey) || left.workspace.label.localeCompare(right.workspace.label));
-  }, [sessionSnapshot, snapshot]);
+  }, [normalizedSearchQuery, sessionSnapshot, snapshot]);
 
   const hasWorkspaces = Boolean(snapshot && snapshot.workspaces.length > 0);
   if (!hasWorkspaces) {
@@ -234,6 +249,21 @@ export const WorkspaceSessionsSection: React.FC = () => {
     );
   }
 
+  if (!sessionSnapshot) {
+    return (
+      <section
+        className="border-b border-border/60 px-2.5 py-2"
+        aria-label={t('workspaces.sidebar.title')}
+        aria-busy={sessionIndexStatus === 'loading'}
+      >
+        <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('workspaces.sidebar.title')}</p>
+        <p className="px-1 text-xs text-muted-foreground">
+          {sessionIndexStatus === 'error' ? t('workspaces.sidebar.unavailable') : t('common.loading')}
+        </p>
+      </section>
+    );
+  }
+
   return (
     <section className="border-b border-border/60 px-2.5 py-2" aria-label={t('workspaces.sidebar.title')}>
       <div className="space-y-1">
@@ -245,6 +275,7 @@ export const WorkspaceSessionsSection: React.FC = () => {
             sessions={group.sessions}
             truncated={group.truncated}
             connectionTruncated={group.connectionTruncated}
+            freshness={group.freshness}
             isLocalConnection={group.isLocalConnection}
           />
         ))}

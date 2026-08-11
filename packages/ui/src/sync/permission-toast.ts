@@ -10,7 +10,7 @@ type PermissionToastOptions = {
     description: string;
     action: { label: string; onClick: () => void };
   }) => void;
-  openSession: (sessionId: string, directory: string) => void;
+  openSession: (sessionId: string, directory: string, workspaceId?: string | null) => void;
 };
 
 export const getPermissionToastKey = (sessionId?: string, requestId?: string) => {

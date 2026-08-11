@@ -2,7 +2,7 @@ import { create } from "zustand";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { devtools, persist } from "zustand/middleware";
 import type { Agent, PermissionConfig } from "@opencode-ai/sdk/v2";
-import { opencodeClient } from "@/lib/opencode/client";
+import { getSyncOpencodeService } from "@/sync/sync-refs";
 import { emitConfigChange, scopeMatches, subscribeToConfigChanges, type ConfigChangeScope } from "@/lib/configSync";
 import {
   startConfigUpdate,
@@ -17,14 +17,22 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { useSkillsCatalogStore } from "@/stores/useSkillsCatalogStore";
 import { invalidateSkillsLoadCache, useSkillsStore } from "@/stores/useSkillsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 // Note: useDirectoryStore cannot be imported at top level to avoid circular dependency
 // useDirectoryStore -> useAgentsStore (for refreshAfterOpenCodeRestart)
 // useAgentsStore -> useDirectoryStore (for currentDirectory)
 const getCurrentDirectory = (): string | null => {
-  const opencodeDirectory = opencodeClient.getDirectory();
+  const boundService = getSyncOpencodeService();
+  const opencodeDirectory = boundService.getDirectory();
   if (typeof opencodeDirectory === 'string' && opencodeDirectory.trim().length > 0) {
     return opencodeDirectory;
+  }
+
+  if (isWorkspaceRuntimeActive()) {
+    // A workspace without a resolved directory is unavailable, not a reason
+    // to refresh the ambient project configuration.
+    return null;
   }
 
   try {
@@ -42,6 +50,13 @@ const getCurrentDirectory = (): string | null => {
 
 export const getConfigDirectory = (): string | null => {
   try {
+    const boundService = getSyncOpencodeService();
+    if (isWorkspaceRuntimeActive()) {
+      // Agent config CRUD has no workspace-owned route yet. Keep the request
+      // bound to the mounted workspace for a typed unavailable response.
+      return boundService.getDirectory()?.trim() || null;
+    }
+
     const projectsStore = useProjectsStore.getState();
     const activeProject = projectsStore.getActiveProject?.();
     
@@ -51,7 +66,7 @@ export const getConfigDirectory = (): string | null => {
     }
 
     // 2. Fallback: current OpenCode directory (session / runtime)
-    const clientDir = opencodeClient.getDirectory();
+    const clientDir = boundService.getDirectory();
     if (clientDir?.trim()) {
       return clientDir.trim();
     }
@@ -313,6 +328,7 @@ export const useAgentsStore = create<AgentsStore>()(
           }
 
           const request = (async () => {
+            const service = getSyncOpencodeService();
             set({ isLoading: true });
             const previousAgents = get().agents;
             const previousSignature = buildAgentsSignature(previousAgents);
@@ -324,7 +340,7 @@ export const useAgentsStore = create<AgentsStore>()(
                 // Ensure we list agents using the correct project context. Pass the
                 // directory directly so this shares the in-flight request with the config
                 // store instead of issuing a duplicate agents fetch at startup.
-                const agents = await opencodeClient.listAgents(configDirectory);
+                const agents = await service.listAgents(configDirectory);
 
                 const agentsWithScope = await Promise.all(
                   agents.map(async (agent) => {
@@ -638,6 +654,7 @@ if (typeof window !== "undefined") {
 }
 
 async function waitForOpenCodeConnection(delayMs?: number) {
+  const service = getSyncOpencodeService();
   const initialPause = typeof delayMs === "number" && delayMs > 0
     ? Math.min(delayMs, FAST_HEALTH_POLL_INTERVAL_MS)
     : 0;
@@ -655,7 +672,7 @@ async function waitForOpenCodeConnection(delayMs?: number) {
     updateConfigUpdateMessage(`Waiting for OpenCode… (attempt ${attempt})`);
 
     try {
-      const isHealthy = await opencodeClient.checkHealth();
+      const isHealthy = await service.checkHealth();
       if (isHealthy) {
         return;
       }

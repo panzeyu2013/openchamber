@@ -17,6 +17,12 @@ export interface StartWebUiServerOptions {
   attachSignals?: boolean;
   exitOnShutdown?: boolean;
   uiPassword?: string | null;
+  /** Server-side resolver for private workspace connection credentials. */
+  workspaceCredentialProvider?: {
+    resolveCredential: (credentialRef: string) => Promise<Record<string, unknown> | null>;
+  } | null;
+  /** Privileged workspace adapters supplied by a native host (for example SSH). */
+  workspaceConnectionAdapters?: unknown[];
 }
 
 export declare function startWebUiServer(

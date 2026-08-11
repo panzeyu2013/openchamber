@@ -1625,6 +1625,8 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.serverHasMoreSessions': '此伺服器上還有更多會話',
   'workspaces.sidebar.openSessionAria': '在 {workspace} 中開啟 {title}',
   'workspaces.sidebar.unavailable': '此環境中工作區不可用。',
+  'workspaces.sidebar.capabilityDisabled.title': '工作區目錄已停用',
+  'workspaces.sidebar.capabilityDisabled.description': '伺服器管理員已停用工作區目錄。您的工作區資料仍會保留，並以唯讀方式顯示——無法新增、編輯或開啟工作區。',
   'workspaces.capability.terminalUnavailable': '此工作區的連線不支援終端機。',
   'workspaces.dialog.description': '選擇伺服器及其上的路徑。所有伺服器的工作區都顯示在同一個清單中。',
   'workspaces.dialog.server.label': '伺服器',

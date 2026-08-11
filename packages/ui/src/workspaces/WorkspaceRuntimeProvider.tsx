@@ -1,4 +1,6 @@
 import * as React from 'react';
+import { setWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { useI18n } from '@/lib/i18n';
 import { useWorkspaceCatalogStore } from './catalog-store';
 import { createWorkspaceRuntimeRegistry, type WorkspaceRuntimeHandle } from './workspace-runtime-registry';
 import { WorkspaceRuntimeContext } from './workspace-runtime-context';
@@ -17,6 +19,25 @@ import type { WorkspaceId } from './types';
 
 const registry = createWorkspaceRuntimeRegistry();
 
+/**
+ * Explicit workspace targets must not fall back to the ambient runtime while
+ * the Catalog is loading or a connection has become unavailable. Keep this
+ * gate small and shared by the main, mobile, and secondary Electron surfaces.
+ */
+export const WorkspaceRuntimeGate: React.FC = () => {
+  const { t } = useI18n();
+  const catalogStatus = useWorkspaceCatalogStore((state) => state.status);
+  const message = catalogStatus === 'idle' || catalogStatus === 'loading'
+    ? t('common.loading')
+    : t('workspaces.sidebar.unavailable');
+
+  return (
+    <div className="flex h-full items-center justify-center bg-background px-4 text-center text-sm text-muted-foreground">
+      {message}
+    </div>
+  );
+};
+
 export const WorkspaceRuntimeProvider: React.FC<{
   workspaceId: WorkspaceId | null;
   children: React.ReactNode;
@@ -32,6 +53,14 @@ export const WorkspaceRuntimeProvider: React.FC<{
     if (!workspace) return null;
     return registry.get(workspace);
   }, [workspace]);
+
+  React.useEffect(() => {
+    // Mark the workspace scope before child effects (including config-store
+    // bootstrap) can fall back to an ambient settings endpoint. The registry
+    // supplies the typed unavailable settings API until a handle is ready.
+    setWorkspaceRuntimeActive(Boolean(workspaceId));
+    return () => setWorkspaceRuntimeActive(false);
+  }, [workspaceId]);
 
   React.useEffect(() => {
     if (!handle) return;

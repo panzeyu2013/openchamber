@@ -1633,6 +1633,8 @@ export const dict: Record<I18nKey, string> = {
   "workspaces.sidebar.serverHasMoreSessions": "На цьому сервері доступно більше сесій",
   "workspaces.sidebar.openSessionAria": "Відкрити {title} у {workspace}",
   "workspaces.sidebar.unavailable": "Робочі простори недоступні в цьому середовищі.",
+  "workspaces.sidebar.capabilityDisabled.title": "Каталог робочих просторів вимкнено",
+  "workspaces.sidebar.capabilityDisabled.description": "Адміністратор сервера вимкнув каталог робочих просторів. Ваші робочі простори збережено та показано в режимі лише для читання — додавання, редагування та відкриття робочих просторів недоступне.",
   "workspaces.capability.terminalUnavailable": "Термінал недоступний для з'єднання цього робочого простору.",
   "workspaces.dialog.description": "Виберіть сервер і шлях на ньому. Робочі простори з усіх серверів розміщуються в одному списку.",
   "workspaces.dialog.server.label": "Сервер",

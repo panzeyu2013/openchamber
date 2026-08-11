@@ -634,9 +634,39 @@ describe('terminal runtime', () => {
       });
       expect(created.status).toBe(200);
 
+      const outsideCreate = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/create`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
+        body: JSON.stringify({ sessionId: 'term-outside', cwd: '/other', cols: 80, rows: 24 }),
+      });
+      expect(outsideCreate.status).toBe(403);
+      expect((await outsideCreate.json()).code).toBe('catalog_path_outside_workspace');
+      expect(processes).toHaveLength(1);
+
+      const missingDirectory = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/create`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sessionId: 'term-missing-directory', cwd: '/repo', cols: 80, rows: 24 }),
+      });
+      expect(missingDirectory.status).toBe(403);
+      expect((await missingDirectory.json()).code).toBe('catalog_workspace_directory_unavailable');
+
+      const outsideRestart = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/term-bound/restart`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
+        body: JSON.stringify({ cwd: '/other', cols: 80, rows: 24 }),
+      });
+      expect(outsideRestart.status).toBe(403);
+      expect((await outsideRestart.json()).code).toBe('catalog_path_outside_workspace');
+
+      const crossWorkspaceKill = await fetch(`${base}/api/workspaces/ws-2/runtime/api/terminal/force-kill`, {
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
+        body: JSON.stringify({ sessionId: 'term-bound' }),
+      });
+      expect(crossWorkspaceKill.status).toBe(200);
+      expect((await crossWorkspaceKill.json()).killedCount).toBe(0);
+      expect(processes[0].killed).toBe(false);
+
       // Creating the same id through ANOTHER workspace prefix is rejected.
       const conflicting = await fetch(`${base}/api/workspaces/ws-2/runtime/api/terminal/create`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
+        method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ sessionId: 'term-bound', cwd: '/repo' }),
       });
       expect(conflicting.status).toBe(400);

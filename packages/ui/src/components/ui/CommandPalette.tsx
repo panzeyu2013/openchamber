@@ -26,7 +26,7 @@ import {
 } from '@/sync/session-ordering';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useGitAllBranches, useGitStore } from '@/stores/useGitStore';
-import { useFileSearchStore } from '@/stores/useFileSearchStore';
+import { useScopedFileSearch } from '@/stores/useFileSearchStore';
 import { useDeviceInfo } from '@/lib/device';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
@@ -50,6 +50,7 @@ import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { buildCommandPaletteFileSearchKey, scoreCommandPaletteFiles } from './commandPaletteFilesState';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 type CommandEntry = {
   id: string;
@@ -107,9 +108,10 @@ export const CommandPalette: React.FC = () => {
   ));
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
   const activeProject = useProjectsStore((s) => s.getActiveProject());
+  const activeWorkspaceId = useActiveWorkspaceId();
   const projects = useProjectsStore((s) => s.projects);
   const effectiveDirectory = useEffectiveDirectory();
-  const searchFiles = useFileSearchStore((s) => s.searchFiles);
+  const searchFiles = useScopedFileSearch();
   const { files: filesApi, git: gitApi } = useRuntimeAPIs();
   const ensureGitStatus = useGitStore((s) => s.ensureStatus);
   const { isMobile } = useDeviceInfo();
@@ -251,6 +253,7 @@ export const CommandPalette: React.FC = () => {
           void invokeDesktop('desktop_open_draft_mini_chat_window', {
             directory: normalizePath(currentDirectory || activeProject?.path || ''),
             projectId: activeProject?.id ?? null,
+            workspaceId: activeWorkspaceId ?? null,
             ...getDesktopRuntimeEndpointArgs(),
           }).catch((error) => {
             console.warn('[command-palette] failed to open draft mini chat window', error);
@@ -273,6 +276,7 @@ export const CommandPalette: React.FC = () => {
     setSettingsDialogOpen,
     activeProject?.id,
     activeProject?.path,
+    activeWorkspaceId,
   ]);
 
   // ---------------------------------------------------------------------------
@@ -448,9 +452,9 @@ export const CommandPalette: React.FC = () => {
   const handleOpenSession = React.useCallback(
     (session: Session) => {
       close();
-      setCurrentSession(session.id, resolveGlobalSessionDirectory(session));
+      setCurrentSession(session.id, resolveGlobalSessionDirectory(session), activeWorkspaceId);
     },
-    [close, setCurrentSession],
+    [activeWorkspaceId, close, setCurrentSession],
   );
 
   const handleOpenFile = React.useCallback(

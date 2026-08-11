@@ -35,6 +35,7 @@ mock.module('@opencode-ai/sdk/v2', () => ({
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: mock(() => null),
+  isWorkspaceRuntimeActive: mock(() => false),
 }));
 
 mock.module('@/lib/runtime-url', () => ({
@@ -58,12 +59,69 @@ mock.module('@/lib/startupTrace', () => ({
   markStartupTrace: mock(() => undefined),
 }));
 
-const { opencodeClient } = await import(`./client?cache-test=${Date.now()}`);
+const { opencodeClient, createOpencodeServiceForSdk } = await import(`./client?cache-test=${Date.now()}`);
 
 beforeEach(() => {
   runtimeKey = 'test-runtime';
   promptAsyncCalls.length = 0;
   promptAsyncResults.length = 0;
+});
+
+describe('workspace-bound OpencodeService', () => {
+  test('keeps SDK, fetch, scoped clients, and runtime guard bound to one workspace', async () => {
+    const scopedClient = {};
+    const scopedDirectories: string[] = [];
+    const boundFetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
+    const boundFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      boundFetchCalls.push({ input, init });
+      return new Response(JSON.stringify({ healthy: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    };
+    const boundClient = { session: { promptAsync: promptAsyncMock } };
+    const service = createOpencodeServiceForSdk({
+      client: boundClient as never,
+      baseUrl: '/api/workspaces/ws-1/runtime/api',
+      directory: '/workspace/ws-1',
+      scopeKey: 'workspace:ws-1',
+      fetch: boundFetch,
+      createScopedClient: (directory: string) => {
+        scopedDirectories.push(directory);
+        return scopedClient as never;
+      },
+    });
+
+    promptAsyncResults.push({ response: new Response(null, { status: 200 }) });
+    await service.sendMessage({
+      runtimeKey: 'workspace:ws-1',
+      id: 'session-bound',
+      providerID: 'workspace-provider',
+      modelID: 'workspace-model',
+      text: 'hello workspace',
+    });
+
+    expect(promptAsyncCalls).toHaveLength(1);
+    expect((promptAsyncCalls[0]?.[0] as { directory?: string }).directory).toBe('/workspace/ws-1');
+    expect(await service.checkHealth()).toBe(true);
+    expect(boundFetchCalls[0]?.input).toBe('/api/workspaces/ws-1/runtime/api/opencode/health');
+    expect(service.getScopedSdkClient('/workspace/ws-1/worktree')).toBe(scopedClient);
+    expect(service.getScopedSdkClient('/workspace/ws-1/worktree')).toBe(scopedClient);
+    expect(scopedDirectories).toEqual(['/workspace/ws-1/worktree']);
+
+    await expect(service.sendMessage({
+      runtimeKey: 'workspace:ws-2',
+      id: 'session-bound',
+      providerID: 'workspace-provider',
+      modelID: 'workspace-model',
+      text: 'must not dispatch',
+    })).rejects.toThrow('runtime changed');
+    expect(promptAsyncCalls).toHaveLength(1);
+
+    const sdkBeforeReconnect = service.getSdkClient();
+    service.reconnectToRuntimeBaseUrl();
+    expect(service.getSdkClient()).toBe(sdkBeforeReconnect);
+  });
 });
 
 describe('opencodeClient getConfig cache', () => {

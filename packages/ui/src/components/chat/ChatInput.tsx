@@ -64,7 +64,6 @@ import { GitHubPrPickerDialog } from '@/components/session/GitHubPrPickerDialog'
 import { Icon } from "@/components/icon/Icon";
 import { DraftPresetChips } from './DraftPresetChips';
 import { useChatSearchDirectory } from '@/hooks/useChatSearchDirectory';
-import { opencodeClient } from '@/lib/opencode/client';
 import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
@@ -78,7 +77,8 @@ import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { fetchResponseStyleInstruction } from '@/lib/responseStyle';
 import { wrapSystemReminder } from '@/lib/systemReminder';
-import { getSyncMessages } from '@/sync/sync-refs';
+import { getSyncMessages, getSyncOpencodeService } from '@/sync/sync-refs';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
 import {
     assignImageAttachmentFilenames,
@@ -228,10 +228,13 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     const newSessionDirectory = sessionState.newSessionDraft?.open
         ? sessionState.newSessionDraft.bootstrapPendingDirectory ?? sessionState.newSessionDraft.directoryOverride
         : null;
+    const workspaceId = sessionState.currentWorkspaceId ?? sessionState.newSessionDraft?.workspaceId ?? null;
     const directory = sessionId
         ? sessionState.getDirectoryForSession(sessionId) ?? sessionState.currentSessionDirectory
-        : newSessionDirectory ?? useDirectoryStore.getState().currentDirectory;
-    return createChatDraftIdentity(resolveSessionScopeKey(sessionId, directory), directory, sessionId);
+        : newSessionDirectory ?? (workspaceId
+            ? getSyncOpencodeService().getDirectory()
+            : useDirectoryStore.getState().currentDirectory);
+    return createChatDraftIdentity(resolveSessionScopeKey(sessionId, directory, workspaceId), directory, sessionId);
 };
 
 const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom }) => {
@@ -300,14 +303,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         Promise.resolve((useSessionUIStore.getState().sendMessage as (...a: unknown[]) => unknown)(...args)),
     ).current;
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
+    const currentWorkspaceId = useSessionUIStore((s) => s.currentWorkspaceId);
     const fallbackDirectory = useDirectoryStore((s) => s.currentDirectory);
-    const currentDirectory = useEffectiveDirectory() ?? fallbackDirectory;
+    const activeWorkspaceId = useActiveWorkspaceId();
+    const draftWorkspaceId = useSessionUIStore((s) => s.newSessionDraft?.open ? s.newSessionDraft.workspaceId ?? null : null);
+    const currentDirectory = useEffectiveDirectory() ?? (activeWorkspaceId ? '' : fallbackDirectory ?? '');
     const currentSessionDirectoryForSync = useSessionUIStore(
         React.useCallback((s) => currentSessionId ? s.getDirectoryForSession(currentSessionId) : null, [currentSessionId]),
     );
     const activeRuntimeKey = resolveSessionScopeKey(
         currentSessionId,
         currentSessionDirectoryForSync ?? currentDirectory,
+        currentWorkspaceId ?? draftWorkspaceId ?? activeWorkspaceId,
     );
     const chatDraftIdentity = React.useMemo(
         () => createChatDraftIdentity(
@@ -602,7 +609,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             return { sanitizedText: rawText, attachments: [] };
         }
 
-        const clientDirectory = opencodeClient.getDirectory() || '';
+        const clientDirectory = getSyncOpencodeService().getDirectory() || '';
         const root = (chatSearchDirectory || clientDirectory).replace(/\\/g, '/').replace(/\/+$/, '');
         const seenPaths = new Set<string>();
         const attachments: AttachedFile[] = [];
@@ -685,7 +692,15 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
 
     // Message queue
     const messageQueueTarget = currentSessionId
-        ? createMessageQueueTarget(currentSessionId, currentSessionDirectoryForSync ?? currentDirectory)
+        ? createMessageQueueTarget(
+            currentSessionId,
+            currentSessionDirectoryForSync ?? currentDirectory,
+            resolveSessionScopeKey(
+                currentSessionId,
+                currentSessionDirectoryForSync ?? currentDirectory,
+                currentWorkspaceId,
+            ),
+        )
         : null;
     const messageQueueKey = messageQueueTarget ? getMessageQueueKey(messageQueueTarget) : null;
     const followUpBehavior = useMessageQueueStore((state) => state.followUpBehavior);
@@ -1136,7 +1151,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                 try {
                     await sessionActions.waitForConnectionOrThrow();
                     const compactDirectory = useSessionUIStore.getState().getDirectoryForSession(currentSessionId) || currentDirectory || undefined;
-                    await opencodeClient.summarizeSession(currentSessionId, currentProviderId, currentModelId, compactDirectory);
+                    await getSyncOpencodeService().summarizeSession(currentSessionId, currentProviderId, currentModelId, compactDirectory);
                 } catch (error) {
                     toast.error(getSubmitErrorMessage(error, t('chat.chatInput.toast.compactFailed')));
                 }

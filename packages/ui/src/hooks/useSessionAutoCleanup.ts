@@ -1,9 +1,8 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { opencodeClient } from '@/lib/opencode/client';
 import { ensureGlobalSessionsLoaded, useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getAllSyncSessions } from '@/sync/sync-refs';
+import { getAllSyncSessions, getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import { useUIStore } from '@/stores/useUIStore';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -57,7 +56,7 @@ type CleanupResult = {
   completedIds: string[];
   failedIds: string[];
   action: 'archive' | 'delete';
-  skippedReason?: 'disabled' | 'loading' | 'cooldown' | 'no-candidates' | 'running';
+  skippedReason?: 'disabled' | 'loading' | 'cooldown' | 'no-candidates' | 'running' | 'scope-changed';
 };
 
 type CleanupOptions = {
@@ -123,7 +122,11 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
         return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'cooldown' };
       }
 
+      const operationScopeKey = getSyncScopeKey();
       const { activeSessions: sessions } = await ensureGlobalSessionsLoaded(getAllSyncSessions());
+      if (getSyncScopeKey() !== operationScopeKey) {
+        return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'scope-changed' };
+      }
 
       if (sessions.length === 0) {
         return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'no-candidates' };
@@ -144,11 +147,15 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
       runningRef.current = true;
       setIsRunning(true);
       try {
+        const operationService = getSyncOpencodeService();
         const sessionMap = new Map(sessions.map((session) => [session.id, session]));
         const completedIds: string[] = [];
         const failedIds: string[] = [];
 
         for (const id of candidateIds) {
+          if (getSyncScopeKey() !== operationScopeKey) {
+            return { completedIds, failedIds, action: sessionRetentionAction, skippedReason: 'scope-changed' };
+          }
           const session = sessionMap.get(id);
           const directory = session ? resolveGlobalSessionDirectory(session) : null;
           if (!directory) {
@@ -158,9 +165,9 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
 
           try {
             if (sessionRetentionAction === 'archive') {
-              await opencodeClient.updateSession(id, { time: { archived: Date.now() } }, directory);
+              await operationService.updateSession(id, { time: { archived: Date.now() } }, directory);
             } else {
-              await opencodeClient.deleteSession(id, directory);
+              await operationService.deleteSession(id, directory);
             }
             completedIds.push(id);
           } catch {
@@ -168,6 +175,9 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
           }
         }
 
+        if (getSyncScopeKey() !== operationScopeKey) {
+          return { completedIds, failedIds, action: sessionRetentionAction, skippedReason: 'scope-changed' };
+        }
         if (sessionRetentionAction === 'archive') {
           useGlobalSessionsStore.getState().archiveSessions(completedIds);
         } else {

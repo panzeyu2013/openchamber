@@ -3,7 +3,6 @@ import type { RuntimeEndpointChangedDetail } from '@/lib/runtime-switch';
 import { disposeTerminalInputTransport } from '@/lib/terminalApi';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { usePermissionStore } from '@/stores/permissionStore';
@@ -15,7 +14,6 @@ import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useTerminalStore } from '@/stores/useTerminalStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resetStreamingState } from '@/sync/streaming';
-import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
 import { resetSessionOrdering } from '@/sync/session-ordering';
 import { resetSessionActivityTiming } from '@/sync/session-activity-timing';
 import { syncDesktopSettings } from '@/lib/persistence';
@@ -41,7 +39,7 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
     useAutoReviewStore.getState().stopRunningRunsForRuntime(detail.previousRuntimeKey);
   }
   disposeTerminalInputTransport();
-  useTerminalStore.getState().clearAll();
+  useTerminalStore.getState().resetForRuntimeSwitch();
   opencodeClient.reconnectToRuntimeBaseUrl();
   useConfigStore.setState({
     providers: [],
@@ -52,10 +50,13 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
     lastDisconnectReason: null,
   });
   useProjectsStore.getState().resetForRuntimeSwitch();
-  // Cross-project session list (mobile sessions sheet & co) belongs to the
-  // previous instance — drop it so stale sessions can't linger after a switch.
-  useGlobalSessionsStore.getState().resetForRuntimeSwitch();
-  useGlobalSessionStatusStore.setState({ statusById: new Map() });
+  // The full-session compatibility cache is partitioned by runtime/workspace
+  // scope. The next SyncProvider binds the new scope and loads it independently;
+  // do not destroy the previous scope's snapshot during an endpoint switch.
+  // Global live status is partitioned by the same runtime/workspace scope as
+  // SyncProvider. The next binding selects the new partition; clearing the
+  // visible map here would destroy the previous scope and hide stale-but-valid
+  // state during a reconnect.
   resetSessionOrdering();
   // Turn timings belong to the previous instance's sessions, and the reset also
   // restarts the resume window so the switch is treated as a fresh load.
@@ -63,7 +64,10 @@ export const resetAppForRuntimeEndpointChange = (detail: RuntimeEndpointChangedD
   usePermissionStore.getState().reset();
   useFileSearchStore.getState().resetForRuntimeSwitch();
   useGitStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
-  useGitHubPrStatusStore.getState().resetForRuntimeSwitch();
+  useGitHubPrStatusStore.getState().resetForRuntimeSwitch([
+    detail.previousRuntimeKey,
+    detail.runtimeKey,
+  ]);
   useSessionFoldersStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
   useFilesViewTabsStore.getState().resetForRuntimeSwitch(detail.runtimeKey);
   useSessionUIStore.getState().restoreForRuntimeSwitch(detail.runtimeKey);

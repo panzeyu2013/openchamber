@@ -8,7 +8,7 @@ import type {
   GitIdentitySummary,
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -35,6 +35,7 @@ const DIFF_PREFETCH_LARGE_FILE_THRESHOLD = 500; // skip prefetch for files with 
 const DIFF_CACHE_MAX_ENTRIES = 30;
 const DIFF_CACHE_MAX_TOTAL_SIZE_BYTES = 20 * 1024 * 1024; // 20MB
 const DIFF_CACHE_MAX_GLOBAL_ENTRIES = 200;
+const MAX_GIT_SCOPE_SNAPSHOTS = 8;
 type GitStatusFetchMode = 'full' | 'light';
 
 interface DirectoryGitState {
@@ -359,6 +360,28 @@ const evictGlobalDiffCachesIfNeeded = (directories: Map<string, DirectoryGitStat
   return next;
 };
 
+const saveCurrentGitScope = (
+  scopeKey: string,
+  directories: Map<string, DirectoryGitState>,
+  directoriesByScope: Record<string, Map<string, DirectoryGitState>>,
+  nextScopeKey: string,
+): Record<string, Map<string, DirectoryGitState>> => {
+  const next = { ...directoriesByScope };
+  // The active map is represented by `directories`, not duplicated in the
+  // snapshot record. Remove the target before adding the previous scope so
+  // switching back promotes it to the newest retained snapshot.
+  delete next[nextScopeKey];
+  delete next[scopeKey];
+  next[scopeKey] = directories;
+
+  const keys = Object.keys(next);
+  while (keys.length > MAX_GIT_SCOPE_SNAPSHOTS) {
+    const oldest = keys.shift();
+    if (oldest) delete next[oldest];
+  }
+  return next;
+};
+
 const haveDiffStatsChanged = (
   previous?: GitStatus['diffStats'],
   next?: GitStatus['diffStats']
@@ -569,7 +592,16 @@ export const useGitStore = create<GitStore>()(
         inFlightEnsureAllByDirectory.clear();
         inFlightDiffFetchesByDirectory.clear();
         diffFetchGenerationByDirectory.clear();
-        set({ scopeKey: nextScopeKey, directories: seedDirectoriesFromBranchCache(nextScopeKey), directoriesByScope: {}, activeDirectory: null });
+        set((state) => ({
+          scopeKey: nextScopeKey,
+          directories: state.scopeKey === nextScopeKey
+            ? state.directories
+            : (state.directoriesByScope[nextScopeKey] ?? seedDirectoriesFromBranchCache(nextScopeKey)),
+          directoriesByScope: state.scopeKey === nextScopeKey
+            ? state.directoriesByScope
+            : saveCurrentGitScope(state.scopeKey, state.directories, state.directoriesByScope, nextScopeKey),
+          activeDirectory: null,
+        }));
       },
 
       setActiveDirectory: (directory) => {
@@ -1202,10 +1234,17 @@ const swapGitScope = (scopeKey: string): void => {
     return;
   }
   gitRuntimeGeneration += 1;
+  const directoriesByScope = saveCurrentGitScope(
+    state.scopeKey,
+    state.directories,
+    state.directoriesByScope,
+    scopeKey,
+  );
   useGitStore.setState({
     scopeKey,
-    directories: state.directoriesByScope[scopeKey] ?? new Map(),
-    directoriesByScope: { ...state.directoriesByScope, [state.scopeKey]: state.directories },
+    directories: state.directoriesByScope[scopeKey] ?? seedDirectoriesFromBranchCache(scopeKey),
+    directoriesByScope,
+    activeDirectory: null,
   });
 };
 
@@ -1224,6 +1263,7 @@ const installGitScopeSubscription = (): void => {
     };
     useSessionUIStore?.subscribe?.(check);
     useWorkspaceSessionIndexStore?.subscribe?.(check);
+    subscribeRuntimeEndpointChanged(check);
   });
 };
 installGitScopeSubscription();

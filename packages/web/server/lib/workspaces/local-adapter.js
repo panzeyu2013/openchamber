@@ -27,7 +27,13 @@
  *   the workspace runtime proxy.
  */
 
-import { isPathWithinRoot, readRequestDirectoryHints } from './path-boundary.js';
+import {
+  isPathWithinRoot,
+  resolvePathWithinWorkspace,
+  readRequestDirectoryHints,
+  readRequestWorkspacePathHints,
+  scopeWorkspaceDirectoryListRequest,
+} from './path-boundary.js';
 
 export const LOCAL_CONNECTION_ID = 'local';
 
@@ -57,12 +63,13 @@ export const createLocalWorkspaceAdapter = (dependencies) => {
    * so a workspace whose own path is a symlink is still enforced against its
    * real location. */
   const assertDirectoryWithin = async (rootPath, candidatePath) => {
-    if (!isPathWithinRoot(rootPath, candidatePath)) {
+    const resolvedCandidatePath = resolvePathWithinWorkspace(rootPath, candidatePath);
+    if (!resolvedCandidatePath) {
       throw outsideWorkspaceError();
     }
     const [resolvedRoot, resolvedCandidate] = await Promise.all([
       fs.realpath(rootPath).catch(() => rootPath),
-      fs.realpath(candidatePath).catch(() => candidatePath),
+      fs.realpath(resolvedCandidatePath).catch(() => resolvedCandidatePath),
     ]);
     if (!isPathWithinRoot(resolvedRoot, resolvedCandidate)) {
       throw outsideWorkspaceError();
@@ -129,10 +136,13 @@ export const createLocalWorkspaceAdapter = (dependencies) => {
       error.status = 400;
       throw error;
     }
+    const scopedDirectory = context?.canonicalPath
+      ? resolvePathWithinWorkspace(context.canonicalPath, directoryPath)
+      : directoryPath;
     if (context?.canonicalPath) {
       await assertDirectoryWithin(context.canonicalPath, directoryPath);
     }
-    const resolved = path.resolve(directoryPath);
+    const resolved = path.resolve(scopedDirectory ?? directoryPath);
     let entries;
     try {
       entries = await fs.readdir(resolved, { withFileTypes: true });
@@ -190,13 +200,38 @@ export const createLocalWorkspaceAdapter = (dependencies) => {
       error.status = 501;
       throw error;
     }
-    const upstreamUrl = buildOpenCodeUrl(restPath, '');
+    const scopedRestPath = scopeWorkspaceDirectoryListRequest(context?.canonicalPath, restPath);
+    if (context?.canonicalPath) {
+      const listUrl = new URL(scopedRestPath, 'http://workspace.local');
+      if (listUrl.pathname === '/api/fs/list') {
+        await assertDirectoryWithin(context.canonicalPath, listUrl.searchParams.get('path') ?? context.canonicalPath);
+      }
+      const hasValidatedOutsideFileGrant = (
+        (listUrl.pathname === '/api/fs/read' || listUrl.pathname === '/api/fs/stat' || listUrl.pathname === '/api/fs/raw')
+        && listUrl.searchParams.get('allowOutsideWorkspace') === 'true'
+        && Boolean(listUrl.searchParams.get('outsideFileGrant'))
+      );
+      if (!hasValidatedOutsideFileGrant) {
+        for (const hint of readRequestWorkspacePathHints(scopedRestPath, request)) {
+          await assertDirectoryWithin(context.canonicalPath, hint);
+        }
+      }
+    }
+    const upstreamUrl = buildOpenCodeUrl(scopedRestPath, '');
     const headers = new Headers();
     const sourceHeaders = request?.headers;
+    const copySourceHeader = (name, value) => {
+      if (value === undefined || value === null) return;
+      const normalizedName = String(name).toLowerCase();
+      const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value);
+      if (BLOCKED_UPSTREAM_HEADERS.has(normalizedName)) return;
+      if (/\r|\n/.test(String(name)) || /\r|\n/.test(normalizedValue)) return;
+      headers.set(name, normalizedValue);
+    };
     if (sourceHeaders && typeof sourceHeaders.forEach === 'function') {
-      sourceHeaders.forEach((value, name) => {
-        if (!BLOCKED_UPSTREAM_HEADERS.has(name.toLowerCase())) headers.set(name, value);
-      });
+      sourceHeaders.forEach(copySourceHeader);
+    } else if (sourceHeaders && typeof sourceHeaders === 'object') {
+      for (const [name, value] of Object.entries(sourceHeaders)) copySourceHeader(name, value);
     }
     const openChamberHeaders = await getOpenCodeAuthHeaders();
     if (openChamberHeaders && typeof openChamberHeaders === 'object') {

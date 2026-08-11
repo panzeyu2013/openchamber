@@ -1,10 +1,12 @@
 import { create } from 'zustand';
-import { opencodeClient } from '@/lib/opencode/client';
 import { listProjectWorktrees, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from './useDirectoryStore';
 import { useProjectsStore } from './useProjectsStore';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { deleteSessionInDirectory } from '@/sync/session-actions';
 import { retry } from '@/sync/retry';
+import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
+import { workspaceIdFromScopeKey } from '@/workspaces/identity';
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { Session } from '@opencode-ai/sdk/v2';
 
@@ -81,6 +83,12 @@ function parseSessionTitle(title: string | undefined): {
 // ---------------------------------------------------------------------------
 
 function resolveProjectRef(): { id: string; path: string } | null {
+  const workspaceId = workspaceIdFromScopeKey(getSyncScopeKey());
+  if (workspaceId && isWorkspaceRuntimeActive()) {
+    const workspaceDirectory = normalize(getSyncOpencodeService().getDirectory() ?? '');
+    return workspaceDirectory ? { id: workspaceId, path: workspaceDirectory } : null;
+  }
+
   const currentDirectory = useDirectoryStore.getState().currentDirectory;
   const projectsState = useProjectsStore.getState();
   const activeProjectId = projectsState.activeProjectId;
@@ -189,6 +197,8 @@ interface AgentGroupsActions {
 
 type Store = AgentGroupsState & AgentGroupsActions;
 
+let loadGeneration = 0;
+
 export const useAgentGroupsStore = create<Store>()(
   (set, get) => ({
     groups: [],
@@ -198,9 +208,15 @@ export const useAgentGroupsStore = create<Store>()(
     error: null,
 
     loadGroups: async () => {
+      const generation = ++loadGeneration;
+      const scopeKey = getSyncScopeKey();
+      const service = getSyncOpencodeService();
+      const isCurrentLoad = () => generation === loadGeneration && getSyncScopeKey() === scopeKey;
       const projectRef = resolveProjectRef();
       if (!projectRef) {
-        set({ groups: [], isLoading: false, error: 'No project directory' });
+        if (isCurrentLoad()) {
+          set({ groups: [], isLoading: false, error: 'No project directory' });
+        }
         return;
       }
 
@@ -209,6 +225,7 @@ export const useAgentGroupsStore = create<Store>()(
       try {
         // 1. List worktrees (already cached 30s by worktreeManager)
         const worktrees = await listProjectWorktrees(projectRef);
+        if (!isCurrentLoad()) return;
         const metaByPath = new Map<string, WorktreeMetadata>();
         const dirs: string[] = [];
         for (const meta of worktrees) {
@@ -220,12 +237,12 @@ export const useAgentGroupsStore = create<Store>()(
         }
 
         if (dirs.length === 0) {
-          set({ groups: [], isLoading: false });
+          if (isCurrentLoad()) set({ groups: [], isLoading: false });
           return;
         }
 
         // 2. Fetch sessions for each worktree directory (parallel, max 5)
-        const api = opencodeClient.getApiClient();
+        const api = service.getSdkClient();
         const allSessions: Session[] = [];
         const failedDirectories = new Set<string>();
 
@@ -254,6 +271,7 @@ export const useAgentGroupsStore = create<Store>()(
           }
         };
         await Promise.all(Array.from({ length: Math.min(5, dirs.length) }, () => worker()));
+        if (!isCurrentLoad()) return;
 
         // 3. Build groups
         const groups = buildGroups(allSessions, metaByPath);
@@ -263,6 +281,7 @@ export const useAgentGroupsStore = create<Store>()(
           error: failedDirectories.size > 0 ? `Failed to load sessions for ${failedDirectories.size} worktree${failedDirectories.size === 1 ? '' : 's'}` : null,
         });
       } catch (err) {
+        if (!isCurrentLoad()) return;
         set({
           groups: get().groups, // preserve on error
           isLoading: false,
@@ -324,7 +343,9 @@ export const useAgentGroupsStore = create<Store>()(
           try {
             await removeProjectWorktree(projectRef, source, { deleteLocalBranch: true });
             const directoryStore = useDirectoryStore.getState();
-            if (normalize(directoryStore.currentDirectory) === path) {
+            const workspaceTargetActive = isWorkspaceRuntimeActive()
+              || workspaceIdFromScopeKey(getSyncScopeKey()) !== null;
+            if (!workspaceTargetActive && normalize(directoryStore.currentDirectory) === path) {
               directoryStore.setDirectory(projectRef.path, { showOverlay: false });
             }
           } catch {

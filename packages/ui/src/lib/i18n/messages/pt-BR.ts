@@ -1633,6 +1633,8 @@ export const dict: Record<I18nKey, string> = {
   "workspaces.sidebar.serverHasMoreSessions": "Mais sessões disponíveis neste servidor",
   "workspaces.sidebar.openSessionAria": "Abrir {title} em {workspace}",
   "workspaces.sidebar.unavailable": "Os espaços de trabalho não estão disponíveis neste ambiente.",
+  "workspaces.sidebar.capabilityDisabled.title": "O catálogo de espaços de trabalho está desativado",
+  "workspaces.sidebar.capabilityDisabled.description": "O administrador do servidor desativou o catálogo de espaços de trabalho. Seus espaços de trabalho permanecem salvos e são exibidos somente leitura: adicionar, editar e abrir espaços de trabalho não está disponível.",
   "workspaces.capability.terminalUnavailable": "O terminal não está disponível para a conexão deste espaço de trabalho.",
   "workspaces.dialog.description": "Escolha um servidor e um caminho nele. Espaços de trabalho de todos os servidores ficam em uma única lista.",
   "workspaces.dialog.server.label": "Servidor",

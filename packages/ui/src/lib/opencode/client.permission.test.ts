@@ -76,6 +76,7 @@ mock.module('@opencode-ai/sdk/v2', () => ({
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: mock(() => null),
+  isWorkspaceRuntimeActive: mock(() => false),
 }));
 
 mock.module('@/lib/runtime-url', () => ({

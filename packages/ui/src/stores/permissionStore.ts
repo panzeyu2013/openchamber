@@ -8,7 +8,8 @@ import { isVSCodeRuntime } from "@/lib/desktop";
 import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
 import { useSessionUIStore } from "@/sync/session-ui-store";
 import { opencodeClient } from "@/lib/opencode/client";
-import { getRuntimeKey } from "@/lib/runtime-switch";
+import { getSyncScopeKey } from "@/sync/sync-refs";
+import { workspaceIdFromScopeKey } from "@/workspaces/identity";
 
 type PermissionPolicySnapshot = {
     sessions: PermissionAutoAcceptMap;
@@ -24,10 +25,11 @@ interface PermissionStore {
     loaded: boolean;
     saving: boolean;
     lastAppliedRevision: number;
+    activeScopeKey: string | null;
     legacyCandidate: PermissionAutoAcceptMap | null;
     legacyRuntimeKey: string | null;
     hydrate: () => Promise<void>;
-    applySnapshot: (snapshot: PermissionPolicySnapshot, expectedRuntimeKey?: string) => void;
+    applySnapshot: (snapshot: PermissionPolicySnapshot, expectedScopeKey?: string) => void;
     reset: () => void;
     isSessionAutoAccepting: (sessionId: string) => boolean;
     setSessionAutoAccept: (sessionId: string, enabled: boolean) => Promise<void>;
@@ -54,20 +56,20 @@ const isAutoAccepting = (
     sessionId: string,
 ) => autoRespondsPermission({ autoAccept, sessions: [], sessionById, sessionID: sessionId });
 
-type PermissionOperation = { generation: number; runtimeKey: string; sequence: number };
+type PermissionOperation = { generation: number; scopeKey: string; sequence: number };
 let generation = 0;
 let operationSequence = 0;
 let latestStartedSequence = 0;
 const pendingSavingOperations = new Set<number>();
 
 const beginOperation = (): PermissionOperation => {
-    const operation = { generation, runtimeKey: getRuntimeKey(), sequence: ++operationSequence };
+    const operation = { generation, scopeKey: getSyncScopeKey(), sequence: ++operationSequence };
     latestStartedSequence = operation.sequence;
     return operation;
 };
 
 const isCurrentOperation = (operation: PermissionOperation) => (
-    operation.generation === generation && operation.runtimeKey === getRuntimeKey()
+    operation.generation === generation && operation.scopeKey === getSyncScopeKey()
 );
 
 const normalizeSessions = (value: unknown): PermissionAutoAcceptMap => {
@@ -84,20 +86,28 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
     loaded: false,
     saving: false,
     lastAppliedRevision: -1,
+    activeScopeKey: null,
     legacyCandidate: null,
     legacyRuntimeKey: null,
 
     hydrate: async () => {
         const operation = beginOperation();
+        if (get().activeScopeKey && get().activeScopeKey !== operation.scopeKey) {
+            set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
+        }
+        if (workspaceIdFromScopeKey(operation.scopeKey)) {
+            set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
+            return;
+        }
         const legacyCandidate = get().legacyCandidate;
         let legacyRuntimeKey = get().legacyRuntimeKey;
         if (legacyCandidate && !legacyRuntimeKey) {
-            legacyRuntimeKey = operation.runtimeKey;
+            legacyRuntimeKey = operation.scopeKey;
             set({ legacyRuntimeKey });
         }
         let snapshot = await requestSnapshot("/api/permission-auto-accept");
         if (!isCurrentOperation(operation)) return;
-        const legacyEntries = legacyRuntimeKey === operation.runtimeKey
+        const legacyEntries = legacyRuntimeKey === operation.scopeKey
             ? Object.entries(legacyCandidate ?? {})
             : [];
         if (Object.keys(snapshot.sessions).length === 0 && legacyEntries.length > 0) {
@@ -116,8 +126,8 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
         }
         if (!isCurrentOperation(operation)) return;
         if (snapshot.revision === undefined && operation.sequence !== latestStartedSequence) return;
-        get().applySnapshot(snapshot, operation.runtimeKey);
-        if (legacyRuntimeKey === operation.runtimeKey) {
+        get().applySnapshot(snapshot, operation.scopeKey);
+        if (legacyRuntimeKey === operation.scopeKey) {
             set({ legacyCandidate: null, legacyRuntimeKey: null });
         }
     },
@@ -126,11 +136,13 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
         generation += 1;
         latestStartedSequence = 0;
         pendingSavingOperations.clear();
-        set({ autoAccept: {}, loaded: false, saving: false, lastAppliedRevision: -1 });
+        set({ autoAccept: {}, loaded: false, saving: false, lastAppliedRevision: -1, activeScopeKey: null });
     },
 
-    applySnapshot: (snapshot, expectedRuntimeKey) => {
-        if (expectedRuntimeKey && expectedRuntimeKey !== getRuntimeKey()) return;
+    applySnapshot: (snapshot, expectedScopeKey) => {
+        const currentScopeKey = getSyncScopeKey();
+        if (expectedScopeKey && expectedScopeKey !== currentScopeKey) return;
+        if (workspaceIdFromScopeKey(currentScopeKey)) return;
         const sessions = normalizeSessions(snapshot.sessions);
         const revision = normalizeRevision(snapshot.revision);
         set((state) => {
@@ -139,6 +151,7 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
             return {
                 autoAccept: sessions,
                 loaded: true,
+                activeScopeKey: currentScopeKey,
                 ...(revision !== undefined ? { lastAppliedRevision: revision } : {}),
             };
         });
@@ -146,6 +159,7 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
 
     isSessionAutoAccepting: (sessionId) => {
         if (!sessionId) return false;
+        if (get().activeScopeKey && get().activeScopeKey !== getSyncScopeKey()) return false;
         const autoAccept = get().autoAccept;
         if (Object.keys(autoAccept).length === 0) return false;
         return isAutoAccepting(autoAccept, getAllSyncSessionMap(), sessionId);
@@ -154,6 +168,13 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
     setSessionAutoAccept: async (sessionId, enabled) => {
         if (!sessionId) return;
         const operation = beginOperation();
+        if (get().activeScopeKey && get().activeScopeKey !== operation.scopeKey) {
+            set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
+        }
+        if (workspaceIdFromScopeKey(operation.scopeKey)) {
+            set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
+            throw new Error('Permission auto-accept is unavailable for workspace-bound sessions.');
+        }
         pendingSavingOperations.add(operation.sequence);
         set({ saving: true });
         try {
@@ -170,7 +191,7 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
             );
             if (!isCurrentOperation(operation)) return;
             if (snapshot.revision === undefined && operation.sequence !== latestStartedSequence) return;
-            get().applySnapshot(snapshot, operation.runtimeKey);
+            get().applySnapshot(snapshot, operation.scopeKey);
             if (isCurrentOperation(operation) && isVSCodeRuntime() && enabled) {
                 const { reconcileVSCodePendingPermissions } = await import("@/sync/vscode-permission-auto-accept");
                 if (isCurrentOperation(operation)) {

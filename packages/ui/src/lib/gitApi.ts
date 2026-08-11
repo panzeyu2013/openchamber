@@ -103,11 +103,21 @@ export async function getGitStatus(directory: string, options?: { mode?: 'light'
 }
 
 export async function resolveGitPrimaryRoot(directory: string): Promise<string> {
+  const runtime = getRuntimeGit();
+  if (runtime?.resolveGitPrimaryRoot) {
+    const result = await runtime.resolveGitPrimaryRoot(directory);
+    return result.root;
+  }
   const result = await gitHttp.resolveGitPrimaryRoot(directory);
   return result.root;
 }
 
 export async function resolveGitTopLevel(directory: string): Promise<string> {
+  const runtime = getRuntimeGit();
+  if (runtime?.resolveGitTopLevel) {
+    const result = await runtime.resolveGitTopLevel(directory);
+    return result.root;
+  }
   const result = await gitHttp.resolveGitTopLevel(directory);
   return result.root;
 }
@@ -228,8 +238,8 @@ const collectSelectedFileDiffs = async (directory: string, files: string[]): Pro
   const chunks = await Promise.all(limited.map(async (path) => {
     try {
       const [staged, unstaged] = await Promise.all([
-        gitHttp.getGitDiff(directory, { path, staged: true }).catch(() => null),
-        gitHttp.getGitDiff(directory, { path, staged: false }).catch(() => null),
+        getGitDiff(directory, { path, staged: true }).catch(() => null),
+        getGitDiff(directory, { path, staged: false }).catch(() => null),
       ]);
       const text = [staged?.diff, unstaged?.diff]
         .filter((diff): diff is string => typeof diff === 'string' && diff.trim().length > 0)
@@ -291,7 +301,14 @@ export async function generateCommitMessage(
   options?: { zenModel?: string; providerId?: string; modelId?: string }
 ): Promise<{ message: import('./api/types').GeneratedCommitMessage }> {
   const startedAt = Date.now();
-  void options;
+
+  // Git is a workspace-owned capability. Once the RuntimeAPI provider has
+  // mounted, route the generation request through its bound adapter so a
+  // remote workspace never posts to the ambient runtime's small-model route.
+  const runtime = getRuntimeGit();
+  if (runtime?.generateCommitMessage) {
+    return runtime.generateCommitMessage(directory, files, options);
+  }
 
   console.info('[git-generation][browser] request', {
     transport: 'small-model',
@@ -367,6 +384,13 @@ export async function generatePullRequestDescription(
   payload: { base: string; head: string; context?: string; zenModel?: string; providerId?: string; modelId?: string }
 ): Promise<import('./api/types').GeneratedPullRequestDescription> {
   const startedAt = Date.now();
+
+  // Keep the remote path on the workspace-bound Git adapter. The legacy
+  // client-side prompt assembly below remains for non-mounted/older runtimes.
+  const runtime = getRuntimeGit();
+  if (runtime?.generatePullRequestDescription) {
+    return runtime.generatePullRequestDescription(directory, payload);
+  }
 
   const commitLog = await getGitLog(directory, {
     from: payload.base,

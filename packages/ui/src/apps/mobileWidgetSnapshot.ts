@@ -5,9 +5,10 @@ import { useUIStore } from '@/stores/useUIStore';
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
-import { useNotificationStore } from '@/sync/notification-store';
+import { getNotificationSessionKey, useNotificationStore } from '@/sync/notification-store';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
 import { getRuntimeKey } from '@/lib/runtime-switch';
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 
 /**
  * Builds the lightweight session overview the native iOS widgets render (home medium,
@@ -73,6 +74,7 @@ const projectLabelForDirectory = (directory: string | null, projects: ProjectEnt
 export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
   const sessions = useGlobalSessionsStore.getState().activeSessions;
   const unseenBySession = useNotificationStore.getState().index.session.unseenCount;
+  const indexedSessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const notifyOnSubtasks = useUIStore.getState().notifyOnSubtasks;
   const projects = useProjectsStore.getState().projects;
   const pinnedSessionIds = useSessionPinnedStore.getState().ids;
@@ -83,7 +85,12 @@ export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
 
   for (const session of sessions) {
     const isSubtask = parentIdOf(session) !== null;
-    const unseenCount = unseenBySession[session.id] ?? 0;
+    const workspaceId = resolveActiveWorkspaceId(
+      indexedSessions,
+      session.id,
+      resolveGlobalSessionDirectory(session),
+    );
+    const unseenCount = unseenBySession[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
     const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
     if (needsAttention) {
       attentionCount += 1;

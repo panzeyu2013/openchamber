@@ -27,6 +27,7 @@ import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
 import { hasOpenDropdown } from './keyboard-shortcut-dom';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 export const useKeyboardShortcuts = () => {
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
@@ -37,8 +38,14 @@ export const useKeyboardShortcuts = () => {
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
   const toggleHelpDialog = useUIStore((s) => s.toggleHelpDialog);
   const toggleSidebar = useUIStore((s) => s.toggleSidebar);
-  const currentShortcutDirectory = useDirectoryStore((s) => s.currentDirectory);
   const effectiveDirectory = useEffectiveDirectory();
+  const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
+  const activeProject = useProjectsStore((s) => s.getActiveProject());
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const currentSessionDirectory = useSessionUIStore((s) => s.currentSessionDirectory);
+  const currentShortcutDirectory = activeWorkspaceId
+    ? currentSessionDirectory ?? effectiveDirectory ?? currentDirectory
+    : currentDirectory;
 
   // The terminal lives in the context panel; these mirror the rail behavior.
   const toggleTerminalSurface = React.useCallback(() => {
@@ -67,8 +74,6 @@ export const useKeyboardShortcuts = () => {
   const setPromptNavigatorPanelOpen = useUIStore((s) => s.setPromptNavigatorPanelOpen);
   const toggleExpandedInput = useUIStore((s) => s.toggleExpandedInput);
   const shortcutOverrides = useUIStore((s) => s.shortcutOverrides);
-  const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
-  const activeProject = useProjectsStore((s) => s.getActiveProject());
   const { themeMode, setThemeMode } = useThemeSystem();
   const { phase: sessionPhase } = useCurrentSessionActivity();
   const abortPrimedUntilRef = React.useRef<number | null>(null);
@@ -294,8 +299,11 @@ export const useKeyboardShortcuts = () => {
       if (canUseElectronDesktopIPC() && eventMatchesShortcut(e, combo('new_mini_chat'))) {
         e.preventDefault();
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
-          directory: currentDirectory || activeProject?.path || '',
-          projectId: activeProject?.id ?? null,
+          directory: activeWorkspaceId
+            ? effectiveDirectory ?? ''
+            : currentDirectory || activeProject?.path || '',
+          projectId: activeWorkspaceId ? null : activeProject?.id ?? null,
+          workspaceId: activeWorkspaceId ?? null,
           ...getDesktopRuntimeEndpointArgs(),
         }).catch((error) => {
           console.warn('[keyboard-shortcuts] failed to open draft mini chat window', error);
@@ -427,11 +435,11 @@ export const useKeyboardShortcuts = () => {
       // replaced the sidebar's tabs.
       if (eventMatchesShortcut(e, combo('toggle_right_sidebar'))) {
         const state = useUIStore.getState();
-        if (state.isMobile || !currentDirectory) {
+        if (state.isMobile || !effectiveDirectory) {
           return;
         }
         e.preventDefault();
-        const directory = normalizeContextPanelDirectoryKey(currentDirectory);
+        const directory = normalizeContextPanelDirectoryKey(effectiveDirectory);
         const panelState = state.contextPanelByDirectory[directory];
         if (panelState?.isOpen) {
           state.closeContextPanel(directory);
@@ -445,21 +453,21 @@ export const useKeyboardShortcuts = () => {
 
       if (eventMatchesShortcut(e, combo('open_right_sidebar_git'))) {
         const state = useUIStore.getState();
-        if (state.isMobile || !currentDirectory) {
+        if (state.isMobile || !effectiveDirectory) {
           return;
         }
         e.preventDefault();
-        state.openContextSurface(normalizeContextPanelDirectoryKey(currentDirectory), 'git');
+        state.openContextSurface(normalizeContextPanelDirectoryKey(effectiveDirectory), 'git');
         return;
       }
 
       if (eventMatchesShortcut(e, combo('open_right_sidebar_files'))) {
         const state = useUIStore.getState();
-        if (state.isMobile || !currentDirectory) {
+        if (state.isMobile || !effectiveDirectory) {
           return;
         }
         e.preventDefault();
-        state.openContextSurface(normalizeContextPanelDirectoryKey(currentDirectory), 'file');
+        state.openContextSurface(normalizeContextPanelDirectoryKey(effectiveDirectory), 'file');
         return;
       }
 
@@ -706,10 +714,12 @@ export const useKeyboardShortcuts = () => {
     armAbortPrompt,
     resetAbortPriming,
     currentSessionId,
+    currentSessionDirectory,
     currentDirectory,
     effectiveDirectory,
     activeProject?.id,
     activeProject?.path,
+    activeWorkspaceId,
     shortcutOverrides,
   ]);
 

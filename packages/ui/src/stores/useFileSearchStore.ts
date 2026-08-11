@@ -1,10 +1,13 @@
+import React from 'react';
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
-import { opencodeClient, type ProjectFileSearchHit } from '@/lib/opencode/client';
+import type { OpencodeService, ProjectFileSearchHit } from '@/lib/opencode/client';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 
 const resolveActiveWorkspaceScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
@@ -22,6 +25,13 @@ interface FileSearchCacheEntry {
   timestamp: number;
 }
 
+type FileSearchTransport = Pick<OpencodeService, 'searchFiles'>;
+
+type FileSearchRequestContext = {
+  scopeKey?: string;
+  transport?: FileSearchTransport;
+};
+
 interface FileSearchStoreState {
   cache: Record<string, FileSearchCacheEntry>;
   cacheKeys: string[];
@@ -30,7 +40,8 @@ interface FileSearchStoreState {
     directory: string,
     query: string,
     limit?: number,
-    options?: { includeHidden?: boolean; respectGitignore?: boolean; type?: 'file' | 'directory' }
+    options?: { includeHidden?: boolean; respectGitignore?: boolean; type?: 'file' | 'directory' },
+    context?: FileSearchRequestContext,
   ) => Promise<ProjectFileSearchHit[]>;
   invalidateDirectory: (directory?: string | null) => void;
   resetForRuntimeSwitch: () => void;
@@ -65,13 +76,13 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
       cache: {},
       cacheKeys: [],
       inFlight: {},
-      async searchFiles(directory, query, limit = DEFAULT_SEARCH_LIMIT, options) {
+      async searchFiles(directory, query, limit = DEFAULT_SEARCH_LIMIT, options, context) {
         if (!directory || directory.trim().length === 0) {
           return [];
         }
 
         const normalizedDirectory = directory.trim();
-        const scopeKey = resolveActiveWorkspaceScopeKey();
+        const scopeKey = context?.scopeKey ?? resolveActiveWorkspaceScopeKey();
         const normalizedQuery = typeof query === 'string' ? query.trim() : '';
         const includeHidden = Boolean(options?.includeHidden);
         const respectGitignore = options?.respectGitignore ?? true;
@@ -89,7 +100,8 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
           return inflight;
         }
 
-        const searchPromise = opencodeClient
+        const transport = context?.transport ?? getSyncOpencodeService();
+        const searchPromise = transport
           .searchFiles(normalizedQuery, {
             directory: normalizedDirectory,
             limit,
@@ -182,3 +194,23 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
     }
   )
 );
+
+/**
+ * Search through the current workspace handle when one is mounted. The store
+ * keeps the legacy singleton fallback for non-workspace mounts, but callers
+ * should use this hook so a workspace search cannot accidentally follow the
+ * ambient runtime endpoint.
+ */
+export const useScopedFileSearch = (): FileSearchStoreState['searchFiles'] => {
+  const searchFiles = useFileSearchStore((state) => state.searchFiles);
+  const { handle } = useWorkspaceRuntime();
+  const scopeKey = handle?.scopeKey ?? resolveActiveWorkspaceScopeKey();
+
+  return React.useCallback(
+    (directory, query, limit, options) => searchFiles(directory, query, limit, options, {
+      scopeKey,
+      transport: handle?.service,
+    }),
+    [handle?.service, scopeKey, searchFiles],
+  );
+};

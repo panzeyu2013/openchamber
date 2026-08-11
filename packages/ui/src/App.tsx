@@ -38,9 +38,9 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { resumeAutoReviewRun } from '@/lib/reviewFlow';
-import { SyncProvider } from '@/sync/sync-context';
+import { SyncProvider, useSyncDirectory } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
-import { WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
+import { WorkspaceRuntimeGate, WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
 import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
 import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
@@ -58,7 +58,7 @@ import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import { useI18n } from '@/lib/i18n';
 import { applyMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
-import { SyncAppEffects } from '@/apps/AppEffects';
+import { SyncAppEffects, WorkspaceCatalogSessionIndexEffects } from '@/apps/AppEffects';
 import { resetAppForRuntimeEndpointChange } from '@/apps/runtimeEndpointReset';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
 import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
@@ -108,6 +108,7 @@ type AppProps = {
 type EmbeddedSessionChatConfig = {
   sessionId: string;
   directory: string | null;
+  workspaceId: string | null;
   readOnly: boolean;
 };
 
@@ -136,10 +137,15 @@ const readEmbeddedSessionChatConfig = (): EmbeddedSessionChatConfig | null => {
   const directory = typeof directoryRaw === 'string' && directoryRaw.trim().length > 0
     ? directoryRaw.trim()
     : null;
+  const workspaceRaw = params.get('workspace');
+  const workspaceId = typeof workspaceRaw === 'string' && workspaceRaw.trim().length > 0
+    ? workspaceRaw.trim()
+    : null;
 
   return {
     sessionId,
     directory,
+    workspaceId,
     readOnly: params.get('readOnly') === '1' || params.get('readOnly') === 'true',
   };
 };
@@ -157,20 +163,20 @@ const EmbeddedSessionChatContent: React.FC<{
   isVSCodeRuntime: boolean;
   embeddedBackgroundWorkEnabled: boolean;
 }> = ({ embeddedSessionChat, isVSCodeRuntime, embeddedBackgroundWorkEnabled }) => {
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  const syncDirectory = useSyncDirectory();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const sync = useSync();
   const bootstrapKeyRef = React.useRef<string | null>(null);
 
   const expectedDirectory = normalizeEmbeddedDirectory(embeddedSessionChat.directory);
-  const activeDirectory = normalizeEmbeddedDirectory(currentDirectory);
+  const activeDirectory = normalizeEmbeddedDirectory(syncDirectory);
 
   React.useEffect(() => {
     if (isVSCodeRuntime) return;
     if (expectedDirectory && activeDirectory !== expectedDirectory) return;
 
-    const bootstrapKey = `${expectedDirectory}\n${embeddedSessionChat.sessionId}`;
+    const bootstrapKey = `${embeddedSessionChat.workspaceId ?? ''}\n${expectedDirectory}\n${embeddedSessionChat.sessionId}`;
     // Skip if this session was already bootstrapped and a session is still
     // active — allows in-place navigation (e.g. "Open subtask") to change
     // currentSessionId without this effect forcing it back. Only re-bootstrap
@@ -181,13 +187,14 @@ const EmbeddedSessionChatContent: React.FC<{
     }
 
     bootstrapKeyRef.current = bootstrapKey;
-    setCurrentSession(embeddedSessionChat.sessionId, embeddedSessionChat.directory);
+    setCurrentSession(embeddedSessionChat.sessionId, embeddedSessionChat.directory, embeddedSessionChat.workspaceId);
     void sync.ensureSessionRenderable(embeddedSessionChat.sessionId, true);
   }, [
     activeDirectory,
     currentSessionId,
     embeddedSessionChat.directory,
     embeddedSessionChat.sessionId,
+    embeddedSessionChat.workspaceId,
     expectedDirectory,
     isVSCodeRuntime,
     setCurrentSession,
@@ -200,11 +207,55 @@ const EmbeddedSessionChatContent: React.FC<{
 
   return (
     <>
-      <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+      <SyncAppEffects
+        embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled}
+        includeWorkspaceState={!embeddedSessionChat.workspaceId}
+      />
       <OpenCodeUpdateToast />
       <ChatView readOnly={embeddedSessionChat.readOnly} />
       <Toaster />
     </>
+  );
+};
+
+const EmbeddedSessionChatRuntime: React.FC<{
+  embeddedSessionChat: EmbeddedSessionChatConfig;
+  isVSCodeRuntime: boolean;
+  embeddedBackgroundWorkEnabled: boolean;
+  runtimeEndpointEpoch: number;
+  apis: RuntimeAPIs;
+}> = ({ embeddedSessionChat, isVSCodeRuntime, embeddedBackgroundWorkEnabled, runtimeEndpointEpoch, apis }) => {
+  const { handle } = useWorkspaceRuntime();
+  const ambientDirectory = useDirectoryStore((state) => state.currentDirectory);
+  const workspaceId = embeddedSessionChat.workspaceId;
+
+  if (workspaceId && !handle) {
+    return <WorkspaceRuntimeGate />;
+  }
+
+  const directory = workspaceId
+    ? embeddedSessionChat.directory || handle?.directory || ''
+    : ambientDirectory || '';
+
+  return (
+    <SyncProvider
+      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
+      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
+      directory={directory}
+      workspaceHandle={handle}
+    >
+      <RuntimeAPIProvider apis={apis}>
+        <TooltipProvider delayDuration={300} skipDelayDuration={150}>
+          <div className="h-full text-foreground bg-background">
+            <EmbeddedSessionChatContent
+              embeddedSessionChat={embeddedSessionChat}
+              isVSCodeRuntime={isVSCodeRuntime}
+              embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled}
+            />
+          </div>
+        </TooltipProvider>
+      </RuntimeAPIProvider>
+    </SyncProvider>
   );
 };
 
@@ -220,11 +271,14 @@ const WorkspaceSyncMount: React.FC<{
   children: React.ReactNode;
 }> = ({ runtimeEndpointEpoch, directory, children }) => {
   const { handle } = useWorkspaceRuntime();
-  const workspaceId = handle?.workspaceId ?? null;
+  const workspaceId = useActiveWorkspaceId();
+  if (workspaceId && !handle) {
+    return <WorkspaceRuntimeGate />;
+  }
   return (
     <SyncProvider
       key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
-      sdk={opencodeClient.getSdkClient()}
+      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
       directory={directory}
       workspaceHandle={handle}
     >
@@ -297,12 +351,20 @@ function App({ apis }: AppProps) {
 
   React.useEffect(() => {
     return subscribeRuntimeEndpointChanged((detail) => {
+      // Workspace sessions are bound to the pinned control plane and their
+      // handle does not follow the legacy active-runtime endpoint. A Host
+      // Switcher event must therefore not reset/remount the workspace sync
+      // while a composite workspace/session target is active. Mobile's
+      // explicit connection/disconnect path owns its separate reset semantics.
+      if (activeWorkspaceId || embeddedSessionChat?.workspaceId) {
+        return;
+      }
       resetAppForRuntimeEndpointChange(detail);
       setRuntimeEndpointEpoch((epoch) => epoch + 1);
       setInitRetryExhausted(false);
       setInitRetryEpoch((epoch) => epoch + 1);
     });
-  }, []);
+  }, [activeWorkspaceId, embeddedSessionChat?.workspaceId]);
 
   const autoReviewResumeSignature = useAutoReviewStore((state) => {
     const runtimeKey = getRuntimeKey();
@@ -545,10 +607,13 @@ function App({ apis }: AppProps) {
     if (!isConnected) {
       return;
     }
+    if (activeWorkspaceId) {
+      return;
+    }
     opencodeClient.setDirectory(currentDirectory);
 
     // Session loading is handled by the sync system's bootstrap — no manual loadSessions needed.
-  }, [currentDirectory, isSwitchingDirectory, isConnected, isVSCodeRuntime]);
+  }, [activeWorkspaceId, currentDirectory, isSwitchingDirectory, isConnected, isVSCodeRuntime]);
 
   React.useEffect(() => {
     if (!embeddedSessionChat || typeof window === 'undefined') {
@@ -589,7 +654,7 @@ function App({ apis }: AppProps) {
   }, [embeddedSessionChat]);
 
   React.useEffect(() => {
-    if (!embeddedSessionChat?.directory || isVSCodeRuntime) {
+    if (!embeddedSessionChat?.directory || embeddedSessionChat.workspaceId || isVSCodeRuntime) {
       return;
     }
 
@@ -627,14 +692,17 @@ function App({ apis }: AppProps) {
     if (typeof window === 'undefined') return;
 
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string }>).detail;
+      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string; workspaceId?: string }>).detail;
       const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId.trim() : '';
       if (!sessionId) return;
       const directory = typeof detail?.directory === 'string' && detail.directory.trim().length > 0
         ? detail.directory.trim()
         : null;
+      const workspaceId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
+        ? detail.workspaceId.trim()
+        : null;
       useUIStore.getState().setActiveMainTab('chat');
-      void useSessionUIStore.getState().setCurrentSession(sessionId, directory);
+      void useSessionUIStore.getState().setCurrentSession(sessionId, directory, workspaceId);
     };
 
     window.addEventListener('openchamber:open-session', handler as EventListener);
@@ -647,12 +715,18 @@ function App({ apis }: AppProps) {
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const onOpenMiniChat = () => {
-      const currentDir = useDirectoryStore.getState().currentDirectory;
+      const sessionState = useSessionUIStore.getState();
+      const currentDir = sessionState.currentWorkspaceId
+        ? sessionState.currentSessionDirectory ?? ''
+        : useDirectoryStore.getState().currentDirectory;
       const { activeProjectId, projects } = useProjectsStore.getState();
-      const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+      const activeProject = sessionState.currentWorkspaceId
+        ? null
+        : projects.find((p) => p.id === activeProjectId) ?? null;
       void invokeDesktop('desktop_open_draft_mini_chat_window', {
         directory: currentDir || activeProject?.path || '',
         projectId: activeProject?.id ?? null,
+        workspaceId: sessionState.currentWorkspaceId ?? null,
         ...getDesktopRuntimeEndpointArgs(),
       }).catch((error) => {
         // Remote-origin windows are not allowed to open Mini Chat windows;
@@ -671,8 +745,8 @@ function App({ apis }: AppProps) {
   React.useEffect(() => {
     if (typeof window === 'undefined') return;
     const onFocus = () => {
-      const sessionId = useSessionUIStore.getState().currentSessionId;
-      if (sessionId) markSessionViewed(sessionId);
+      const current = useSessionUIStore.getState();
+      if (current.currentSessionId) markSessionViewed(current.currentSessionId, current.currentWorkspaceId);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -682,16 +756,20 @@ function App({ apis }: AppProps) {
     if (typeof window === 'undefined') return;
 
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ directory?: string; projectId?: string }>).detail;
+      const detail = (event as CustomEvent<{ directory?: string; projectId?: string; workspaceId?: string }>).detail;
       const directory = typeof detail?.directory === 'string' && detail.directory.trim().length > 0
         ? detail.directory.trim()
         : null;
       const projectId = typeof detail?.projectId === 'string' && detail.projectId.trim().length > 0
         ? detail.projectId.trim()
         : null;
+      const workspaceId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
+        ? detail.workspaceId.trim()
+        : null;
       useUIStore.getState().setActiveMainTab('chat');
       useUIStore.getState().setSessionSwitcherOpen(false);
       useSessionUIStore.getState().openNewSessionDraft({
+        workspaceId,
         selectedProjectId: projectId,
         directoryOverride: directory,
         preserveDirectoryOverride: Boolean(directory),
@@ -908,19 +986,16 @@ function App({ apis }: AppProps) {
   if (embeddedSessionChat) {
     return (
       <ErrorBoundary>
-        <SyncProvider key={runtimeEndpointEpoch} sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
-          <RuntimeAPIProvider apis={apis}>
-            <TooltipProvider delayDuration={300} skipDelayDuration={150}>
-              <div className="h-full text-foreground bg-background">
-                <EmbeddedSessionChatContent
-                  embeddedSessionChat={embeddedSessionChat}
-                  isVSCodeRuntime={isVSCodeRuntime}
-                  embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled}
-                />
-              </div>
-            </TooltipProvider>
-          </RuntimeAPIProvider>
-        </SyncProvider>
+        <WorkspaceRuntimeProvider workspaceId={embeddedSessionChat.workspaceId}>
+          {embeddedSessionChat.workspaceId ? <WorkspaceCatalogSessionIndexEffects /> : null}
+          <EmbeddedSessionChatRuntime
+            embeddedSessionChat={embeddedSessionChat}
+            isVSCodeRuntime={isVSCodeRuntime}
+            embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled}
+            runtimeEndpointEpoch={runtimeEndpointEpoch}
+            apis={apis}
+          />
+        </WorkspaceRuntimeProvider>
       </ErrorBoundary>
     );
   }
@@ -952,12 +1027,13 @@ function App({ apis }: AppProps) {
   return (
     <ErrorBoundary>
       <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
+        <WorkspaceCatalogSessionIndexEffects />
         <WorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch} directory={currentDirectory || ''}>
           <RuntimeAPIProvider apis={apis}>
             <FireworksProvider>
                 <TooltipProvider delayDuration={300} skipDelayDuration={150}>
                   <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
-                    <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
+                    <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} includeWorkspaceState={false} />
                     <OpenCodeUpdateToast />
                     <MainLayout />
                     <Toaster />

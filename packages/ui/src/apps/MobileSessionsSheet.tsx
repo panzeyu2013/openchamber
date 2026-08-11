@@ -64,6 +64,7 @@ import {
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import type { WorktreeMetadata } from '@/types/worktree';
@@ -474,7 +475,8 @@ const SessionRow: React.FC<{
   // Live indicators, same conventions as the desktop sidebar: busy/retry →
   // spinner; unseen activity on a non-active row → attention dot.
   const liveStatus = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
   const statusType = liveStatus?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
@@ -867,6 +869,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const activeProjectId = useProjectsStore((state) => state.activeProjectId);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const archiveSession = useSessionUIStore((state) => state.archiveSession);
   const deleteSession = useSessionUIStore((state) => state.deleteSession);
@@ -1248,7 +1251,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       const worktree = findExactWorktreeMatch(project, normalizePath(directory ?? ''));
       if (worktree) setWorktreeExpanded(`${project.id}::${normalizePath(worktree.path)}`, true);
     }
-    void setCurrentSession(session.id, directory);
+    void setCurrentSession(session.id, directory, activeWorkspaceId);
     onOpenChange(false);
   };
 
@@ -1871,7 +1874,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             if (!value) setWorktreeDialogProjectId(null);
           }}
           onWorktreeCreated={(worktreePath, options) => {
-            if (options?.sessionId) void setCurrentSession(options.sessionId, worktreePath);
+            if (options?.sessionId) void setCurrentSession(options.sessionId, worktreePath, activeWorkspaceId);
             else
               openNewSessionDraft({
                 selectedProjectId: worktreeDialogProjectId,

@@ -182,6 +182,31 @@ export function createTerminalRuntime({
     if (!stats?.isDirectory()) throw new Error('Invalid working directory');
   };
 
+  const assertWorkspaceCwd = async (cwd, canonicalPath) => {
+    if (!canonicalPath) return;
+    if (typeof cwd !== 'string' || !cwd.trim()) return;
+    const root = path.resolve(canonicalPath);
+    const candidate = path.resolve(cwd);
+    const lexicalRelative = path.relative(root, candidate);
+    if (lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative)) {
+      const error = new Error('Working directory is outside the workspace');
+      error.code = 'catalog_path_outside_workspace';
+      error.status = 403;
+      throw error;
+    }
+    const realpath = typeof fs.promises.realpath === 'function'
+      ? (value) => fs.promises.realpath(value).catch(() => value)
+      : async (value) => value;
+    const [realRoot, realCandidate] = await Promise.all([realpath(root), realpath(candidate)]);
+    const realRelative = path.relative(realRoot, realCandidate);
+    if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+      const error = new Error('Working directory is outside the workspace');
+      error.code = 'catalog_path_outside_workspace';
+      error.status = 403;
+      throw error;
+    }
+  };
+
   const applyAppearance = (session, { themeMode, terminalBackground, terminalForeground }) => {
     const previous = [session.themeMode, session.terminalBackground, session.terminalForeground];
     if (themeMode === 'light' || themeMode === 'dark') session.themeMode = themeMode;
@@ -209,6 +234,13 @@ export function createTerminalRuntime({
     if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
     const normalizedShell = normalizeTerminalShell(shell);
     if (!normalizedShell) throw new Error('Invalid terminal shell');
+    if (workspaceId && !canonicalPath) {
+      const error = new Error('Workspace directory is unavailable');
+      error.code = 'catalog_workspace_directory_unavailable';
+      error.status = 403;
+      throw error;
+    }
+    await assertWorkspaceCwd(cwd, canonicalPath);
     const id = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : randomUUID();
     if (id.length > 128) throw new Error('Invalid terminal session id');
     // Workspace binding: sessions created through a workspace-prefixed path
@@ -360,10 +392,16 @@ export function createTerminalRuntime({
   app.post('/api/terminal/create', async (req, res) => {
     try {
       const scope = resolveWorkspaceScope(req);
+      if (scope.workspaceId && !scope.canonicalPath) {
+        return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+      }
       const session = await createSession({ ...(req.body ?? {}), workspaceId: scope.workspaceId, canonicalPath: scope.canonicalPath });
       res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status });
     }
-    catch (error) { res.status(error?.message === 'Maximum terminal sessions reached' ? 429 : 400).json({ error: error?.message || 'Failed to create terminal session' }); }
+    catch (error) {
+      const status = error?.status ?? (error?.message === 'Maximum terminal sessions reached' ? 429 : 400);
+      res.status(status).json({ error: error?.message || 'Failed to create terminal session', ...(error?.code ? { code: error.code } : {}) });
+    }
   });
   app.post('/api/terminal/:sessionId/resize', (req, res) => {
     const session = findSessionForRequest(req, req.params.sessionId);
@@ -382,6 +420,10 @@ export function createTerminalRuntime({
   app.post('/api/terminal/:sessionId/restart', async (req, res) => {
     const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
+    const scope = resolveWorkspaceScope(req);
+    if (scope.workspaceId && !scope.canonicalPath) {
+      return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+    }
     const cwd = req.body?.cwd ?? session.cwd;
     const cols = req.body?.cols ?? session.cols;
     const rows = req.body?.rows ?? session.rows;
@@ -392,6 +434,7 @@ export function createTerminalRuntime({
     const loginShell = req.body?.loginShell ?? false;
     const previousRestart = pendingSessionRestarts.get(session.id) ?? Promise.resolve();
     const restart = previousRestart.catch(() => {}).then(async () => {
+      await assertWorkspaceCwd(cwd, scope.canonicalPath);
       await validateCwd(cwd);
       if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
       if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
@@ -406,7 +449,9 @@ export function createTerminalRuntime({
     try {
       await restart;
       res.json({ sessionId: session.id, cols, rows, status: session.status });
-    } catch (error) { res.status(400).json({ error: error?.message || 'Failed to restart terminal' }); }
+    } catch (error) {
+      res.status(error?.status ?? 400).json({ error: error?.message || 'Failed to restart terminal', ...(error?.code ? { code: error.code } : {}) });
+    }
     finally { if (pendingSessionRestarts.get(session.id) === restart) pendingSessionRestarts.delete(session.id); }
   });
   app.delete('/api/terminal/:sessionId', async (req, res) => {
@@ -418,9 +463,14 @@ export function createTerminalRuntime({
     res.json({ success: true });
   });
   app.post('/api/terminal/force-kill', (req, res) => {
+    const scope = resolveWorkspaceScope(req);
+    if (scope.workspaceId && !scope.canonicalPath) {
+      return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+    }
     const { sessionId, cwd } = req.body ?? {}; let killedCount = 0;
     const killedSessionIds = [];
     for (const [id, session] of sessions) {
+      if (session.workspaceId !== scope.workspaceId) continue;
       if ((sessionId && id !== sessionId) || (!sessionId && cwd && session.cwd !== cwd)) continue;
       sessions.delete(id); closeAttachments(id, 'KILLED', 'Terminal was killed'); void terminateProcess(session.process, true); killedSessionIds.push(id); killedCount += 1;
     }

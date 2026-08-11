@@ -16,7 +16,6 @@ import { create } from "zustand"
 import type { Session, Part, Message, TextPart } from "@opencode-ai/sdk/v2/client"
 import type { AttachedFile, SessionContextUsage, SessionWorktreeAttachment } from "@/stores/types/sessionTypes"
 import type { WorktreeMetadata } from "@/types/worktree"
-import { opencodeClient } from "@/lib/opencode/client"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { useProjectsStore } from "@/stores/useProjectsStore"
@@ -42,6 +41,8 @@ import {
   getSyncParts,
   getDirectoryState,
   getSyncSessionDirectory,
+  getSyncOpencodeService,
+  getSyncScopeKey,
 } from "./sync-refs"
 import {
   resolveSessionDirectoryFromSources,
@@ -86,6 +87,8 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { clearLastActiveSession, persistLastActiveSession, readLastActiveSession } from "./last-session-cache"
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
 import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
+import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
+import { workspaceIdFromScopeKey, workspaceScopeKey } from "@/workspaces/identity"
 
 export type { AttachedFile }
 
@@ -136,9 +139,10 @@ export function routeMessage(params: {
   additionalParts?: Array<{ text: string; synthetic?: boolean; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
   delivery?: 'steer'
 }): Promise<void> {
+  const service = getSyncOpencodeService()
   const requestDirectory = params.directory ?? undefined
   if (params.inputMode === "shell") {
-    return opencodeClient.shellSession({
+    return service.shellSession({
       runtimeKey: params.runtimeKey,
       sessionId: params.sessionId,
       directory: requestDirectory,
@@ -176,7 +180,7 @@ export function routeMessage(params: {
         agent: params.agent,
         directory: requestDirectory,
         files: params.files,
-        send: (messageID) => opencodeClient.sendCommand({
+        send: (messageID) => service.sendCommand({
           runtimeKey: params.runtimeKey,
           id: params.sessionId,
           providerID: params.providerID,
@@ -203,7 +207,7 @@ export function routeMessage(params: {
     agent: params.agent,
     directory: requestDirectory,
     files: params.files,
-    send: (messageID) => opencodeClient.sendMessage({
+    send: (messageID) => service.sendMessage({
       runtimeKey: params.runtimeKey,
       id: params.sessionId,
       providerID: params.providerID,
@@ -259,6 +263,8 @@ export type { SessionMemoryState } from "./viewport-store"
 
 export type NewSessionDraftState = {
   open: boolean
+  /** Explicit workspace target for a draft opened from a composite navigation event. */
+  workspaceId?: string | null
   selectedProjectId?: string | null
   directoryOverride: string | null
   permissionAutoAcceptEnabled?: boolean
@@ -289,6 +295,8 @@ export type SessionHistoryMeta = {
 export type SessionUIState = {
   currentSessionId: string | null
   currentSessionDirectory: string | null
+  /** Explicit workspace target for collision-safe session selection. */
+  currentWorkspaceId: string | null
   newSessionDraft: NewSessionDraftState
   abortPromptSessionId: string | null
   abortPromptExpiresAt: number | null
@@ -311,7 +319,7 @@ export type SessionUIState = {
   dismissPendingChangesBar: (sessionId: string, signature: string | null) => void
 
   // Actions — UI state management
-  setCurrentSession: (id: string | null, directoryHint?: string | null) => void
+  setCurrentSession: (id: string | null, directoryHint?: string | null, workspaceId?: string | null) => void
   prepareForRuntimeSwitch: (apiBaseUrl?: string | null) => void
   restoreForRuntimeSwitch: (apiBaseUrl?: string | null) => void
   openNewSessionDraft: (options?: Partial<NewSessionDraftState> & { automatic?: boolean }) => void
@@ -552,6 +560,7 @@ const activateConfigForDirectory = async (directory: string | null | undefined):
 
 const DEFAULT_DRAFT: NewSessionDraftState = {
   open: false,
+  workspaceId: null,
   directoryOverride: null,
   parentID: null,
 }
@@ -565,11 +574,22 @@ type RuntimeSessionMemory = {
   availableWorktreesByProject: Map<string, WorktreeMetadata[]>
 }
 const runtimeSessionMemory = new Map<string, RuntimeSessionMemory>()
+let activeSessionScopeId: string | null = null
+let activeWorkspaceScopeId: string | null = null
 
 const runtimeMemoryKey = (value?: string | null): string => {
   const key = (value ?? getRuntimeKey()).trim()
   return key || "default"
 }
+
+const mountedWorkspaceScopeKey = (): string | null => {
+  const scopeKey = getSyncScopeKey()
+  return workspaceIdFromScopeKey(scopeKey) ? scopeKey : null
+}
+
+const isWorkspaceSyncScope = (workspaceId?: string | null): boolean => (
+  Boolean(workspaceId) || mountedWorkspaceScopeKey() !== null
+)
 
 /**
  * Scope key for session-scoped UI memory: the workspace scope when the
@@ -577,8 +597,17 @@ const runtimeMemoryKey = (value?: string | null): string => {
  * ambient runtime key — byte-identical to `runtimeMemoryKey()` in
  * non-workspace mode.
  */
-const scopeMemoryKey = (sessionId: string | null | undefined, directory?: string | null): string => {
-  const key = resolveSessionScopeKey(sessionId, directory)
+const scopeMemoryKey = (
+  sessionId: string | null | undefined,
+  directory?: string | null,
+  workspaceId?: string | null,
+): string => {
+  const activeWorkspaceId = workspaceId ?? (
+    sessionId && sessionId === activeSessionScopeId ? activeWorkspaceScopeId : null
+  )
+  const key = activeWorkspaceId
+    ? resolveSessionScopeKey(sessionId, directory, activeWorkspaceId)
+    : mountedWorkspaceScopeKey() ?? resolveSessionScopeKey(sessionId, directory)
   return key.trim() || "default"
 }
 
@@ -653,11 +682,12 @@ export async function materializeOpenDraftSession(selection: {
   // Sending with the pre-canonical draft path can target a different
   // directory scope than the session that was just created.
   const createdDirectory = normalizePath(created.directory ?? draftDirectoryOverride ?? null)
+  const createdWorkspaceId = workspaceIdFromScopeKey(getSyncScopeKey())
 
   persistDraftTarget({
     projectId: draftProjectId,
     directory: createdDirectory,
-  }, scopeMemoryKey(created.id, createdDirectory))
+  }, scopeMemoryKey(created.id, createdDirectory, createdWorkspaceId))
 
   const draftSyntheticParts = draft.syntheticParts
   const configState = useConfigStore.getState()
@@ -677,7 +707,7 @@ export async function materializeOpenDraftSession(selection: {
 
   store.initializeNewOpenChamberSession(created.id, configState.agents ?? [])
 
-  store.setCurrentSession(created.id, createdDirectory)
+  store.setCurrentSession(created.id, createdDirectory, createdWorkspaceId)
 
   if (draftPermissionAutoAcceptEnabled) {
     void import("@/stores/permissionStore")
@@ -719,6 +749,7 @@ const PERSISTED_WORKTREE_MAP = readPersistedWorktreeTopology(runtimeMemoryKey())
 export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   currentSessionId: null,
   currentSessionDirectory: null,
+  currentWorkspaceId: null,
   newSessionDraft: { ...DEFAULT_DRAFT },
   abortPromptSessionId: null,
   abortPromptExpiresAt: null,
@@ -737,15 +768,26 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // ---------------------------------------------------------------------------
   // setCurrentSession
   // ---------------------------------------------------------------------------
-  setCurrentSession: (id, directoryHint?: string | null) => {
+  setCurrentSession: (id, directoryHint?: string | null, workspaceId?: string | null) => {
     if (id) {
       get().closeNewSessionDraft()
     }
 
+    const explicitWorkspaceId = typeof workspaceId === 'string' && workspaceId.trim().length > 0
+      ? workspaceId.trim()
+      : null
+    const resolvedWorkspaceId = id
+      ? explicitWorkspaceId ?? resolveActiveWorkspaceId(
+        useWorkspaceSessionIndexStore.getState().snapshot?.sessions,
+        id,
+        directoryHint ?? null,
+      )
+      : null
+
     // Scope bucket for the current session: the workspace scope when the
     // session index maps (id, directoryHint) to a workspace, otherwise the
     // ambient runtime key (legacy behavior, byte-identical keys).
-    const key = scopeMemoryKey(id, directoryHint)
+    const key = scopeMemoryKey(id, directoryHint, resolvedWorkspaceId)
     activeSessionByRuntime.set(key, id)
     // The session folders store keys its persisted buckets by the same
     // scope; switch its active bucket when the scope changes (once per
@@ -762,9 +804,18 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       id,
       (sid) => get().worktreeMetadata.get(sid),
     )
-    const fallbackDir = opencodeClient.getDirectory() ?? directoryState.currentDirectory ?? null
+    const service = getSyncOpencodeService()
+    // A workspace target may belong to a different SyncProvider than the one
+    // currently mounted. Never borrow the old provider's directory or service
+    // as a path-only fallback: doing so briefly routes the first message fetch
+    // and global directory mutation to the previous workspace.
+    const fallbackDir = resolvedWorkspaceId
+      ? null
+      : service.getDirectory() ?? directoryState.currentDirectory ?? null
     const knownDir = (directoryHint ? normalizePath(directoryHint) : null) ?? sessionDir
     const resolvedDir = knownDir ?? fallbackDir
+    const targetScopeKey = resolveSessionScopeKey(id, resolvedDir ?? directoryHint, resolvedWorkspaceId)
+    const targetScopeIsMounted = targetScopeKey === getSyncScopeKey()
     // `fallbackDir` is the active directory, not this session's directory. It
     // keeps routing usable while the owning directory store bootstraps, but it
     // must never be remembered: a persisted guess outlives the race that
@@ -781,7 +832,13 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     // Set the directory together with the session id so chat hooks read the
     // same child store that send/SSE events will update during startup races.
-    set({ currentSessionId: id, currentSessionDirectory: id ? resolvedDir ?? null : null })
+    activeSessionScopeId = id
+    activeWorkspaceScopeId = resolvedWorkspaceId
+    set({
+      currentSessionId: id,
+      currentSessionDirectory: id ? resolvedDir ?? null : null,
+      currentWorkspaceId: resolvedWorkspaceId,
+    })
     guessedSelectionSessionId = isGuessedDir && id ? id : null
     const rememberedDir = isGuessedDir ? null : resolvedDir ?? null
     writeRuntimeSessionMemory(key, { sessionId: id, directory: rememberedDir })
@@ -795,18 +852,20 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // Kick off the message fetch on the same tick, before React commits the
     // state change and fires ChatContainer.useEffect. The fetch is
     // fire-and-forget — any transient failure gets retried by the reactive path.
-    if (id) {
+    if (id && targetScopeIsMounted) {
       void fetchMessagesForSession(id, resolvedDir)
     }
 
     try {
-      if (resolvedDir && directoryState.currentDirectory !== resolvedDir) {
-        directoryState.setDirectory(resolvedDir, { showOverlay: false })
+      if (targetScopeIsMounted) {
+        if (!resolvedWorkspaceId && resolvedDir && directoryState.currentDirectory !== resolvedDir) {
+          directoryState.setDirectory(resolvedDir, { showOverlay: false })
+        }
+        if (!resolvedWorkspaceId && sessionProject && projectsState.activeProjectId !== sessionProject.id) {
+          projectsState.setActiveProjectIdOnly(sessionProject.id)
+        }
+        service.setDirectory(resolvedDir ?? undefined)
       }
-      if (sessionProject && projectsState.activeProjectId !== sessionProject.id) {
-        projectsState.setActiveProjectIdOnly(sessionProject.id)
-      }
-      opencodeClient.setDirectory(resolvedDir ?? undefined)
     } catch (e) {
       console.warn("Failed to set OpenCode directory for session switch:", e)
     }
@@ -828,8 +887,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     // Mark session viewed in notification store + update active session ref
     if (id) {
-      markSessionViewed(id)
-      setActiveSession(resolvedDir ?? "", id)
+      markSessionViewed(id, resolvedWorkspaceId)
+      if (targetScopeIsMounted) {
+        setActiveSession(resolvedDir ?? "", id)
+      }
     }
   },
 
@@ -865,9 +926,12 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (restoredDirectory) {
       useDirectoryStore.getState().setDirectory(restoredDirectory, { showOverlay: false })
     }
+    activeSessionScopeId = restoredSessionId
+    activeWorkspaceScopeId = null
     set({
       currentSessionId: restoredSessionId,
       currentSessionDirectory: restoredSessionId ? restoredDirectory : null,
+      currentWorkspaceId: null,
       newSessionDraft: restoredSessionId ? { ...DEFAULT_DRAFT } : restoredDraft,
       abortPromptSessionId: null,
       abortPromptExpiresAt: null,
@@ -879,7 +943,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       pendingChangesBarDismissed: new Map(),
     })
     if (restoredSessionId) {
-      setActiveSession(restoredDirectory ?? opencodeClient.getDirectory() ?? "", restoredSessionId)
+      setActiveSession(restoredDirectory ?? getSyncOpencodeService().getDirectory() ?? "", restoredSessionId)
     } else {
       setActiveSession("", "")
     }
@@ -889,6 +953,15 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   // openNewSessionDraft
   // ---------------------------------------------------------------------------
   openNewSessionDraft: (options) => {
+    const explicitWorkspaceId = typeof options?.workspaceId === "string" && options.workspaceId.trim().length > 0
+      ? options.workspaceId.trim()
+      : null
+    const mountedScopeKey = mountedWorkspaceScopeKey()
+    const mountedWorkspaceId = mountedScopeKey ? workspaceIdFromScopeKey(mountedScopeKey) : null
+    const workspaceId = explicitWorkspaceId
+      ?? get().currentWorkspaceId
+      ?? mountedWorkspaceId
+
     // A USER-initiated draft open is a navigation choice: the next cold launch
     // should land on the draft, not re-open the session left behind — drop the
     // persisted last-session pointer for this runtime. `automatic: true` marks
@@ -896,17 +969,28 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     // auto-draft at boot), which must NOT consume the pointer — the cold-launch
     // restore races exactly that auto-open.
     if (!options?.automatic) {
-      clearLastActiveSession(scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory))
+      clearLastActiveSession(scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory, workspaceId))
     }
+    const workspaceScoped = isWorkspaceSyncScope(workspaceId)
     const projectsState = useProjectsStore.getState()
-    const projects = projectsState.projects
+    // A workspace has no project CRUD contract in the shared UI. Keep the
+    // compatibility project projection out of draft target inference while a
+    // workspace sync scope is mounted.
+    const projects = workspaceScoped ? [] : projectsState.projects
     const availableWorktreesByProject = get().availableWorktreesByProject
-    const activeProject = projectsState.getActiveProject()
-    const currentDirectory = normalizePath(useDirectoryStore.getState().currentDirectory ?? null)
+    const activeProject = workspaceScoped ? null : projectsState.getActiveProject()
+    const currentWorkspaceDirectory = workspaceId
+      && workspaceId !== get().currentWorkspaceId
+      && workspaceId !== mountedWorkspaceId
+      ? null
+      : getSyncOpencodeService().getDirectory()
+    const currentDirectory = normalizePath(
+      (workspaceScoped ? currentWorkspaceDirectory : useDirectoryStore.getState().currentDirectory) ?? null,
+    )
     // The draft target is persisted under the scope of the session that was
     // current when the draft opened (workspace scope or runtime key); the
     // unscoped legacy key stays readable as a fallback.
-    const draftScopeKey = scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory)
+    const draftScopeKey = scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory, workspaceId)
     const persistedTarget = readPersistedDraftTarget(draftScopeKey)
 
     const explicitDirectory = options?.directoryOverride !== undefined
@@ -948,6 +1032,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     const nextDraft: NewSessionDraftState = {
       open: true,
+      workspaceId,
       selectedProjectId: selectedProject?.id ?? null,
       directoryOverride: directory,
       permissionAutoAcceptEnabled: options?.permissionAutoAcceptEnabled === true,
@@ -965,12 +1050,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       newSessionDraft: {
         ...nextDraft,
       },
-      currentSessionId: null,
-      currentSessionDirectory: null,
       error: null,
     })
 
-    writeRuntimeSessionMemory(runtimeMemoryKey(), { sessionId: null, directory, draft: nextDraft })
+    writeRuntimeSessionMemory(draftScopeKey, { sessionId: null, directory, draft: nextDraft })
     // Clear composer attachments when opening a new session draft.
     // Attachments from the previous session (e.g. restored by revert) must
     // not bleed into the new session's input.
@@ -993,7 +1076,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       })
     })
 
-    if (directory && directory !== useDirectoryStore.getState().currentDirectory) {
+    if (!workspaceScoped && directory && directory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(directory)
     }
   },
@@ -1006,6 +1089,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     if (
       !currentDraft.open
       && currentDraft.selectedProjectId == null
+      && currentDraft.workspaceId == null
       && currentDraft.directoryOverride == null
       && currentDraft.pendingWorktreeRequestId == null
       && currentDraft.bootstrapPendingDirectory == null
@@ -1021,6 +1105,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     }
     const nextDraft: NewSessionDraftState = {
         open: false,
+        workspaceId: null,
         selectedProjectId: null,
         directoryOverride: null,
         pendingWorktreeRequestId: null,
@@ -1035,7 +1120,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     set({
       newSessionDraft: nextDraft,
     })
-    writeRuntimeSessionMemory(runtimeMemoryKey(), { draft: nextDraft })
+    writeRuntimeSessionMemory(scopeMemoryKey(
+      get().currentSessionId,
+      get().currentSessionDirectory,
+      currentDraft.workspaceId,
+    ), { draft: nextDraft })
   },
 
   setNewSessionDraftTarget: (target) => {
@@ -1052,7 +1141,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     })
     void activateConfigForDirectory(nextDirectory)
 
-    if (nextDirectory && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
+    const draftWorkspaceId = get().currentWorkspaceId ?? get().newSessionDraft?.workspaceId
+    if (!isWorkspaceSyncScope(draftWorkspaceId)
+      && nextDirectory
+      && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(nextDirectory)
     }
   },
@@ -1180,7 +1272,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     })
     void activateConfigForDirectory(nextDirectory)
 
-    if (nextDirectory && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
+    const draftWorkspaceId = get().currentWorkspaceId ?? get().newSessionDraft?.workspaceId
+    if (!isWorkspaceSyncScope(draftWorkspaceId)
+      && nextDirectory
+      && nextDirectory !== useDirectoryStore.getState().currentDirectory) {
       useDirectoryStore.getState().setDirectory(nextDirectory)
     }
   },
@@ -1243,11 +1338,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     options?: SendMessageOptions,
   ) => {
     const capturedTarget = options?.target
-    if (capturedTarget && capturedTarget.scopeKey !== resolveSessionScopeKey(capturedTarget.sessionId, capturedTarget.directory)
-      && capturedTarget.scopeKey !== getRuntimeKey()) {
-      // A capture on the CURRENT runtime key stays valid even when the
-      // session has since gained a workspace binding (index-load race);
-      // any other mismatch means the runtime or the workspace changed.
+    if (capturedTarget && capturedTarget.scopeKey !== getSyncScopeKey()) {
+      // Any scope mismatch means the runtime or workspace changed. The
+      // captured scope is also passed into the bound service so the request
+      // cannot be dispatched by a newly selected workspace.
       throw new Error("Message was not sent because the runtime changed.")
     }
 
@@ -1295,7 +1389,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
           try {
             objective = expandSlashCommandGoalObjective(
               content,
-              await opencodeClient.listCommandsWithDetails(goalDirectory),
+              await getSyncOpencodeService().listCommandsWithDetails(goalDirectory),
             )
           } catch {
             // Command dispatch remains authoritative; raw invocation is a safe objective fallback.
@@ -1419,10 +1513,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       await applyArmedGoal(targetSessionId, currentSessionDirectory)
     }
     await routeMessage({
-      // The SDK guard compares against the live runtime key; the scope guard
-      // above already rejected stale captures, so the current runtime key is
-      // authoritative here (in legacy mode it equals the captured scope key).
-      runtimeKey: capturedTarget ? getRuntimeKey() : undefined,
+      // The bound service compares against the active workspace scope (or the
+      // ambient runtime key in legacy mode). Passing the captured scope here
+      // prevents a send that started in workspace A from being dispatched by
+      // the service currently bound to workspace B.
+      runtimeKey: capturedTarget ? capturedTarget.scopeKey : undefined,
       sessionId: targetSessionId || "",
       directory: currentSessionDirectory,
       content,
@@ -1455,7 +1550,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const targetFolderId = draft.targetFolderId
 
     try {
-      const dir = directoryOverride ?? opencodeClient.getDirectory()
+      const dir = directoryOverride ?? getSyncOpencodeService().getDirectory()
       const session = await createSessionAction(title, dir, parentID ?? null, metadata)
       if (!session) return null
 
@@ -1654,14 +1749,21 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     if (!pID || !mID) return
 
-    const sourceDirectory = normalizePath(directory ?? opencodeClient.getDirectory() ?? null)
+    const sourceDirectory = normalizePath(directory ?? getSyncOpencodeService().getDirectory() ?? null)
     let sessionDirectory = sourceDirectory
     let createdWorktree: WorktreeMetadata | null = null
     let createdWorktreeProject: { id: string; path: string } | null = null
 
     if (execution.createWorktree) {
-      const projects = useProjectsStore.getState().projects
-      const project = resolveProjectForSessionDirectory(
+      const workspaceId = get().currentWorkspaceId
+        ?? (get().newSessionDraft?.open ? get().newSessionDraft.workspaceId : null)
+      const workspaceProject = workspaceId
+        && sourceDirectory
+        && getSyncScopeKey() === workspaceScopeKey(workspaceId)
+        ? { id: workspaceId, path: sourceDirectory }
+        : null
+      const projects = workspaceProject ? [] : useProjectsStore.getState().projects
+      const project = workspaceProject ?? resolveProjectForSessionDirectory(
         projects,
         get().availableWorktreesByProject,
         sourceDirectory,
@@ -1713,7 +1815,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         ...createdWorktree,
         kind: "standard",
       })
-      useDirectoryStore.getState().setDirectory(createdWorktree.path, { showOverlay: false })
+      const workspaceId = get().currentWorkspaceId
+        ?? (get().newSessionDraft?.open ? get().newSessionDraft.workspaceId : null)
+      if (!isWorkspaceSyncScope(workspaceId)) {
+        useDirectoryStore.getState().setDirectory(createdWorktree.path, { showOverlay: false })
+      }
     }
 
     // "Run as goal" rides the same arm mechanism as the composer target
@@ -1861,8 +1967,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
   },
 }))
 
-setSessionOpener((sessionID, directory) => {
-  useSessionUIStore.getState().setCurrentSession(sessionID, directory)
+setSessionOpener((sessionID, directory, workspaceId) => {
+  useSessionUIStore.getState().setCurrentSession(sessionID, directory, workspaceId)
 })
 
 // Write-through persist of the worktree map whenever discovery refreshes it.

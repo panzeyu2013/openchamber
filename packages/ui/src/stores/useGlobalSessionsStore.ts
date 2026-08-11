@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import type { OpencodeClient, Session } from '@opencode-ai/sdk/v2';
 import { opencodeClient } from '@/lib/opencode/client';
+import { getRuntimeKey } from '@/lib/runtime-switch';
+import { workspaceIdFromScopeKey } from '@/workspaces/identity';
 import { listGlobalSessionPages, splitGlobalSessionsByArchived } from '@/stores/globalSessions';
 import { getReviewTransferDirection, type ReviewTransferDirection } from '@/lib/reviewFlow';
 import { getOriginalSessionID, getReviewSessionID } from '@/lib/sessionReviewMetadata';
@@ -15,7 +17,7 @@ type LoadResult = {
   archivedSessions: Session[];
 };
 
-type GlobalSessionsState = {
+type GlobalSessionsData = {
   activeSessions: Session[];
   archivedSessions: Session[];
   sessionsByDirectory: Map<string, Session[]>;
@@ -24,6 +26,13 @@ type GlobalSessionsState = {
   mutationRevisionBySessionId: Map<string, number>;
   hasLoaded: boolean;
   status: GlobalSessionsStatus;
+};
+
+type GlobalSessionsState = GlobalSessionsData & {
+  /** The currently visible compatibility-scope partition. */
+  scopeKey: string;
+  /** Bind reads/writes to one workspace or legacy runtime partition. */
+  bindScope: (scopeKey: string, sdk?: OpencodeClient) => void;
   loadSessions: (fallbackActive?: Session[]) => Promise<LoadResult>;
   refreshSessionsForDirectories: (directories: Iterable<string>, fallbackActive?: Session[]) => Promise<LoadResult>;
   applySnapshot: (activeSessions: Session[], archivedSessions: Session[], status?: GlobalSessionsStatus) => void;
@@ -41,6 +50,58 @@ const DIRECTORY_SESSION_REFRESH_CONCURRENCY = 2;
 let directorySessionRefreshActive = 0;
 const directorySessionRefreshWaiters: Array<() => void> = [];
 
+// `useGlobalSessionsStore` is a compatibility facade for surfaces that still
+// consume full OpenCode Session objects. Its visible shape stays stable, but
+// the backing data is now partitioned by workspace/runtime scope so a
+// workspace-bound SyncProvider cannot overwrite another workspace's session
+// list. The unified Session Index remains the cross-workspace authority; this
+// cache is only the cold/full-session compatibility layer.
+const scopeStates = new Map<string, GlobalSessionsData>();
+const scopeSdks = new Map<string, OpencodeClient>();
+const inflightLoads = new Map<string, Promise<LoadResult>>();
+const loadGenerations = new Map<string, number>();
+
+const createEmptyScopeState = (): GlobalSessionsData => ({
+  activeSessions: [],
+  archivedSessions: [],
+  sessionsByDirectory: new Map(),
+  reviewTransferBySessionId: new Map(),
+  mutationRevision: 0,
+  mutationRevisionBySessionId: new Map(),
+  hasLoaded: false,
+  status: 'idle',
+});
+
+const getLoadGeneration = (scopeKey: string): number => loadGenerations.get(scopeKey) ?? 0;
+
+const resolveScopeSdk = (scopeKey: string): OpencodeClient | null => {
+  const boundSdk = scopeSdks.get(scopeKey);
+  if (boundSdk) return boundSdk;
+
+  // A workspace scope is never allowed to borrow the process-wide SDK. A
+  // missing binding is a lifecycle/unavailable state, not permission to
+  // query whichever runtime happens to be active.
+  if (workspaceIdFromScopeKey(scopeKey)) return null;
+  return opencodeClient.getSdkClient();
+};
+
+const bumpLoadGeneration = (scopeKey: string): number => {
+  const next = getLoadGeneration(scopeKey) + 1;
+  loadGenerations.set(scopeKey, next);
+  return next;
+};
+
+const toGlobalSessionsData = (state: GlobalSessionsState): GlobalSessionsData => ({
+  activeSessions: state.activeSessions,
+  archivedSessions: state.archivedSessions,
+  sessionsByDirectory: state.sessionsByDirectory,
+  reviewTransferBySessionId: state.reviewTransferBySessionId,
+  mutationRevision: state.mutationRevision,
+  mutationRevisionBySessionId: state.mutationRevisionBySessionId,
+  hasLoaded: state.hasLoaded,
+  status: state.status,
+});
+
 const withDirectorySessionRefreshSlot = async <T>(task: () => Promise<T>): Promise<T> => {
   if (directorySessionRefreshActive >= DIRECTORY_SESSION_REFRESH_CONCURRENCY) {
     await new Promise<void>((resolve) => directorySessionRefreshWaiters.push(resolve));
@@ -55,11 +116,6 @@ const withDirectorySessionRefreshSlot = async <T>(task: () => Promise<T>): Promi
     else directorySessionRefreshActive = Math.max(0, directorySessionRefreshActive - 1);
   }
 };
-
-let inflightLoad: Promise<LoadResult> | null = null;
-// Bumped on runtime switch: an in-flight load from the previous instance must
-// not apply its (stale) snapshot after the reset.
-let loadGeneration = 0;
 
 export const resolveGlobalSessionDirectory = (session: Session): string | null => {
   const record = session as Session & {
@@ -254,7 +310,11 @@ const fetchDirectoryPages = async (
   sdk: OpencodeClient,
   directories: Set<string>,
 ): Promise<DirectoryPageResult> => {
-  const currentDirectory = normalizePath(opencodeClient.getDirectory());
+  const currentDirectory = normalizePath(
+    typeof (sdk as OpencodeClient & { getDirectory?: () => string }).getDirectory === 'function'
+      ? (sdk as OpencodeClient & { getDirectory?: () => string }).getDirectory?.() ?? null
+      : null,
+  );
   const orderedDirectories = [...directories].sort((left, right) => {
     if (left === currentDirectory) return -1;
     if (right === currentDirectory) return 1;
@@ -358,11 +418,11 @@ const mergeSessionLists = (existing: Session[], incoming?: Session[]): Session[]
 };
 
 const applySnapshot = (
-  state: GlobalSessionsState,
+  state: GlobalSessionsData,
   activeSessions: Session[],
   archivedSessions: Session[],
   status: GlobalSessionsStatus,
-): Partial<GlobalSessionsState> | GlobalSessionsState => {
+): Partial<GlobalSessionsData> | GlobalSessionsData => {
   const nextActiveSessions = sameSessionList(state.activeSessions, activeSessions)
     ? state.activeSessions
     : activeSessions;
@@ -398,7 +458,7 @@ const applySnapshot = (
 };
 
 const overlayMutationsSince = (
-  state: GlobalSessionsState,
+  state: GlobalSessionsData,
   activeSessions: Session[],
   archivedSessions: Session[],
   baselineRevision: number,
@@ -422,14 +482,14 @@ const overlayMutationsSince = (
   return { activeSessions: nextActive, archivedSessions: nextArchived };
 };
 
-const mutationRevisionPatch = (state: GlobalSessionsState, ids: Iterable<string>) => {
+const mutationRevisionPatch = (state: GlobalSessionsData, ids: Iterable<string>) => {
   const mutationRevision = state.mutationRevision + 1;
   const mutationRevisionBySessionId = new Map(state.mutationRevisionBySessionId);
   for (const id of ids) mutationRevisionBySessionId.set(id, mutationRevision);
   return { mutationRevision, mutationRevisionBySessionId };
 };
 
-const applySessionUpserts = (state: GlobalSessionsState, sessions: Session[]): Partial<GlobalSessionsState> => {
+const applySessionUpserts = (state: GlobalSessionsData, sessions: Session[]): Partial<GlobalSessionsData> => {
   const revisionPatch = mutationRevisionPatch(state, sessions.map((session) => session.id));
   let nextActiveSessions = state.activeSessions;
   let nextArchivedSessions = state.archivedSessions;
@@ -483,51 +543,100 @@ const buildReviewTransferMap = (sessions: Session[]): Map<string, ReviewTransfer
   return next
 }
 
-export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => ({
-  activeSessions: [],
-  archivedSessions: [],
-  sessionsByDirectory: new Map(),
-  reviewTransferBySessionId: new Map(),
-  mutationRevision: 0,
-  mutationRevisionBySessionId: new Map(),
-  hasLoaded: false,
-  status: 'idle',
+export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => {
+  const readScopeData = (scopeKey: string): GlobalSessionsData => {
+    const current = get();
+    if (current.scopeKey === scopeKey) {
+      return toGlobalSessionsData(current);
+    }
+    return scopeStates.get(scopeKey) ?? createEmptyScopeState();
+  };
+
+  const getScopeResult = (scopeKey: string): LoadResult => {
+    const state = readScopeData(scopeKey);
+    return { activeSessions: state.activeSessions, archivedSessions: state.archivedSessions };
+  };
+
+  const commitScopeData = (
+    scopeKey: string,
+    updater: (state: GlobalSessionsData) => Partial<GlobalSessionsData> | GlobalSessionsData,
+  ): GlobalSessionsData => {
+    const previous = readScopeData(scopeKey);
+    const patch = updater(previous);
+    const next = patch === previous ? previous : { ...previous, ...patch };
+    scopeStates.set(scopeKey, next);
+    if (get().scopeKey === scopeKey) {
+      set({ ...next, scopeKey });
+    }
+    return next;
+  };
+
+  return ({
+    ...createEmptyScopeState(),
+    scopeKey: getRuntimeKey(),
+
+    bindScope: (scopeKey, sdk) => {
+      const normalizedScopeKey = scopeKey.trim() || getRuntimeKey();
+      const current = get();
+      scopeStates.set(current.scopeKey, toGlobalSessionsData(current));
+
+      const previousSdk = scopeSdks.get(normalizedScopeKey);
+      if (sdk && previousSdk !== sdk) {
+        // A new workspace handle/transport owns the same logical scope. Any
+        // old list request must not publish after that handoff.
+        bumpLoadGeneration(normalizedScopeKey);
+        inflightLoads.delete(normalizedScopeKey);
+        scopeSdks.set(normalizedScopeKey, sdk);
+      }
+
+      if (current.scopeKey === normalizedScopeKey) {
+        return;
+      }
+
+      const next = scopeStates.get(normalizedScopeKey) ?? createEmptyScopeState();
+      set({ ...next, scopeKey: normalizedScopeKey });
+    },
 
   applySnapshot: (activeSessions, archivedSessions, status = 'ready') => {
     // An authoritative snapshot may carry newer `updated` stamps for sessions
     // whose active→settled cycle this client slept through — raise their
     // ordering baselines so recent lists re-sort (see session-ordering).
-    raiseSessionOrderingBaselines(activeSessions);
+    raiseSessionOrderingBaselines(activeSessions, get().scopeKey);
     set((state) => applySnapshot(state, activeSessions, archivedSessions, status));
   },
 
   resetForRuntimeSwitch: () => {
-    loadGeneration += 1;
-    inflightLoad = null;
-    set({
-      activeSessions: [],
-      archivedSessions: [],
-      sessionsByDirectory: new Map(),
-      reviewTransferBySessionId: new Map(),
-      mutationRevision: 0,
-      mutationRevisionBySessionId: new Map(),
-      hasLoaded: false,
-      status: 'idle',
-    });
+    const scopeKey = get().scopeKey;
+    bumpLoadGeneration(scopeKey);
+    inflightLoads.delete(scopeKey);
+    scopeStates.delete(scopeKey);
+    scopeSdks.delete(scopeKey);
+    set({ ...createEmptyScopeState(), scopeKey });
   },
 
   loadSessions: async (fallbackActive) => {
-    if (inflightLoad) {
-      return inflightLoad;
+    const scopeKey = get().scopeKey;
+    const existing = inflightLoads.get(scopeKey);
+    if (existing) {
+      return existing;
     }
 
-    set((state) => (state.status === 'loading' ? state : { status: 'loading' }));
+    set((state) => (
+      state.scopeKey === scopeKey && state.status !== 'loading'
+        ? { status: 'loading' }
+        : state
+    ));
 
-    const generation = loadGeneration;
-    const baselineRevision = get().mutationRevision;
+    const generation = getLoadGeneration(scopeKey);
+    const baselineRevision = readScopeData(scopeKey).mutationRevision;
+    const sdk = resolveScopeSdk(scopeKey);
+    if (!sdk) {
+      console.warn('[GlobalSessions] Workspace SDK is unavailable; preserving the previous session snapshot.');
+      commitScopeData(scopeKey, (state) => applySnapshot(state, state.activeSessions, state.archivedSessions, 'error'));
+      return getScopeResult(scopeKey);
+    }
     const loadPromise = (async () => {
       try {
-        const sdk = opencodeClient.getSdkClient();
         // One inclusive fetch, split client-side. The server's
         // `time_archived IS NULL` active filter would exclude restored
         // sessions (`time.archived` falsy-but-present), so an
@@ -538,24 +647,22 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
           pageSize: PAGE_SIZE,
         });
 
-        if (generation !== loadGeneration) {
-          // Runtime switched mid-load: this snapshot belongs to the previous
-          // instance — drop it.
-          return { activeSessions: [], archivedSessions: [] };
+        if (generation !== getLoadGeneration(scopeKey)) {
+          return getScopeResult(scopeKey);
         }
         const { active, archived } = splitGlobalSessionsByArchived(allSessions);
-        set((state) => {
+        commitScopeData(scopeKey, (state) => {
           const reconciled = overlayMutationsSince(state, active, archived, baselineRevision);
+          raiseSessionOrderingBaselines(reconciled.activeSessions, scopeKey);
           return applySnapshot(state, reconciled.activeSessions, reconciled.archivedSessions, 'ready');
         });
-        const committed = get();
-        return { activeSessions: committed.activeSessions, archivedSessions: committed.archivedSessions };
+        return getScopeResult(scopeKey);
       } catch (error) {
-        if (generation !== loadGeneration) {
-          return { activeSessions: [], archivedSessions: [] };
+        if (generation !== getLoadGeneration(scopeKey)) {
+          return getScopeResult(scopeKey);
         }
         console.warn('[GlobalSessions] Failed to load sessions, using fallback snapshot:', error);
-        set((state) => {
+        commitScopeData(scopeKey, (state) => {
           const reconciled = overlayMutationsSince(
             state,
             mergeSessionLists(state.activeSessions, fallbackActive),
@@ -564,15 +671,14 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
           );
           return applySnapshot(state, reconciled.activeSessions, reconciled.archivedSessions, 'error');
         });
-        const committed = get();
-        return { activeSessions: committed.activeSessions, archivedSessions: committed.archivedSessions };
+        return getScopeResult(scopeKey);
       }
     })();
 
-    inflightLoad = loadPromise;
+    inflightLoads.set(scopeKey, loadPromise);
     const clearInflightLoad = () => {
-      if (inflightLoad === loadPromise) {
-        inflightLoad = null;
+      if (inflightLoads.get(scopeKey) === loadPromise) {
+        inflightLoads.delete(scopeKey);
       }
     };
     void loadPromise.then(clearInflightLoad, clearInflightLoad);
@@ -580,20 +686,24 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
   },
 
   refreshSessionsForDirectories: async (directories, fallbackActive) => {
+    const scopeKey = get().scopeKey;
     const directorySet = normalizeDirectorySet(directories);
     if (directorySet.size === 0) {
-      const state = get();
-      return { activeSessions: state.activeSessions, archivedSessions: state.archivedSessions };
+      return getScopeResult(scopeKey);
     }
 
-    const generation = loadGeneration;
-    const baselineRevision = get().mutationRevision;
-    const sdk = opencodeClient.getSdkClient();
+    const generation = getLoadGeneration(scopeKey);
+    const baselineRevision = readScopeData(scopeKey).mutationRevision;
+    const sdk = resolveScopeSdk(scopeKey);
+    if (!sdk) {
+      console.warn('[GlobalSessions] Workspace SDK is unavailable; preserving the previous session snapshot.');
+      commitScopeData(scopeKey, (state) => applySnapshot(state, state.activeSessions, state.archivedSessions, 'error'));
+      return getScopeResult(scopeKey);
+    }
     const fetched = await fetchDirectoryPages(sdk, directorySet);
 
-    if (generation !== loadGeneration) {
-      const state = get();
-      return { activeSessions: state.activeSessions, archivedSessions: state.archivedSessions };
+    if (generation !== getLoadGeneration(scopeKey)) {
+      return getScopeResult(scopeKey);
     }
 
     if (fetched.errors.length > 0) {
@@ -602,7 +712,7 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
 
     const { active, archived } = splitGlobalSessionsByArchived(fetched.sessions);
 
-    set((state) => {
+    commitScopeData(scopeKey, (state) => {
       let nextActiveSessions = replaceSessionsForDirectories(state.activeSessions, active, fetched.directories);
       nextActiveSessions = mergeSessionLists(nextActiveSessions, fallbackActive);
       if (sameSessionList(state.activeSessions, nextActiveSessions)) {
@@ -640,8 +750,7 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
       };
     });
 
-    const state = get();
-    return { activeSessions: state.activeSessions, archivedSessions: state.archivedSessions };
+    return getScopeResult(scopeKey);
   },
 
   upsertSession: (session) => {
@@ -720,7 +829,15 @@ export const useGlobalSessionsStore = create<GlobalSessionsState>((set, get) => 
       };
     });
   },
-}));
+  });
+});
+
+// Keep the non-reactive partitions synchronized with direct `setState` calls
+// as well as store actions. A few compatibility consumers still seed this
+// facade imperatively in tests and platform bridges.
+useGlobalSessionsStore.subscribe((state) => {
+  scopeStates.set(state.scopeKey, toGlobalSessionsData(state));
+});
 
 export const ensureGlobalSessionsLoaded = async (fallbackActive?: Session[]): Promise<LoadResult> => {
   const state = useGlobalSessionsStore.getState();

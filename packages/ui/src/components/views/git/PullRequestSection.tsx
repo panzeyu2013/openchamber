@@ -30,7 +30,6 @@ import { useInlineCommentDraftStore, type InlineCommentDraftTarget } from '@/sto
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { getGitHubPrStatusKey, useGitHubPrStatusStore } from '@/stores/useGitHubPrStatusStore';
 import { getPrContextKey, usePrContextStore } from '@/stores/usePrContextStore';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { summarizeCheckRuns } from '@/lib/githubChecks';
 import type {
   GitHubPullRequest,
@@ -331,7 +330,6 @@ export const PullRequestSection: React.FC<{
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const newSessionDraftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
-  const activeWorkspaceId = useActiveWorkspaceId();
   const { isMobile, hasTouchInput, screenWidth } = useDeviceInfo();
   const openContextSurface = useUIStore((state) => state.openContextSurface);
   const requestWalkthroughSource = useWalkthroughStore((state) => state.requestSource);
@@ -402,7 +400,7 @@ export const PullRequestSection: React.FC<{
 
   const prStatusKey = React.useMemo(
     () => getGitHubPrStatusKey(directory, branch, selectedRemote?.name ?? null),
-    [activeWorkspaceId, branch, directory, selectedRemote?.name],
+    [branch, directory, selectedRemote?.name],
   );
   const statusEntry = useGitHubPrStatusStore((state) => state.entries[prStatusKey]);
 

@@ -36,7 +36,11 @@ let pending: DeepLinkIntent | null = null;
 const execute = (intent: DeepLinkIntent): boolean => {
   switch (intent.type) {
     case 'session':
-      void useSessionUIStore.getState().setCurrentSession(intent.sessionId, intent.directory ?? null);
+      void useSessionUIStore.getState().setCurrentSession(
+        intent.sessionId,
+        intent.directory ?? null,
+        intent.workspaceId ?? null,
+      );
       return true;
 
     case 'new-session': {
@@ -175,7 +179,8 @@ export const useDeepLinkSource = (options: { ready: boolean }): void => {
           }
           const sessionId = typeof data?.sessionId === 'string' ? data.sessionId : undefined;
           if (sessionId) {
-            applyDeepLinkIntent({ type: 'session', sessionId });
+            const workspaceId = typeof data?.workspaceId === 'string' ? data.workspaceId : undefined;
+            applyDeepLinkIntent({ type: 'session', sessionId, workspaceId });
           }
         });
         if (disposed) {

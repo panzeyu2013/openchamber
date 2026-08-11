@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
-import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
+import { getRegisteredRuntimeAPIs, isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { DesktopSettings } from '@/lib/desktop';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -12,8 +12,9 @@ import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import { PROJECT_COLORS } from '@/lib/projectMeta';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
 import { getVSCodeBootstrapConfig, isVSCodeRuntime } from './utils/vscodeRuntime';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import type { WorkspaceCatalogSnapshot, WorkspaceDescriptor } from '@/workspaces/types';
 
 /** Pick a color key that's least used among existing projects */
 const pickAutoColor = (projects: ProjectEntry[]): string => {
@@ -76,33 +77,84 @@ const safeStorage = getDeferredSafeStorage();
 const PROJECTS_STORAGE_KEY = 'projects';
 const ACTIVE_PROJECT_STORAGE_KEY = 'activeProjectId';
 
+// Catalog descriptors intentionally contain only workspace identity and
+// low-frequency public metadata. Keep the legacy project metadata in memory
+// during the compatibility cycle so icons/default models survive the catalog
+// projection even though those fields do not belong in the Catalog schema.
+const legacyProjectMetadataByPath = new Map<string, ProjectEntry>();
+const legacyProjectIdByWorkspaceId = new Map<string, string>();
+let catalogOrderWriteChain: Promise<void> = Promise.resolve();
+let synchronizeProjectsFromCatalog: () => void = () => {};
+
 const getLocalRuntimeOrigin = (): string => {
   if (typeof window === 'undefined') return '';
   const value = (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__;
   return typeof value === 'string' ? value.trim().replace(/\/+$/, '') : '';
 };
 
-const getProjectsStorageNamespace = (): string => {
-  const apiBaseUrl = getRuntimeApiBaseUrl().trim().replace(/\/+$/, '');
-  if (!apiBaseUrl) return '';
-  return apiBaseUrl;
-};
+// The Catalog is pinned to the current OpenChamber control plane. Keep one
+// unscoped legacy cache only as a compatibility fallback when that Catalog is
+// unavailable; never create another cache partition for a selected upstream
+// runtime. During the migration release, import the old local-runtime slice
+// once without deleting it so a rollback still has a recoverable source.
+const getProjectsStorageKey = (): string => PROJECTS_STORAGE_KEY;
+const getActiveProjectStorageKey = (): string => ACTIVE_PROJECT_STORAGE_KEY;
 
-const getProjectsStorageKey = (): string => {
-  const namespace = getProjectsStorageNamespace();
-  return namespace ? `${PROJECTS_STORAGE_KEY}:${encodeURIComponent(namespace)}` : PROJECTS_STORAGE_KEY;
-};
-
-const getActiveProjectStorageKey = (): string => {
-  const namespace = getProjectsStorageNamespace();
-  return namespace ? `${ACTIVE_PROJECT_STORAGE_KEY}:${encodeURIComponent(namespace)}` : ACTIVE_PROJECT_STORAGE_KEY;
-};
-
-const shouldReadLegacyProjectsCache = (): boolean => {
-  const namespace = getProjectsStorageNamespace();
-  if (!namespace) return true;
+const getLegacyLocalStorageKey = (key: string): string | null => {
   const localOrigin = getLocalRuntimeOrigin();
-  return Boolean(localOrigin && namespace === localOrigin);
+  return localOrigin ? `${key}:${encodeURIComponent(localOrigin)}` : null;
+};
+
+const readStorageWithLegacyLocalFallback = (key: string): string | null => {
+  const current = safeStorage.getItem(key);
+  if (current !== null) {
+    return current;
+  }
+
+  const legacyKey = getLegacyLocalStorageKey(key);
+  if (!legacyKey) {
+    return null;
+  }
+
+  const legacy = safeStorage.getItem(legacyKey);
+  if (legacy !== null) {
+    try {
+      safeStorage.setItem(key, legacy);
+    } catch {
+      // The legacy value remains readable if storage is temporarily full.
+    }
+  }
+  return legacy;
+};
+
+const getReadyCatalogSnapshot = (): WorkspaceCatalogSnapshot | null => {
+  const catalog = useWorkspaceCatalogStore.getState();
+  return catalog.status === 'ready' && catalog.snapshot
+    ? catalog.snapshot
+    : null;
+};
+
+/**
+ * Project metadata remains a compatibility surface, but it must not mutate
+ * the ambient OpenCode directory while a composite workspace/session target
+ * is mounted. The workspace-bound SyncProvider owns that directory instead.
+ */
+const hasActiveWorkspaceSession = (): boolean => {
+  const sessionState = useSessionUIStore.getState();
+  return Boolean(
+    sessionState.currentWorkspaceId
+    || (sessionState.newSessionDraft?.open && sessionState.newSessionDraft.workspaceId)
+    || isWorkspaceRuntimeActive(),
+  );
+};
+
+const rememberLegacyProjectMetadata = (projects: ProjectEntry[]): void => {
+  for (const project of projects) {
+    const normalizedPath = normalizeProjectPath(project.path);
+    if (normalizedPath) {
+      legacyProjectMetadataByPath.set(normalizedPath, project);
+    }
+  }
 };
 
 const resolveTildePath = (value: string, homeDir?: string | null): string => {
@@ -165,6 +217,60 @@ const normalizeProjectPath = (value: string): string => {
   }
   return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
 };
+
+const compareCatalogOrder = (left: WorkspaceDescriptor, right: WorkspaceDescriptor, leftIndex: number, rightIndex: number): number => {
+  const leftOrder = left.orderKey.trim();
+  const rightOrder = right.orderKey.trim();
+  if (leftOrder && rightOrder) {
+    const orderDelta = leftOrder.localeCompare(rightOrder);
+    if (orderDelta !== 0) return orderDelta;
+  } else if (leftOrder || rightOrder) {
+    return leftOrder ? -1 : 1;
+  }
+  return leftIndex - rightIndex;
+};
+
+const projectFromCatalogWorkspace = (workspace: WorkspaceDescriptor): ProjectEntry => {
+  const normalizedPath = normalizeProjectPath(workspace.path);
+  const legacy = legacyProjectMetadataByPath.get(normalizedPath);
+  if (legacy) {
+    legacyProjectIdByWorkspaceId.set(workspace.id, legacy.id);
+  }
+  return {
+    ...(legacy ?? {}),
+    id: workspace.id,
+    path: normalizedPath,
+    label: workspace.label || legacy?.label,
+    color: workspace.color !== undefined ? workspace.color : legacy?.color,
+    addedAt: legacy?.addedAt ?? workspace.createdAt,
+    lastOpenedAt: legacy?.lastOpenedAt ?? workspace.updatedAt,
+  };
+};
+
+const catalogProjectsFromSnapshot = (snapshot: WorkspaceCatalogSnapshot): ProjectEntry[] => {
+  const localWorkspaces = snapshot.workspaces
+    .map((workspace, index) => ({ workspace, index }))
+    .filter(({ workspace }) => workspace.connectionId === 'local')
+    .sort((left, right) => compareCatalogOrder(left.workspace, right.workspace, left.index, right.index))
+    .map(({ workspace }) => projectFromCatalogWorkspace(workspace));
+  return localWorkspaces;
+};
+
+const legacyProjectIdFor = (project: ProjectEntry): string => (
+  legacyProjectIdByWorkspaceId.get(project.id)
+    ?? createProjectIdFromPath(project.path)
+    ?? project.id
+);
+
+const legacyProjectIdForId = (id: string, projects: ProjectEntry[]): string => {
+  const project = projects.find((entry) => entry.id === id);
+  return project ? legacyProjectIdFor(project) : id;
+};
+
+const toLegacyProjectEntries = (projects: ProjectEntry[]): ProjectEntry[] => projects.map((project) => ({
+  ...project,
+  id: legacyProjectIdFor(project),
+}));
 
 const deriveProjectLabel = (path: string): string => {
   const normalized = normalizeProjectPath(path);
@@ -306,8 +412,7 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
 
 const readPersistedProjects = (): ProjectEntry[] => {
   try {
-    const raw = safeStorage.getItem(getProjectsStorageKey())
-      || (shouldReadLegacyProjectsCache() ? safeStorage.getItem(PROJECTS_STORAGE_KEY) : null);
+    const raw = readStorageWithLegacyLocalFallback(getProjectsStorageKey());
     if (!raw) {
       return [];
     }
@@ -319,7 +424,7 @@ const readPersistedProjects = (): ProjectEntry[] => {
 
 const readPersistedManualOrder = (): string[] => {
   try {
-    const raw = safeStorage.getItem(getProjectsStorageKey() + ':manualOrder');
+    const raw = readStorageWithLegacyLocalFallback(getProjectsStorageKey() + ':manualOrder');
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [];
@@ -330,8 +435,7 @@ const readPersistedManualOrder = (): string[] => {
 
 const readPersistedActiveProjectId = (): string | null => {
   try {
-    const raw = safeStorage.getItem(getActiveProjectStorageKey())
-      || (shouldReadLegacyProjectsCache() ? safeStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) : null);
+    const raw = readStorageWithLegacyLocalFallback(getActiveProjectStorageKey());
     if (typeof raw === 'string' && raw.trim().length > 0) {
       return raw.trim();
     }
@@ -361,11 +465,49 @@ const cacheProjects = (projects: ProjectEntry[], activeProjectId: string | null)
 };
 
 const persistProjects = (projects: ProjectEntry[], activeProjectId: string | null, manualOrder?: string[]) => {
+  rememberLegacyProjectMetadata(projects);
   cacheProjects(projects, activeProjectId);
   if (manualOrder) {
     persistManualProjectOrder(manualOrder);
   }
   void updateDesktopSettings({ projects, activeProjectId: activeProjectId ?? undefined });
+};
+
+const persistLegacyProjectMetadata = (
+  projects: ProjectEntry[],
+  activeProjectId: string | null,
+  manualOrder?: string[],
+) => {
+  const legacyProjects = toLegacyProjectEntries(projects);
+  const activeProject = projects.find((project) => project.id === activeProjectId);
+  const legacyActiveProjectId = activeProject ? legacyProjectIdFor(activeProject) : null;
+  rememberLegacyProjectMetadata(legacyProjects);
+  cacheProjects(legacyProjects, legacyActiveProjectId);
+  if (manualOrder) {
+    persistManualProjectOrder(manualOrder.map((id) => {
+      const project = projects.find((entry) => entry.id === id);
+      return project ? legacyProjectIdFor(project) : id;
+    }));
+  }
+  void updateDesktopSettings({
+    projects: legacyProjects,
+    activeProjectId: legacyActiveProjectId ?? undefined,
+  });
+};
+
+const queueCatalogOrderPersistence = (projects: ProjectEntry[]): void => {
+  const orderedIds = projects.map((project) => project.id);
+  catalogOrderWriteChain = catalogOrderWriteChain
+    .then(async () => {
+      for (const [index, workspaceId] of orderedIds.entries()) {
+        const catalog = useWorkspaceCatalogStore.getState();
+        if (!catalog.snapshot?.workspaces.some((workspace) => workspace.id === workspaceId)) continue;
+        await catalog.updateWorkspace(workspaceId, {
+          orderKey: String(index).padStart(12, '0'),
+        });
+      }
+    })
+    .catch(() => undefined);
 };
 
 const persistManualProjectOrder = (manualOrder: string[]) => {
@@ -377,6 +519,7 @@ const persistManualProjectOrder = (manualOrder: string[]) => {
 };
 
 const initialProjects = readPersistedProjects();
+rememberLegacyProjectMetadata(initialProjects);
 const normalizeVSCodeWorkspaceFolders = (folders: VSCodeWorkspaceFolderConfig[]): VSCodeWorkspaceFolderConfig[] => {
   const result: VSCodeWorkspaceFolderConfig[] = [];
   const seen = new Set<string>();
@@ -575,6 +718,53 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       const normalizedPath = validation.normalizedPath;
+
+      const catalogSnapshot = getReadyCatalogSnapshot();
+      if (catalogSnapshot) {
+        const existingWorkspace = catalogSnapshot.workspaces.find((workspace) => (
+          workspace.connectionId === 'local' && normalizeProjectPath(workspace.path) === normalizedPath
+        ));
+        if (existingWorkspace) {
+          synchronizeProjectsFromCatalog();
+          const existingProject = get().projects.find((project) => project.id === existingWorkspace.id)
+            ?? projectFromCatalogWorkspace(existingWorkspace);
+          get().setActiveProject(existingProject.id);
+          return existingProject;
+        }
+
+        const now = Date.now();
+        const provisional: ProjectEntry = {
+          id: options?.id ?? createProjectIdFromPath(normalizedPath),
+          path: normalizedPath,
+          label: options?.label?.trim() || deriveProjectLabel(normalizedPath),
+          color: pickAutoColor(get().projects),
+          addedAt: now,
+          lastOpenedAt: now,
+        };
+        const nextProjects = [...get().projects, provisional];
+        rememberLegacyProjectMetadata(nextProjects);
+        set({ projects: nextProjects });
+        get().setActiveProject(provisional.id);
+
+        void useWorkspaceCatalogStore.getState().createWorkspace({
+          connectionId: 'local',
+          path: normalizedPath,
+          label: provisional.label,
+          color: provisional.color ?? undefined,
+        }).then(() => {
+          synchronizeProjectsFromCatalog();
+        }).catch(() => {
+          set((state) => {
+            const next = state.projects.filter((project) => project.id !== provisional.id);
+            const activeProjectId = state.activeProjectId === provisional.id
+              ? next[0]?.id ?? null
+              : state.activeProjectId;
+            return { projects: next, activeProjectId };
+          });
+        });
+        return provisional;
+      }
+
       const existing = get().projects.find((project) => project.path === normalizedPath);
       if (existing) {
         get().setActiveProject(existing.id);
@@ -620,7 +810,13 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const nextManualOrder = get().manualProjectOrder.filter((oid) => oid !== id);
       set({ projects: nextProjects, activeProjectId: nextActiveId, manualProjectOrder: nextManualOrder });
-      persistProjects(nextProjects, nextActiveId, nextManualOrder);
+      const catalogSnapshot = getReadyCatalogSnapshot();
+      const catalogWorkspace = catalogSnapshot?.workspaces.find((workspace) => workspace.id === id);
+      if (catalogWorkspace) {
+        void useWorkspaceCatalogStore.getState().deleteWorkspace(id).catch(() => undefined);
+      } else {
+        persistProjects(nextProjects, nextActiveId, nextManualOrder);
+      }
 
       // Clean up worktree entries for the removed project
       if (project) {
@@ -632,13 +828,13 @@ export const useProjectsStore = create<ProjectsStore>()(
         });
       }
 
-      if (nextActiveId) {
+      if (!hasActiveWorkspaceSession() && nextActiveId) {
         const nextActive = nextProjects.find((project) => project.id === nextActiveId);
         if (nextActive) {
           opencodeClient.setDirectory(nextActive.path);
           useDirectoryStore.getState().setDirectory(nextActive.path, { showOverlay: false });
         }
-      } else {
+      } else if (!hasActiveWorkspaceSession()) {
         void useDirectoryStore.getState().goHome();
       }
     },
@@ -662,10 +858,14 @@ export const useProjectsStore = create<ProjectsStore>()(
       );
 
       set({ projects: nextProjects, activeProjectId: id });
-      persistProjects(nextProjects, id, get().manualProjectOrder);
+      if (!getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
+        persistProjects(nextProjects, id, get().manualProjectOrder);
+      }
 
-      opencodeClient.setDirectory(target.path);
-      useDirectoryStore.getState().setDirectory(target.path, { showOverlay: false });
+      if (!hasActiveWorkspaceSession()) {
+        opencodeClient.setDirectory(target.path);
+        useDirectoryStore.getState().setDirectory(target.path, { showOverlay: false });
+      }
     },
 
     setActiveProjectIdOnly: (id: string) => {
@@ -687,7 +887,9 @@ export const useProjectsStore = create<ProjectsStore>()(
       );
 
       set({ projects: nextProjects, activeProjectId: id });
-      persistProjects(nextProjects, id, get().manualProjectOrder);
+      if (!getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
+        persistProjects(nextProjects, id, get().manualProjectOrder);
+      }
     },
 
     renameProject: (id: string, label: string) => {
@@ -703,8 +905,13 @@ export const useProjectsStore = create<ProjectsStore>()(
       const nextProjects = projects.map((project) =>
         project.id === id ? { ...project, label: trimmed } : project
       );
+      rememberLegacyProjectMetadata(nextProjects);
       set({ projects: nextProjects });
-      persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
+      if (getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
+        void useWorkspaceCatalogStore.getState().updateWorkspace(id, { label: trimmed }).catch(() => undefined);
+      } else {
+        persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
+      }
     },
 
     updateProjectMeta: (id: string, meta: {
@@ -740,8 +947,29 @@ export const useProjectsStore = create<ProjectsStore>()(
         }
         return updated;
       });
+      rememberLegacyProjectMetadata(nextProjects);
       set({ projects: nextProjects });
-      persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
+      const catalogWorkspace = getReadyCatalogSnapshot()?.workspaces.find((workspace) => workspace.id === id);
+      if (catalogWorkspace) {
+        const patch: { label?: string; color?: string | null } = {};
+        if (meta.label !== undefined) {
+          const trimmed = meta.label.trim();
+          if (trimmed) patch.label = trimmed;
+        }
+        if (meta.color !== undefined) patch.color = meta.color;
+        if (Object.keys(patch).length > 0) {
+          void useWorkspaceCatalogStore.getState().updateWorkspace(id, patch).catch(() => undefined);
+        }
+
+        // Icons/default-model remain in the legacy settings surface for this
+        // compatibility release; their catalog workspace id is translated
+        // back to the old path-derived id when persisted.
+        if (meta.icon !== undefined || meta.iconBackground !== undefined || meta.defaultModel !== undefined) {
+          persistLegacyProjectMetadata(nextProjects, activeProjectId, get().manualProjectOrder);
+        }
+      } else {
+        persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
+      }
     },
 
     uploadProjectIcon: async (id: string, file: File) => {
@@ -764,7 +992,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         const dataUrl = await readFileAsDataUrl(file);
         const normalizedDataUrl = dataUrl.replace(/^data:[^;]+;/i, `data:${mime};`);
 
-        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(id)}/icon`, {
+        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(legacyProjectIdForId(id, get().projects))}/icon`, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -795,7 +1023,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       try {
-        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(id)}/icon`, {
+        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(legacyProjectIdForId(id, get().projects))}/icon`, {
           method: 'DELETE',
           headers: {
             Accept: 'application/json',
@@ -824,7 +1052,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       }
 
       try {
-        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(id)}/icon/discover`, {
+        const response = await runtimeFetch(`/api/projects/${encodeURIComponent(legacyProjectIdForId(id, get().projects))}/icon/discover`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -880,14 +1108,24 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const newOrder = nextProjects.map((p) => p.id);
       set({ projects: nextProjects, manualProjectOrder: newOrder });
-      persistProjects(nextProjects, activeProjectId, newOrder);
+      const catalogSnapshot = getReadyCatalogSnapshot();
+      if (catalogSnapshot && nextProjects.every((project) => catalogSnapshot.workspaces.some((workspace) => workspace.id === project.id))) {
+        queueCatalogOrderPersistence(nextProjects);
+      } else {
+        persistProjects(nextProjects, activeProjectId, newOrder);
+      }
     },
 
     resetForRuntimeSwitch: () => {
       if (isVSCodeProjectsRuntime) {
         return;
       }
+      if (getReadyCatalogSnapshot()) {
+        synchronizeProjectsFromCatalog();
+        return;
+      }
       const projects = readPersistedProjects();
+      rememberLegacyProjectMetadata(projects);
       const activeProjectId = readPersistedActiveProjectId();
       const nextActiveProjectId = projects.some((project) => project.id === activeProjectId)
         ? activeProjectId
@@ -900,6 +1138,11 @@ export const useProjectsStore = create<ProjectsStore>()(
         return;
       }
       const incomingProjects = sanitizeProjects(settings.projects ?? []);
+      rememberLegacyProjectMetadata(incomingProjects);
+      if (getReadyCatalogSnapshot()) {
+        synchronizeProjectsFromCatalog();
+        return;
+      }
       const incomingActive = typeof settings.activeProjectId === 'string' && settings.activeProjectId.trim()
         ? settings.activeProjectId.trim()
         : null;
@@ -919,7 +1162,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       cacheProjects(incomingProjects, incomingActive);
       persistManualProjectOrder(cleanedOrder);
 
-      if (incomingActive) {
+      if (incomingActive && !hasActiveWorkspaceSession()) {
         const activeProject = incomingProjects.find((project) => project.id === incomingActive);
         if (activeProject) {
           opencodeClient.setDirectory(activeProject.path);
@@ -955,7 +1198,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         cacheProjects(result.projects, result.activeProjectId);
       }
 
-      if (result.activeProject) {
+      if (result.activeProject && !hasActiveWorkspaceSession()) {
         opencodeClient.setDirectory(result.activeProject.path);
         useDirectoryStore.getState().setDirectory(result.activeProject.path, { showOverlay: false });
       }
@@ -973,6 +1216,47 @@ export const useProjectsStore = create<ProjectsStore>()(
 
   }), { name: 'projects-store' })
 );
+
+synchronizeProjectsFromCatalog = () => {
+  const snapshot = getReadyCatalogSnapshot();
+  if (!snapshot) return;
+
+  const nextProjects = catalogProjectsFromSnapshot(snapshot);
+  const current = useProjectsStore.getState();
+  const currentActiveProject = current.projects.find((project) => project.id === current.activeProjectId) ?? null;
+  const currentDirectory = normalizeProjectPath(useDirectoryStore.getState().currentDirectory);
+  const activeProject = (currentActiveProject
+    ? nextProjects.find((project) => project.path === normalizeProjectPath(currentActiveProject.path))
+    : null)
+    ?? nextProjects.find((project) => project.path === currentDirectory)
+    ?? (current.activeProjectId ? nextProjects.find((project) => project.id === current.activeProjectId) : null)
+    ?? nextProjects[0]
+    ?? null;
+  const nextActiveProjectId = activeProject?.id ?? null;
+  const nextManualOrder = nextProjects.map((project) => project.id);
+
+  if (
+    JSON.stringify(current.projects) === JSON.stringify(nextProjects)
+    && current.activeProjectId === nextActiveProjectId
+    && JSON.stringify(current.manualProjectOrder) === JSON.stringify(nextManualOrder)
+  ) {
+    return;
+  }
+  useProjectsStore.setState({
+    projects: nextProjects,
+    activeProjectId: nextActiveProjectId,
+    manualProjectOrder: nextManualOrder,
+  });
+};
+
+// Catalog refreshes are authoritative only when they succeed. A failed
+// control-plane refresh leaves the legacy projection untouched, preserving
+// the old projects view for recovery and compatibility.
+useWorkspaceCatalogStore.subscribe((state) => {
+  if (state.status === 'ready' && state.snapshot) {
+    synchronizeProjectsFromCatalog();
+  }
+});
 
 if (typeof window !== 'undefined') {
   window.addEventListener('openchamber:settings-synced', (event: Event) => {

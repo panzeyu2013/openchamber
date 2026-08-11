@@ -1,7 +1,10 @@
-import { createWorkspaceOpencodeClient } from '@/lib/opencode/client';
-import { createControlPlaneFetch } from './control-plane-fetch';
+import { createOpencodeServiceForSdk, createWorkspaceOpencodeClient } from '@/lib/opencode/client';
+import { openRuntimeWebSocket } from '@/lib/relay/runtime-socket';
+import { TerminalTransport } from '@/lib/terminalApi';
+import { withRuntimeUrlAuthToken } from '@/lib/runtime-url';
+import { createControlPlaneFetch, getControlPlaneBaseUrl } from './control-plane-fetch';
 import { workspaceScopeKey } from './identity';
-import { rewriteRuntimePathToWorkspace, workspaceSdkBaseUrl } from './workspace-runtime-fetch';
+import { rewriteRuntimePathToWorkspace, workspaceRuntimePrefix, workspaceSdkBaseUrl } from './workspace-runtime-fetch';
 import type { WorkspaceDescriptor, WorkspaceId } from './types';
 import type {
   CreateTerminalOptions,
@@ -14,7 +17,6 @@ import type {
   ResizeTerminalPayload,
   RuntimeAPIs,
   TerminalAPI,
-  TerminalError,
   TerminalHandlers,
   TerminalSession,
   TerminalShellOption,
@@ -32,11 +34,15 @@ export interface WorkspaceRuntimeHandle {
   scopeKey: string;
   directory: string;
   sdk: ReturnType<typeof createWorkspaceOpencodeClient>;
+  /**
+   * The service facade over the same bound SDK. Session actions and prompt
+   * sends use this instead of the ambient `opencodeClient` singleton.
+   */
+  service: ReturnType<typeof createOpencodeServiceForSdk>;
   /** Workspace-bound RuntimeAPIs: OpenChamber-owned capabilities (files, git,
    * terminal, …) route through the workspace runtime proxy prefix on the
-   * CURRENT control plane with the workspace directory header. WebSocket
-   * transports are not wired yet, so capabilities that depend on them
-   * (terminal streaming) fail explicitly instead of connecting nowhere. */
+   * CURRENT control plane with the workspace directory header. Terminal
+   * streaming owns a workspace-scoped socket and URL-auth token. */
   apis: RuntimeAPIs;
   urls: RuntimeUrlResolver;
   retain(): () => void;
@@ -47,6 +53,22 @@ export interface WorkspaceRuntimeRegistry {
   get(workspace: WorkspaceDescriptor): WorkspaceRuntimeHandle;
   invalidate(workspaceId: WorkspaceId): void;
   dispose(): void;
+}
+
+/**
+ * A workspace-scoped capability whose server contract does not exist yet.
+ * Callers can distinguish this from a transient transport failure and must
+ * keep the operation visibly unavailable instead of falling back to the
+ * ambient runtime.
+ */
+class WorkspaceCapabilityUnavailableError extends Error {
+  readonly code = 'capability_unavailable';
+  readonly status = 501;
+
+  constructor(capability: string) {
+    super(`${capability} is not available for a workspace runtime`);
+    this.name = 'WorkspaceCapabilityUnavailableError';
+  }
 }
 
 /**
@@ -88,9 +110,8 @@ const createWorkspaceUrlResolver = (workspaceId: WorkspaceId): RuntimeUrlResolve
 // registry builds a minimal workspace-bound implementation here: every
 // OpenChamber-owned request goes to the workspace runtime proxy prefix
 // (`/api/workspaces/:id/runtime/...`) on the CURRENT control plane with the
-// workspace directory header. Capabilities that require a WebSocket upgrade
-// (terminal streaming) are not wired on the workspace proxy yet and fail
-// explicitly rather than silently connecting nowhere.
+// workspace directory header. Terminal streaming uses the same workspace
+// prefix for its WebSocket upgrade and never falls back to the ambient socket.
 // ---------------------------------------------------------------------------
 
 const WORKSPACE_DIRECTORY_HEADER = 'x-opencode-directory';
@@ -132,6 +153,25 @@ const jsonResponse = async <T,>(response: Response, fallback: string): Promise<T
 
 const noContentResponse = async (response: Response, fallback: string): Promise<void> => {
   if (!response.ok) throw await responseError(response, fallback);
+};
+
+const responseDataUrl = async (response: Response): Promise<string> => {
+  const blob = await response.blob();
+  if (typeof FileReader === 'undefined') {
+    throw new Error('Binary file preview is unavailable in this runtime');
+  }
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Binary file preview returned an invalid data URL'));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read binary file preview'));
+    reader.readAsDataURL(blob);
+  });
 };
 
 const normalizeApiPath = (path: string): string => path.replace(/\\/g, '/');
@@ -241,6 +281,19 @@ const createWorkspaceFilesApi = (apiFetch: WorkspaceApiFetch, directory: string)
     return { content: await response.text(), path: target };
   },
 
+  async readFileBinary(path: string, options): Promise<{ dataUrl: string; path: string }> {
+    const target = normalizeApiPath(path);
+    const params = new URLSearchParams({ path: target });
+    if (options?.allowOutsideWorkspace) params.set('allowOutsideWorkspace', 'true');
+    if (options?.outsideFileGrant) params.set('outsideFileGrant', options.outsideFileGrant);
+    const response = await apiFetch('/api/fs/raw', {
+      query: params,
+      cache: 'no-store',
+    } as RequestInit, options?.directory ?? directory);
+    if (!response.ok) throw await responseError(response, 'Failed to read binary file');
+    return { dataUrl: await responseDataUrl(response), path: target };
+  },
+
   async writeFile(path: string, content: string): Promise<{ success: boolean; path: string }> {
     const target = normalizeApiPath(path);
     const response = await apiFetch('/api/fs/write', {
@@ -307,9 +360,82 @@ const createWorkspaceFilesApi = (apiFetch: WorkspaceApiFetch, directory: string)
   },
 });
 
-const WORKSPACE_TERMINAL_UNAVAILABLE = 'Workspace terminal streaming is not available yet (WebSocket upgrade not wired)';
+const WORKSPACE_URL_AUTH_SKEW_MS = 10_000;
 
-const createWorkspaceTerminalApi = (apiFetch: WorkspaceApiFetch): TerminalAPI => {
+type WorkspaceTerminalApiBundle = {
+  api: TerminalAPI;
+  dispose: () => void;
+};
+
+const createWorkspaceTerminalSocketUrl = (workspaceId: WorkspaceId, token: string): string => {
+  const path = `${workspaceRuntimePrefix(workspaceId)}/api/terminal/ws`;
+  const controlPlaneBase = getControlPlaneBaseUrl();
+  const fallbackBase = typeof window !== 'undefined' ? window.location.href : 'http://openchamber.local';
+  const rawUrl = controlPlaneBase
+    ? `${controlPlaneBase.replace(/\/+$/, '')}${path}`
+    : path;
+  const url = new URL(rawUrl, fallbackBase);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return withRuntimeUrlAuthToken(url.toString(), token);
+};
+
+const createWorkspaceTerminalTransport = (
+  workspaceId: WorkspaceId,
+  controlPlaneFetch: typeof fetch,
+): TerminalTransport => {
+  let token = '';
+  let expiresAt = 0;
+  let refreshPromise: Promise<string> | null = null;
+
+  const clearToken = (): void => {
+    token = '';
+    expiresAt = 0;
+  };
+
+  const refreshAuth = async (): Promise<string> => {
+    if (token && expiresAt > Date.now() + WORKSPACE_URL_AUTH_SKEW_MS) return token;
+    if (refreshPromise) return refreshPromise;
+
+    const request = (async () => {
+      const response = await controlPlaneFetch('/auth/url-token', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!response.ok) {
+        clearToken();
+        throw new Error(`Failed to mint workspace terminal URL auth token (${response.status})`);
+      }
+      const payload = await response.json().catch(() => null) as { token?: unknown; expiresAt?: unknown } | null;
+      const nextToken = typeof payload?.token === 'string' ? payload.token.trim() : '';
+      const nextExpiresAt = typeof payload?.expiresAt === 'number' ? payload.expiresAt : 0;
+      if (!nextToken || !Number.isFinite(nextExpiresAt)) {
+        clearToken();
+        throw new Error('Workspace terminal URL auth token response was invalid');
+      }
+      token = nextToken;
+      expiresAt = nextExpiresAt;
+      return token;
+    })();
+    const trackedPromise = request.finally(() => {
+      if (refreshPromise === trackedPromise) refreshPromise = null;
+    });
+    refreshPromise = trackedPromise;
+    return trackedPromise;
+  };
+
+  return new TerminalTransport({
+    refreshAuth,
+    openSocket: () => openRuntimeWebSocket(createWorkspaceTerminalSocketUrl(workspaceId, token)),
+    clearUrlAuthToken: clearToken,
+  });
+};
+
+const createWorkspaceTerminalApi = (
+  workspaceId: WorkspaceId,
+  apiFetch: WorkspaceApiFetch,
+  controlPlaneFetch: typeof fetch,
+): WorkspaceTerminalApiBundle => {
+  const transport = createWorkspaceTerminalTransport(workspaceId, controlPlaneFetch);
   const command = async (path: string, method: string, body?: unknown): Promise<Response> => {
     const init: RequestInit = { method };
     if (body !== undefined) {
@@ -322,6 +448,7 @@ const createWorkspaceTerminalApi = (apiFetch: WorkspaceApiFetch): TerminalAPI =>
   };
 
   return {
+    api: {
     async listShells(): Promise<TerminalShellOption[]> {
       const response = await apiFetch('/api/terminal/shells');
       if (!response.ok) throw await responseError(response, 'Failed to list terminal shells');
@@ -331,14 +458,11 @@ const createWorkspaceTerminalApi = (apiFetch: WorkspaceApiFetch): TerminalAPI =>
     async createSession(options: CreateTerminalOptions): Promise<TerminalSession> {
       return jsonResponse(await command('/api/terminal/create', 'POST', options), 'Failed to create terminal session');
     },
-    connect(_sessionId: string, handlers: TerminalHandlers) {
-      const error = new Error(WORKSPACE_TERMINAL_UNAVAILABLE) as TerminalError;
-      error.code = 'workspace_terminal_unavailable';
-      queueMicrotask(() => handlers.onError?.(error, false));
-      return { close: () => undefined };
+    connect(sessionId: string, handlers: TerminalHandlers) {
+      return { close: transport.subscribe(sessionId, handlers) };
     },
-    async sendInput(): Promise<void> {
-      throw new Error(WORKSPACE_TERMINAL_UNAVAILABLE);
+    async sendInput(sessionId: string, input: string): Promise<void> {
+      await transport.write(sessionId, input);
     },
     async resize(payload: ResizeTerminalPayload): Promise<void> {
       await noContentResponse(
@@ -354,6 +478,7 @@ const createWorkspaceTerminalApi = (apiFetch: WorkspaceApiFetch): TerminalAPI =>
     },
     async close(sessionId: string): Promise<void> {
       await noContentResponse(await command(`/api/terminal/${sessionId}`, 'DELETE'), 'Failed to close terminal');
+      transport.forget(sessionId);
     },
     async restartSession(currentSessionId: string, options: CreateTerminalOptions): Promise<TerminalSession> {
       return jsonResponse(
@@ -363,11 +488,14 @@ const createWorkspaceTerminalApi = (apiFetch: WorkspaceApiFetch): TerminalAPI =>
     },
     async forceKill(options: ForceKillOptions): Promise<void> {
       await noContentResponse(await command('/api/terminal/force-kill', 'POST', options), 'Failed to kill terminal');
+      if (options.sessionId) transport.forget(options.sessionId);
     },
+    },
+    dispose: () => transport.dispose(),
   };
 };
 
-const createWorkspaceGitApi = (apiFetch: WorkspaceApiFetch): GitAPI => {
+const createWorkspaceGitApi = (apiFetch: WorkspaceApiFetch, directory: string): GitAPI => {
   const get = async <T,>(route: string, params?: Record<string, string | number | boolean | undefined>, fallback?: string): Promise<T> => {
     const query: Record<string, string | number | boolean | undefined> = { ...params };
     const response = await apiFetch(route, { query } as RequestInit);
@@ -377,9 +505,10 @@ const createWorkspaceGitApi = (apiFetch: WorkspaceApiFetch): GitAPI => {
   const post = async <T,>(route: string, body?: unknown, fallback?: string): Promise<T> => {
     const response = await apiFetch(route, {
       method: 'POST',
+      query: directory ? { directory } : undefined,
       headers: { 'Content-Type': 'application/json' },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
+    } as RequestInit);
     if (!response.ok) throw await responseError(response, fallback ?? `Failed to ${route}`);
     return response.json() as Promise<T>;
   };
@@ -388,6 +517,14 @@ const createWorkspaceGitApi = (apiFetch: WorkspaceApiFetch): GitAPI => {
     checkIsGitRepository: async (dir) => {
       const data = await get<{ isGitRepository?: unknown }>('/api/git/check', { directory: dir }, 'Failed to check git repository');
       return Boolean(data.isGitRepository);
+    },
+    resolveGitPrimaryRoot: async (dir) => {
+      const data = await get<{ root?: unknown }>('/api/git/primary-root', { directory: dir }, 'Failed to resolve git primary root');
+      return { root: typeof data.root === 'string' && data.root ? data.root : dir };
+    },
+    resolveGitTopLevel: async (dir) => {
+      const data = await get<{ root?: unknown }>('/api/git/toplevel', { directory: dir }, 'Failed to resolve git toplevel');
+      return { root: typeof data.root === 'string' && data.root ? data.root : dir };
     },
     getGitStatus: (dir, options) => get<import('@/lib/api/types').GitStatus>('/api/git/status', { directory: dir, mode: options?.mode }, 'Failed to get git status'),
     getGitDiff: (dir, options) => get<import('@/lib/api/types').GitDiffResponse>('/api/git/diff', {
@@ -572,34 +709,40 @@ const createWorkspaceRuntimeApis = (
   workspaceId: WorkspaceId,
   directory: string,
   controlPlaneFetch: typeof fetch,
-): RuntimeAPIs => {
+): { apis: RuntimeAPIs; dispose: () => void } => {
   const apiFetch = createWorkspaceApiFetch(workspaceId, directory, controlPlaneFetch);
+  const terminal = createWorkspaceTerminalApi(workspaceId, apiFetch, controlPlaneFetch);
   return {
-    runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: `workspace:${workspaceId}` },
-    files: createWorkspaceFilesApi(apiFetch, directory),
-    git: createWorkspaceGitApi(apiFetch),
-    terminal: createWorkspaceTerminalApi(apiFetch),
-    settings: {
-      load: () => Promise.reject(new Error('Workspace settings are not available yet')),
-      save: () => Promise.reject(new Error('Workspace settings are not available yet')),
+    apis: {
+      runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: `workspace:${workspaceId}` },
+      files: createWorkspaceFilesApi(apiFetch, directory),
+      git: createWorkspaceGitApi(apiFetch, directory),
+      terminal: terminal.api,
+      settings: {
+        load: () => Promise.reject(new WorkspaceCapabilityUnavailableError('Workspace settings')),
+        save: () => Promise.reject(new WorkspaceCapabilityUnavailableError('Workspace settings')),
+      },
+      permissions: {
+        requestDirectoryAccess: () => Promise.resolve({ success: false, error: 'Directory access is managed by the workspace connection' }),
+        startAccessingDirectory: () => Promise.resolve({ success: false }),
+        stopAccessingDirectory: () => Promise.resolve({ success: false }),
+      },
+      notifications: {
+        notifyAgentCompletion: () => Promise.resolve(false),
+      },
+      tools: {
+        getAvailableTools: () => Promise.resolve([]),
+      },
     },
-    permissions: {
-      requestDirectoryAccess: () => Promise.resolve({ success: false, error: 'Directory access is managed by the workspace connection' }),
-      startAccessingDirectory: () => Promise.resolve({ success: false }),
-      stopAccessingDirectory: () => Promise.resolve({ success: false }),
-    },
-    notifications: {
-      notifyAgentCompletion: () => Promise.resolve(false),
-    },
-    tools: {
-      getAvailableTools: () => Promise.resolve([]),
-    },
+    dispose: terminal.dispose,
   };
 };
 
 export const createWorkspaceRuntimeRegistry = (dependencies: {
   maxRetained?: number;
   disposeGraceMs?: number;
+  /** Pinned fetch seam for focused workspace transport tests. */
+  controlPlaneFetch?: typeof fetch;
   /** SDK factory seam for tests; defaults to the workspace-bound SDK
    * factory on the control-plane pinned fetch. */
   createSdkClient?: (config: { baseUrl: string; directory: string; fetch?: typeof fetch }) => unknown;
@@ -617,7 +760,7 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
   // One pinned control-plane fetch shared by every workspace SDK client: the
   // workspace prefix is resolved against the CURRENT control plane, never the
   // Active Runtime.
-  const controlPlaneFetch = createControlPlaneFetch();
+  const controlPlaneFetch = dependencies.controlPlaneFetch ?? createControlPlaneFetch();
 
   const clearIdleTimer = (workspaceId: WorkspaceId): void => {
     const timer = idleTimers.get(workspaceId);
@@ -653,12 +796,26 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
       directory: workspace.canonicalPath,
       fetch: controlPlaneFetch,
     }) as WorkspaceRuntimeHandle['sdk'];
+    const service = createOpencodeServiceForSdk({
+      client: sdk,
+      baseUrl: workspaceSdkBaseUrl(workspace.id),
+      directory: workspace.canonicalPath,
+      scopeKey: workspaceScopeKey(workspace.id),
+      fetch: controlPlaneFetch,
+      createScopedClient: (directory) => createWorkspaceOpencodeClient({
+        baseUrl: workspaceSdkBaseUrl(workspace.id),
+        directory,
+        fetch: controlPlaneFetch,
+      }),
+    });
+    const workspaceApis = createWorkspaceRuntimeApis(workspace.id, workspace.canonicalPath, controlPlaneFetch);
     const handle: WorkspaceRuntimeHandle = {
       workspaceId: workspace.id,
       scopeKey: workspaceScopeKey(workspace.id),
       directory: workspace.canonicalPath,
       sdk,
-      apis: createWorkspaceRuntimeApis(workspace.id, workspace.canonicalPath, controlPlaneFetch),
+      service,
+      apis: workspaceApis.apis,
       urls: createWorkspaceUrlResolver(workspace.id),
       retain: () => {
         leaseCounts.set(workspace.id, (leaseCounts.get(workspace.id) ?? 0) + 1);
@@ -685,6 +842,7 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
         clearIdleTimer(workspace.id);
         leaseCounts.delete(workspace.id);
         handles.delete(workspace.id);
+        workspaceApis.dispose();
       },
     };
     handles.set(workspace.id, handle);

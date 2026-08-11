@@ -56,6 +56,7 @@ import {
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { useProviderLogo } from '@/hooks/useProviderLogo';
 import { getAgentColor } from '@/lib/agentColors';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 
 const CONTAIN_LAYOUT_STYLE = { contain: 'layout' as const, transform: 'translateZ(0)' };
@@ -193,6 +194,7 @@ const normalizeSubtaskModel = (model: SubtaskPartLike['model']): string | null =
 const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
     const [expanded, setExpanded] = React.useState(false);
     const effectiveDirectory = useEffectiveDirectory();
+    const activeWorkspaceId = useActiveWorkspaceId();
     const { isMobile } = useDeviceInfo();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
@@ -261,7 +263,7 @@ const UserSubtaskPart: React.FC<{ part: SubtaskPartLike }> = ({ part }) => {
                             // (mobile, VS Code), navigate in place. Otherwise
                             // open a new side-panel tab.
                             if (isEmbeddedSessionChat() || isMobile || isVSCodeRuntime()) {
-                                setCurrentSession(taskSessionID, effectiveDirectory);
+                                setCurrentSession(taskSessionID, effectiveDirectory, activeWorkspaceId);
                                 return;
                             }
 

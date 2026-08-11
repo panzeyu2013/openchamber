@@ -1,5 +1,10 @@
 import { lookup } from 'node:dns';
-import { isPathWithinRoot, readRequestDirectoryHints } from './path-boundary.js';
+import {
+  isPathWithinWorkspace,
+  readRequestDirectoryHints,
+  readRequestWorkspacePathHints,
+  scopeWorkspaceDirectoryListRequest,
+} from './path-boundary.js';
 
 /**
  * Direct connection adapter.
@@ -40,8 +45,10 @@ const BLOCKED_HOST_PATTERNS = [
 ];
 
 const isBlockedAddress = (address) => {
-  const normalized = address.toLowerCase();
-  return BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(normalized));
+  const normalized = String(address).toLowerCase().replace(/^\[|\]$/g, '');
+  const mappedIpv4 = normalized.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
+  const candidate = mappedIpv4 ?? normalized;
+  return BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(candidate));
 };
 
 const isLocalhostHostname = (hostname) => {
@@ -143,22 +150,44 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
 
   const buildUpstreamHeaders = async (context, sourceHeaders) => {
     const headers = new Headers();
+    const copyHeader = (name, value) => {
+      if (value === undefined || value === null) return;
+      const normalizedName = String(name).toLowerCase();
+      const normalizedValue = Array.isArray(value) ? value.join(', ') : String(value);
+      if (BLOCKED_UPSTREAM_HEADERS.has(normalizedName)) return;
+      if (/\r|\n/.test(String(name)) || /\r|\n/.test(normalizedValue)) return;
+      headers.set(name, normalizedValue);
+    };
     if (sourceHeaders && typeof sourceHeaders.forEach === 'function') {
-      sourceHeaders.forEach((value, name) => {
-        if (!BLOCKED_UPSTREAM_HEADERS.has(name.toLowerCase())) headers.set(name, value);
-      });
+      sourceHeaders.forEach((value, name) => copyHeader(name, value));
+    } else if (sourceHeaders && typeof sourceHeaders === 'object') {
+      for (const [name, value] of Object.entries(sourceHeaders)) copyHeader(name, value);
     }
     const profile = context?.profile?.target;
     if (profile?.clientToken) {
       headers.set('authorization', `Bearer ${profile.clientToken}`);
     }
-    if (profile?.credentialRef && context?.credentialProvider) {
-      const credential = await context.credentialProvider.resolveCredential(profile.credentialRef);
-      if (credential?.token) headers.set('authorization', `Bearer ${credential.token}`);
-      if (credential?.headers && typeof credential.headers === 'object') {
+    if (profile?.credentialRef) {
+      if (!context?.credentialProvider || typeof context.credentialProvider.resolveCredential !== 'function') {
+        throw directError('direct_credentials_unavailable', 503, 'Direct connection credentials are unavailable');
+      }
+      let credential;
+      try {
+        credential = await context.credentialProvider.resolveCredential(profile.credentialRef);
+      } catch {
+        throw directError('direct_credentials_unavailable', 503, 'Direct connection credentials are unavailable');
+      }
+      const token = typeof credential?.token === 'string'
+        ? credential.token
+        : (typeof credential?.clientToken === 'string' ? credential.clientToken : '');
+      if (token) headers.set('authorization', `Bearer ${token}`);
+      if (credential?.headers && typeof credential.headers === 'object' && !Array.isArray(credential.headers)) {
         for (const [name, value] of Object.entries(credential.headers)) {
-          if (value !== undefined && value !== null) headers.set(name, String(value));
+          copyHeader(name, value);
         }
+      }
+      if (!token && (!credential?.headers || typeof credential.headers !== 'object')) {
+        throw directError('direct_credentials_invalid', 503, 'Direct connection credentials are invalid');
       }
     }
     return headers;
@@ -181,11 +210,15 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
   const requestWithRedirects = async (baseUrl, pathnameAndSearch, init, context, redirectCount = 0) => {
     await assertSafeUpstreamUrl(baseUrl);
     const controller = new AbortController();
+    const externalSignal = init?.signal;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal?.aborted) controller.abort();
+    else externalSignal?.addEventListener?.('abort', onExternalAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchImpl(`${baseUrl}${pathnameAndSearch}`, {
         ...init,
-        signal: init?.signal ?? controller.signal,
+        signal: controller.signal,
         redirect: 'manual',
       });
       if (response.status >= 300 && response.status < 400 && response.headers.has('location')) {
@@ -199,9 +232,10 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
         } catch {
           throw directError('direct_redirect_forbidden', 502, 'Upstream returned an invalid redirect');
         }
+        const currentOrigin = new URL(baseUrl).origin;
         const nextBase = nextUrl.origin;
         const allowedHosts = context?.profile?.target?.allowRedirectHosts ?? [];
-        if (nextBase !== baseUrl.replace(/\/+$/, '')
+        if (nextBase !== currentOrigin
           && !allowedHosts.some((host) => nextUrl.hostname.toLowerCase() === String(host).toLowerCase())) {
           throw directError('direct_redirect_forbidden', 502, 'Upstream redirected to a disallowed host');
         }
@@ -210,6 +244,7 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       return response;
     } finally {
       clearTimeout(timeout);
+      externalSignal?.removeEventListener?.('abort', onExternalAbort);
     }
   };
 
@@ -233,9 +268,13 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
         clearTimeout(timeout);
       }
       if (response.ok || response.status === 401 || response.status === 403) {
+        const canonicalPath = _inputPath == null ? null : normalizeRemotePath(_inputPath);
+        if (canonicalPath !== null) {
+          await listChildren(context, canonicalPath);
+        }
         return {
           ok: true,
-          canonicalPath: null,
+          canonicalPath,
           capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true },
           ...(response.status === 401 || response.status === 403 ? { authRequired: true } : {}),
         };
@@ -246,8 +285,19 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
         ok: false,
         canonicalPath: null,
         error: {
-          code: error?.code === 'direct_unsafe_target' ? 'direct_unsafe_target' : 'direct_unreachable',
-          message: error?.code === 'direct_unsafe_target' ? error.message : 'Upstream server is unreachable',
+          code: error?.code === 'direct_unsafe_target'
+            ? 'direct_unsafe_target'
+            : (typeof error?.code === 'string' && error.code.startsWith('catalog_')
+              ? error.code
+              : (error?.code === 'direct_credentials_unavailable' || error?.code === 'direct_credentials_invalid'
+                ? error.code
+                : 'direct_unreachable')),
+          message: error?.code === 'direct_unsafe_target'
+            || error?.code === 'direct_credentials_unavailable'
+            || error?.code === 'direct_credentials_invalid'
+            || (typeof error?.code === 'string' && error.code.startsWith('catalog_'))
+            ? error.message
+            : 'Upstream server is unreachable',
         },
       };
     }
@@ -262,14 +312,18 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       throw error;
     }
     const directory = normalizeRemotePath(directoryPath);
+    if (context?.canonicalPath && !isPathWithinWorkspace(context.canonicalPath, directory)) {
+      throw directError('catalog_path_outside_workspace', 403, 'directory is outside the workspace');
+    }
     const headers = await buildUpstreamHeaders(context, null);
+    headers.set('x-opencode-directory', directory);
     headers.set('x-openchamber-directory', directory);
     headers.set('accept', 'application/json');
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
-      response = await requestWithRedirects(baseUrl, '/api/fs/list', {
+      response = await requestWithRedirects(baseUrl, `/api/fs/list?path=${encodeURIComponent(directory)}`, {
         method: 'GET',
         headers,
         signal: controller.signal,
@@ -317,6 +371,7 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       error.status = 500;
       throw error;
     }
+    const scopedRestPath = scopeWorkspaceDirectoryListRequest(context?.canonicalPath, restPath);
     const headers = await buildUpstreamHeaders(context, request?.headers);
     const canonicalPath = context?.canonicalPath;
     if (canonicalPath) {
@@ -326,18 +381,23 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       // the workspace canonical path so the target server always resolves
       // the working directory inside the workspace.
       for (const hint of readRequestDirectoryHints(request)) {
-        if (!isPathWithinRoot(canonicalPath, hint)) {
+        if (!isPathWithinWorkspace(canonicalPath, hint)) {
           throw directError('catalog_path_outside_workspace', 403, 'directory is outside the workspace');
         }
       }
       headers.set('x-opencode-directory', canonicalPath);
       headers.set('x-openchamber-directory', canonicalPath);
+      for (const hint of readRequestWorkspacePathHints(scopedRestPath, request)) {
+        if (!isPathWithinWorkspace(canonicalPath, hint)) {
+          throw directError('catalog_path_outside_workspace', 403, 'path is outside the workspace');
+        }
+      }
     }
     const reconstructed = reconstructBody(request);
     if (reconstructed?.contentType && !headers.has('content-type')) {
       headers.set('content-type', reconstructed.contentType);
     }
-    return requestWithRedirects(baseUrl, restPath, {
+    return requestWithRedirects(baseUrl, scopedRestPath, {
       method: request?.method ?? 'GET',
       headers,
       body: reconstructed?.body,
@@ -395,7 +455,7 @@ export const createDirectWorkspaceAdapter = (dependencies) => {
       // directories. Both directory-header conventions are overwritten with
       // the workspace canonical path, matching `fetch`.
       for (const hint of readRequestDirectoryHints(request)) {
-        if (!isPathWithinRoot(canonicalPath, hint)) {
+        if (!isPathWithinWorkspace(canonicalPath, hint)) {
           throw directError('catalog_path_outside_workspace', 403, 'directory is outside the workspace');
         }
       }
@@ -452,6 +512,15 @@ const BLOCKED_UPSTREAM_HEADERS = new Set([
   'proxy-authorization',
   'cookie',
   'set-cookie',
+  'host',
+  'connection',
+  'content-length',
+  'transfer-encoding',
+  'keep-alive',
+  'upgrade',
+  'sec-websocket-key',
+  'sec-websocket-version',
+  'sec-websocket-extensions',
   'x-openchamber-client-token',
   'x-openchamber-runtime-headers',
   'x-openchamber-url-token',

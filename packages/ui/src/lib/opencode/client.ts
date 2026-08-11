@@ -192,6 +192,14 @@ const createRuntimeOpencodeClient = (config: { baseUrl: string; directory?: stri
   });
 };
 
+type OpencodeServiceOptions = {
+  client?: OpencodeClient;
+  directory?: string;
+  scopeKey?: string;
+  createScopedClient?: (directory: string) => OpencodeClient;
+  fetch?: typeof fetch;
+};
+
 /**
  * Explicit workspace-bound SDK factory. The baseUrl is ALWAYS a control-plane
  * workspace prefix (`/api/workspaces/:workspaceId/runtime/api`) — never a
@@ -271,9 +279,12 @@ const getDesktopFilesApi = (): FilesAPI | null => {
   return null;
 };
 
-class OpencodeService {
+export class OpencodeService {
   private client: OpencodeClient;
   private baseUrl: string;
+  private readonly scopeKey: string | undefined;
+  private readonly createScopedClient: ((directory: string) => OpencodeClient) | undefined;
+  private readonly fetch: typeof fetch;
   private scopedClients: Map<string, OpencodeClient> = new Map();
   private currentDirectory: string | undefined = undefined;
   private directoryContextQueue: Promise<void> = Promise.resolve();
@@ -285,15 +296,22 @@ class OpencodeService {
   private configCacheGeneration = 0;
   private listDirectoryCache: Map<string, { entries: FilesystemEntry[]; expiresAt: number }> = new Map();
 
-  constructor(baseUrl: string = DEFAULT_BASE_URL) {
-    const runtimeBase = resolveRuntimeBaseUrl();
+  constructor(baseUrl: string = DEFAULT_BASE_URL, options: OpencodeServiceOptions = {}) {
+    const runtimeBase = options.client ? null : resolveRuntimeBaseUrl();
     const requestedBaseUrl = runtimeBase || baseUrl;
     this.baseUrl = ensureAbsoluteBaseUrl(requestedBaseUrl);
-    this.client = createRuntimeOpencodeClient({ baseUrl: this.baseUrl });
+    this.client = options.client ?? createRuntimeOpencodeClient({ baseUrl: this.baseUrl });
+    this.scopeKey = options.scopeKey;
+    this.createScopedClient = options.createScopedClient;
+    this.fetch = options.fetch ?? runtimeFetch;
+    if (options.directory) {
+      this.currentDirectory = this.normalizeCandidatePath(options.directory) ?? options.directory;
+    }
   }
 
   private assertRuntimeUnchanged(runtimeKey?: string): void {
-    if (runtimeKey && runtimeKey !== getRuntimeKey()) {
+    const activeScopeKey = this.scopeKey ?? getRuntimeKey();
+    if (runtimeKey && runtimeKey !== activeScopeKey) {
       throw new Error('Message was not sent because the runtime changed.');
     }
   }
@@ -303,6 +321,11 @@ class OpencodeService {
   }
 
   reconnectToRuntimeBaseUrl(): void {
+    // A workspace-bound service is permanently pinned to its workspace proxy.
+    // Reconnecting it to the ambient runtime would silently route later
+    // actions to the wrong server, so only the legacy singleton may follow
+    // runtime endpoint switches.
+    if (this.scopeKey) return;
     const runtimeBase = resolveRuntimeBaseUrl();
     const nextBaseUrl = ensureAbsoluteBaseUrl(runtimeBase || DEFAULT_BASE_URL);
     if (nextBaseUrl === this.baseUrl) {
@@ -339,7 +362,9 @@ class OpencodeService {
     if (existing) {
       return existing;
     }
-    const scoped = createRuntimeOpencodeClient({ baseUrl: this.baseUrl, directory: normalized });
+    const scoped = this.createScopedClient
+      ? this.createScopedClient(normalized)
+      : createRuntimeOpencodeClient({ baseUrl: this.baseUrl, directory: normalized });
     this.scopedClients.set(key, scoped);
     return scoped;
   }
@@ -1113,7 +1138,7 @@ class OpencodeService {
     Record<string, { type: string }> | null
   > {
     try {
-      const response = await runtimeFetch('/api/session-activity', {
+      const response = await this.fetch('/api/session-activity', {
         method: 'GET',
         headers: {
           Accept: 'application/json',
@@ -1553,9 +1578,10 @@ class OpencodeService {
 
       // SDK gap / endpoint drift: current OpenCode exposes the authoritative
       // agent list at /agent, while app.agents can be empty on some runtimes.
-      const fallbackResponse = await runtimeFetch('/api/agent', {
-        ...(effectiveDirectory ? { query: { directory: effectiveDirectory } } : {}),
-      });
+      const fallbackPath = effectiveDirectory
+        ? `/api/agent?directory=${encodeURIComponent(effectiveDirectory)}`
+        : '/api/agent';
+      const fallbackResponse = await this.fetch(fallbackPath);
       if (!fallbackResponse.ok) {
         if (response.error) {
           throw new Error(`app.agents failed${response.response?.status ? ` (${response.response.status})` : ''}: ${formatSdkError(response.error)}`);
@@ -1700,12 +1726,12 @@ class OpencodeService {
   async checkHealth(): Promise<boolean> {
     try {
       const normalizedBase = this.baseUrl.endsWith('/') ? this.baseUrl.replace(/\/+$/, '') : this.baseUrl;
-      const healthUrl = normalizedBase === '/api' || normalizedBase.endsWith('/api')
+      const healthUrl = !this.scopeKey && (normalizedBase === '/api' || normalizedBase.endsWith('/api'))
         ? '/api/opencode/health'
         : `${normalizedBase}/opencode/health`;
       markStartupTrace('opencodeClient.checkHealth:url', { baseUrl: this.baseUrl, healthUrl });
       const timeout = createTimeoutSignal(OPENCODE_HEALTH_TIMEOUT_MS);
-      const response = await runtimeFetch(healthUrl, { signal: timeout.signal }).finally(timeout.cleanup);
+      const response = await this.fetch(healthUrl, { signal: timeout.signal }).finally(timeout.cleanup);
       markStartupTrace('opencodeClient.checkHealth:response', { status: response.status });
       if (!response.ok) {
         return false;
@@ -1740,7 +1766,7 @@ class OpencodeService {
       ...(options?.allowOutsideWorkspace ? { allowOutsideWorkspace: true } : {}),
     };
 
-    const response = await runtimeFetch(`${this.baseUrl}/fs/mkdir`, {
+    const response = await this.fetch(`${this.baseUrl}/fs/mkdir`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1758,7 +1784,7 @@ class OpencodeService {
   }
 
   async cloneRepository(input: { remoteUrl: string; destinationPath: string; gitIdentityId?: string | null }): Promise<{ success: boolean; path: string; output?: string }> {
-    const response = await runtimeFetch(`${this.baseUrl}/fs/clone`, {
+    const response = await this.fetch(`${this.baseUrl}/fs/clone`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -1821,7 +1847,7 @@ class OpencodeService {
           params.set('respectGitignore', 'true');
         }
         const query = params.toString();
-        const response = await runtimeFetch(`${this.baseUrl}/fs/list${query ? `?${query}` : ''}`);
+        const response = await this.fetch(`${this.baseUrl}/fs/list${query ? `?${query}` : ''}`);
         if (!response.ok) {
           const error = await response.json().catch(() => ({}));
           const message = typeof error.error === 'string' ? error.error : 'Failed to list directory';
@@ -1910,7 +1936,7 @@ class OpencodeService {
     // valid answer while the active runtime is the local one — after an
     // in-place switch to a remote host the home must come from that host's
     // /api/fs/home, not from the local Electron global.
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = this.scopeKey ?? getRuntimeKey();
     if (!runtimeKey || runtimeKey === 'local') {
       const desktopHome = await getDesktopHomeDirectory();
       if (desktopHome) {
@@ -1919,7 +1945,7 @@ class OpencodeService {
     }
 
     try {
-      const response = await runtimeFetch(`${this.baseUrl}/fs/home`, {
+      const response = await this.fetch(`${this.baseUrl}/fs/home`, {
         method: 'GET',
         headers: {
           Accept: 'application/json'
@@ -1956,7 +1982,7 @@ class OpencodeService {
     console.log('[OpencodeClient] POST', url, 'with path:', directoryPath);
 
     try {
-      const response = await runtimeFetch(url, {
+      const response = await this.fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -1990,6 +2016,29 @@ class OpencodeService {
     }
   }
 }
+
+/**
+ * Build the familiar OpencodeService facade around an explicitly bound SDK.
+ * Workspace runtimes use this instead of the ambient singleton so session
+ * actions, prompt sends, and directory-scoped SDK gaps stay on the selected
+ * workspace. The optional scoped-client factory is needed by endpoints whose
+ * SDK shape does not carry a directory argument (for example V2 permission
+ * lookups).
+ */
+export const createOpencodeServiceForSdk = (config: {
+  client: OpencodeClient;
+  baseUrl: string;
+  directory?: string;
+  scopeKey?: string;
+  createScopedClient?: (directory: string) => OpencodeClient;
+  fetch?: typeof fetch;
+}): OpencodeService => new OpencodeService(config.baseUrl, {
+  client: config.client,
+  directory: config.directory,
+  scopeKey: config.scopeKey,
+  createScopedClient: config.createScopedClient,
+  fetch: config.fetch,
+});
 
 // Exported singleton instance
 export const opencodeClient = new OpencodeService();

@@ -289,6 +289,7 @@ describe('ElectronSshManager', () => {
       issueClientToken: true,
     });
     expect(settings.desktopHosts).toEqual([{ id: 'ssh-1', label: 'SSH Host', url: localUrl, apiUrl: localUrl, clientToken: 'ssh-client-token' }]);
+    expect(manager.runtimeCredentialsForInstance('ssh-1')).toEqual({ clientToken: 'ssh-client-token' });
     expect(emittedEvents).toContain('openchamber:desktop-hosts-changed');
     if (process.platform !== 'win32') {
       expect(fs.statSync(settingsFilePath).mode & 0o777).toBe(0o600);

@@ -1,7 +1,6 @@
 import type { PermissionRequest, Session } from "@opencode-ai/sdk/v2/client"
-import { opencodeClient } from "@/lib/opencode/client"
 import { usePermissionStore } from "@/stores/permissionStore"
-import { getAllSyncSessionMap, getDirectoryState } from "./sync-refs"
+import { getAllSyncSessionMap, getDirectoryState, getSyncOpencodeService, getSyncScopeKey } from "./sync-refs"
 import * as sessionActions from "./session-actions"
 
 const RETRY_DELAYS_MS = [0, 250, 1000]
@@ -121,12 +120,15 @@ export function createVSCodePermissionAutoAcceptRuntime(dependencies: Dependenci
 }
 
 const runtime = createVSCodePermissionAutoAcceptRuntime({
-  getPolicy: () => usePermissionStore.getState().autoAccept,
+  getPolicy: () => {
+    const state = usePermissionStore.getState()
+    return state.activeScopeKey && state.activeScopeKey !== getSyncScopeKey() ? {} : state.autoAccept
+  },
   getSessions: getAllSyncSessionMap,
-  getSession: (sessionId, directory) => opencodeClient.getSession(sessionId, directory),
+  getSession: (sessionId, directory) => getSyncOpencodeService().getSession(sessionId, directory),
   getKnownPendingPermissions: (directory) => Object.values(getDirectoryState(directory)?.permission ?? {}).flat(),
-  listPendingPermissions: (directory) => opencodeClient.listPendingPermissions({ directories: [directory] }),
-  getPermissionState: async (sessionId, requestId, directory) => (await opencodeClient.fetchPermission(sessionId, requestId, directory)).state,
+  listPendingPermissions: (directory) => getSyncOpencodeService().listPendingPermissions({ directories: [directory] }),
+  getPermissionState: async (sessionId, requestId, directory) => (await getSyncOpencodeService().fetchPermission(sessionId, requestId, directory)).state,
   reply: (sessionId, requestId, directory) => sessionActions.respondToPermission(sessionId, requestId, "once", directory),
   wait: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 })

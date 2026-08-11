@@ -25,6 +25,7 @@ import * as sessionActions from '@/sync/session-actions';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { useDeviceInfo } from '@/lib/device';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useI18n } from '@/lib/i18n';
@@ -381,7 +382,15 @@ export const SessionDialogs: React.FC = () => {
                 }, { force: true });
             }
 
-            if (normalizeProjectDirectory(currentDirectory) === normalizedWorktreePath && normalizedProjectPath) {
+            const sessionTarget = useSessionUIStore.getState();
+            const workspaceTargetActive = isWorkspaceRuntimeActive()
+                || Boolean(
+                    sessionTarget.currentWorkspaceId
+                    || (sessionTarget.newSessionDraft?.open && sessionTarget.newSessionDraft.workspaceId),
+                );
+            if (!workspaceTargetActive
+                && normalizeProjectDirectory(currentDirectory) === normalizedWorktreePath
+                && normalizedProjectPath) {
                 useDirectoryStore.getState().setDirectory(normalizedProjectPath, { showOverlay: false });
             }
 

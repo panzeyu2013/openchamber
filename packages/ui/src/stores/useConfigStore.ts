@@ -20,8 +20,9 @@ import { parseModelIdentifier } from "@/lib/modelIdentifier";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
-import { getSyncConfig, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
+import { getSyncConfig, getSyncOpencodeService, getSyncScopeKey, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
 import { getRuntimeKey } from "@/lib/runtime-switch";
+import { workspaceIdFromScopeKey } from "@/workspaces/identity";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
@@ -691,7 +692,7 @@ const CONNECTION_PROBE_TIMEOUT_MS = 800;
 
 const probeOpenCodeHealth = async (timeoutMs = CONNECTION_PROBE_TIMEOUT_MS): Promise<boolean> => {
     return Promise.race([
-        opencodeClient.checkHealth().catch(() => false),
+        getSyncOpencodeService().checkHealth().catch(() => false),
         sleep(Math.max(1, timeoutMs)).then(() => false),
     ]);
 };
@@ -710,7 +711,10 @@ const resolveInitialDirectoryKey = (): string => {
         return DIRECTORY_KEY_GLOBAL;
     }
 
-    const directory = opencodeClient.getDirectory() ?? useDirectoryStore.getState().currentDirectory;
+    const scopeKey = getSyncScopeKey();
+    const directory = isWorkspaceConfigScope(scopeKey)
+        ? getSyncOpencodeService().getDirectory()
+        : opencodeClient.getDirectory() ?? useDirectoryStore.getState().currentDirectory;
     return toConfigDirectoryKey(directory);
 };
 
@@ -730,6 +734,7 @@ type WorktreeProjectMapEnvelope = {
     runtimes: Record<string, { updatedAt: number; entries: Record<string, string> }>;
 };
 const _worktreeProjectMaps = new Map<string, Record<string, string>>();
+const getWorktreeProjectScopeKey = (): string => getSyncScopeKey() || getRuntimeKey() || 'default';
 const readWorktreeProjectEnvelope = (): WorktreeProjectMapEnvelope => {
     try {
         const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORKTREE_PROJECT_MAP_KEY) : null;
@@ -752,17 +757,17 @@ const writeWorktreeProjectEnvelope = (envelope: WorktreeProjectMapEnvelope): voi
     localStorage.setItem(WORKTREE_PROJECT_MAP_KEY, JSON.stringify({ ...envelope, runtimes }));
 };
 const getWorktreeProjectMap = (): Record<string, string> => {
-    const runtimeKey = getRuntimeKey() || 'default';
-    const existing = _worktreeProjectMaps.get(runtimeKey);
+    const scopeKey = getWorktreeProjectScopeKey();
+    const existing = _worktreeProjectMaps.get(scopeKey);
     if (existing) return existing;
     const envelope = readWorktreeProjectEnvelope();
-    let map = envelope.runtimes[runtimeKey]?.entries ?? null;
+    let map = envelope.runtimes[scopeKey]?.entries ?? null;
     if (!map && !envelope.legacyClaimed) {
         try {
             const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LEGACY_WORKTREE_PROJECT_MAP_KEY) : null;
             map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
             envelope.legacyClaimed = true;
-            envelope.runtimes[runtimeKey] = { updatedAt: Date.now(), entries: map };
+            envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: map };
             writeWorktreeProjectEnvelope(envelope);
             localStorage.removeItem(LEGACY_WORKTREE_PROJECT_MAP_KEY);
         } catch {
@@ -770,7 +775,7 @@ const getWorktreeProjectMap = (): Record<string, string> => {
         }
     }
     const result = map ?? {};
-    _worktreeProjectMaps.set(runtimeKey, result);
+    _worktreeProjectMaps.set(scopeKey, result);
     return result;
 };
 const rememberWorktreeProject = (worktree: string, project: string): void => {
@@ -779,10 +784,10 @@ const rememberWorktreeProject = (worktree: string, project: string): void => {
     if (map[worktree] === project) return;
     map[worktree] = project;
     try {
-        const runtimeKey = getRuntimeKey() || 'default';
+        const scopeKey = getWorktreeProjectScopeKey();
         const envelope = readWorktreeProjectEnvelope();
         envelope.legacyClaimed = true;
-        envelope.runtimes[runtimeKey] = { updatedAt: Date.now(), entries: map };
+        envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: map };
         writeWorktreeProjectEnvelope(envelope);
         localStorage.removeItem(LEGACY_WORKTREE_PROJECT_MAP_KEY);
     } catch {
@@ -825,7 +830,10 @@ const getFallbackProjectDirectory = (): string | null => {
  * per-worktree snapshot. Returns the owning project's path when the directory is
  * a known worktree, else the directory unchanged.
  */
-const resolveConfigDirectory = (directory: string | null | undefined): string | null => {
+const resolveConfigDirectory = (
+    directory: string | null | undefined,
+    options?: { allowUnregistered?: boolean },
+): string | null => {
     const dir = normalizeConfigPath(directory);
     const projects = getKnownProjectDirectories();
     if (!dir) return null;
@@ -850,7 +858,7 @@ const resolveConfigDirectory = (directory: string | null | undefined): string | 
     } catch {
         return null;
     }
-    return null;
+    return options?.allowUnregistered ? dir : null;
 };
 
 const toConfigDirectoryKey = (directory: string | null | undefined): string =>
@@ -862,6 +870,9 @@ const toConfigDirectoryKey = (directory: string | null | undefined): string =>
 // project, then activateDirectory firing for the same project moments later.
 const _providersLoadedAt = new Map<string, number>();
 const _agentsLoadedAt = new Map<string, number>();
+const scopedConfigLoadKey = (scopeKey: string, directoryKey: string): string => `${scopeKey}\u0000${directoryKey}`;
+const isCurrentConfigScope = (scopeKey: string): boolean => getSyncScopeKey() === scopeKey;
+const isWorkspaceConfigScope = (scopeKey: string): boolean => workspaceIdFromScopeKey(scopeKey) !== null;
 const CONFIG_REFRESH_TTL_MS = 30_000;
 const PROJECT_CONFIG_PREWARM_DELAY_MS = 1_000;
 const isConfigFresh = (loadedAt: Map<string, number>, key: string): boolean => {
@@ -998,6 +1009,9 @@ const resolveSelectionWithManualGuard = ({
 
 interface ConfigStore {
 
+    /** Explicit SyncProvider ownership for the visible provider/agent snapshot. */
+    scopeKey: string;
+
     activeDirectoryKey: string;
     directoryScoped: Record<string, DirectoryScopedConfig>;
 
@@ -1090,6 +1104,7 @@ interface ConfigStore {
     setSummarizeMaxLength: (maxLength: number) => void;
 
     activateDirectory: (directory: string | null | undefined) => Promise<void>;
+    bindScope: (scopeKey: string) => void;
 
     loadProviders: (options?: { directory?: string | null; source?: string }) => Promise<void>;
     loadAgents: (options?: { directory?: string | null; source?: string }) => Promise<boolean>;
@@ -1127,6 +1142,46 @@ interface ConfigStore {
     getVisibleAgents: () => Agent[];
 }
 
+// Workspace scope changes clear the live provider/agent view, but the
+// compatibility persistence record still belongs to the ambient runtime. Keep
+// the last ambient payload aside so mounting a workspace cannot overwrite
+// legacy settings with an empty snapshot, and returning to the ambient mount
+// can restore it without another cold-start fetch.
+const ambientConfigByScope = new Map<string, Partial<ConfigStore>>();
+
+const sanitizePersistedConfigState = (state: ConfigStore): Partial<ConfigStore> => ({
+    activeDirectoryKey: state.activeDirectoryKey,
+    directoryScoped: Object.fromEntries(
+        Object.entries(state.directoryScoped).map(([directoryKey, snapshot]) => [
+            directoryKey,
+            {
+                ...snapshot,
+                selectedProviderId: sanitizePersistedSelectedProviderId(snapshot.selectedProviderId),
+            },
+        ]),
+    ),
+    providers: state.providers,
+    agents: state.agents,
+    currentProviderId: state.currentProviderId,
+    currentModelId: state.currentModelId,
+    currentVariant: state.currentVariant,
+    currentAgentName: state.currentAgentName,
+    selectedProviderId: sanitizePersistedSelectedProviderId(state.selectedProviderId),
+    agentModelSelections: state.agentModelSelections,
+    defaultProviders: state.defaultProviders,
+    settingsDefaultModel: state.settingsDefaultModel,
+    settingsDefaultVariant: state.settingsDefaultVariant,
+    settingsDefaultAgent: state.settingsDefaultAgent,
+    settingsAutoCreateWorktree: state.settingsAutoCreateWorktree,
+    settingsGitmojiEnabled: state.settingsGitmojiEnabled,
+    settingsDefaultFileViewerPreview: state.settingsDefaultFileViewerPreview,
+    settingsZenModel: state.settingsZenModel,
+    settingsMessageStreamTransport: state.settingsMessageStreamTransport,
+    speechRate: state.speechRate,
+    speechPitch: state.speechPitch,
+    speechVolume: state.speechVolume,
+});
+
 declare global {
     interface Window {
         __zustand_config_store__?: UseBoundStore<StoreApi<ConfigStore>>;
@@ -1143,6 +1198,7 @@ export const useConfigStore = create<ConfigStore>()(
         persist(
             (set, get) => ({
 
+                scopeKey: getSyncScopeKey(),
                 activeDirectoryKey: resolveInitialDirectoryKey(),
                 directoryScoped: {},
 
@@ -1391,17 +1447,58 @@ export const useConfigStore = create<ConfigStore>()(
                     }
                     return 500;
                 })(),
+                bindScope: (scopeKey) => {
+                    const nextScopeKey = scopeKey.trim() || getRuntimeKey();
+                    if (get().scopeKey === nextScopeKey) return;
+
+                    const currentState = get();
+                    if (!isWorkspaceConfigScope(currentState.scopeKey)) {
+                        ambientConfigByScope.set(currentState.scopeKey, sanitizePersistedConfigState(currentState));
+                    }
+
+                    // Providers, agents and OpenCode defaults belong to the
+                    // mounted SyncProvider. Clear the visible snapshot before
+                    // a workspace can read it; the next directory activation
+                    // will repopulate it through the bound service.
+                    const nextState: Partial<ConfigStore> = {
+                        scopeKey: nextScopeKey,
+                        activeDirectoryKey: DIRECTORY_KEY_GLOBAL,
+                        directoryScoped: {},
+                        providers: [],
+                        agents: [],
+                        currentProviderId: "",
+                        currentModelId: "",
+                        currentVariant: undefined,
+                        currentAgentName: undefined,
+                        selectedProviderId: "",
+                        agentModelSelections: {},
+                        defaultProviders: {},
+                        opencodeDefaultAgent: undefined,
+                        opencodeDefaultModel: undefined,
+                        selectionSource: "auto",
+                    };
+                    const ambientConfig = ambientConfigByScope.get(nextScopeKey);
+                    if (!isWorkspaceConfigScope(nextScopeKey) && ambientConfig) {
+                        Object.assign(nextState, ambientConfig);
+                    }
+                    nextState.scopeKey = nextScopeKey;
+                    set(nextState);
+                },
                 activateDirectory: async (directory) => {
                     // Resolve the worktree to its owning project up-front so the
                     // active key + snapshot key always match and stay project-scoped.
                     // Everything below operates on this key unchanged; the OpenCode
                     // working directory (opencodeClient.getDirectory()) is separate.
-                    const configDirectory = resolveConfigDirectory(directory);
+                    const scopeKey = getSyncScopeKey();
+                    const configDirectory = resolveConfigDirectory(directory, {
+                        allowUnregistered: isWorkspaceConfigScope(scopeKey),
+                    });
                     if (!configDirectory) {
                         markStartupTrace('activateDirectory:skippedUnknownDirectory', { directory });
                         return;
                     }
                     const directoryKey = toDirectoryKey(configDirectory);
+                    const requestKey = scopedConfigLoadKey(scopeKey, directoryKey);
                     let snapshotHadProviders = false;
                     let snapshotHadAgents = false;
 
@@ -1452,7 +1549,7 @@ export const useConfigStore = create<ConfigStore>()(
                     // stays instant but never shows stale provider/agent data for
                     // longer than one fetch. Only block when there is nothing to show.
                     if (snapshotHadProviders) {
-                        if (isConfigFresh(_providersLoadedAt, directoryKey)) {
+                        if (isConfigFresh(_providersLoadedAt, requestKey)) {
                             markStartupTrace('activateDirectory:providersFresh', { directoryKey });
                         } else {
                             markStartupTrace('activateDirectory:refreshProvidersBackground', { directoryKey });
@@ -1463,7 +1560,7 @@ export const useConfigStore = create<ConfigStore>()(
                     }
 
                     if (snapshotHadAgents) {
-                        if (isConfigFresh(_agentsLoadedAt, directoryKey)) {
+                        if (isConfigFresh(_agentsLoadedAt, requestKey)) {
                             markStartupTrace('activateDirectory:agentsFresh', { directoryKey });
                         } else {
                             markStartupTrace('activateDirectory:refreshAgentsBackground', { directoryKey });
@@ -1527,20 +1624,25 @@ export const useConfigStore = create<ConfigStore>()(
 
                 loadProviders: async (options) => {
                     const requestedDirectory = options?.directory ?? fromDirectoryKey(get().activeDirectoryKey);
+                    const operationScopeKey = getSyncScopeKey();
+                    const operationService = getSyncOpencodeService();
                     // Providers are project-scoped: resolve a worktree to its project
                     // so it reuses one shared snapshot instead of its own.
-                    const configDirectory = resolveConfigDirectory(requestedDirectory);
+                    const configDirectory = resolveConfigDirectory(requestedDirectory, {
+                        allowUnregistered: isWorkspaceConfigScope(operationScopeKey),
+                    });
                     if (!configDirectory) {
                         markStartupTrace('loadProviders:skippedUnknownDirectory', { requestedDirectory, source: options?.source ?? 'unknown' });
                         return;
                     }
-                    const effectiveDirectory = configDirectory ?? opencodeClient.getDirectory() ?? null;
+                    const effectiveDirectory = configDirectory ?? operationService.getDirectory() ?? null;
                     const directoryKey = toDirectoryKey(configDirectory);
+                    const requestKey = scopedConfigLoadKey(operationScopeKey, directoryKey);
                     const source = options?.source ?? 'unknown';
                     markStartupTrace('loadProviders:called', { directoryKey, source, requestedDirectory, effectiveDirectory });
 
                     // Dedup: if a load is already in-flight for this directory, reuse it
-                    const existing = _inFlightProviders.get(directoryKey);
+                    const existing = _inFlightProviders.get(requestKey);
                     if (existing) {
                         markStartupTrace('loadProviders:deduped', { directoryKey, source, requestedDirectory, effectiveDirectory });
                         return existing;
@@ -1562,7 +1664,7 @@ export const useConfigStore = create<ConfigStore>()(
                             );
                             const apiResult = await measureStartupTrace(
                                 'loadProviders:api',
-                                () => opencodeClient.getProvidersForConfig(fromDirectoryKey(directoryKey)),
+                                () => operationService.getProvidersForConfig(fromDirectoryKey(directoryKey)),
                                 { directoryKey, source, requestedDirectory, effectiveDirectory, attempt: attempt + 1 },
                             );
                             const providers = Array.isArray(apiResult?.providers) ? apiResult.providers : [];
@@ -1576,6 +1678,8 @@ export const useConfigStore = create<ConfigStore>()(
                                     models,
                                 };
                             });
+
+                            if (!isCurrentConfigScope(operationScopeKey)) return;
 
                             set((state) => {
                                 const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
@@ -1655,7 +1759,7 @@ export const useConfigStore = create<ConfigStore>()(
                                 providers: processedProviders.length,
                                 models: processedProviders.reduce((count, provider) => count + provider.models.length, 0),
                             });
-                            _providersLoadedAt.set(directoryKey, Date.now());
+                            _providersLoadedAt.set(requestKey, Date.now());
                             return;
                         } catch (error) {
                             lastError = error;
@@ -1680,6 +1784,8 @@ export const useConfigStore = create<ConfigStore>()(
                         effectiveDirectory,
                         error: lastError instanceof Error ? lastError.message : String(lastError),
                     });
+
+                    if (!isCurrentConfigScope(operationScopeKey)) return;
 
                     set((state) => {
                         const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
@@ -1736,9 +1842,9 @@ export const useConfigStore = create<ConfigStore>()(
 
                         return nextState;
                     });
-                    })().finally(() => _inFlightProviders.delete(directoryKey));
+                    })().finally(() => _inFlightProviders.delete(requestKey));
 
-                    _inFlightProviders.set(directoryKey, promise);
+                    _inFlightProviders.set(requestKey, promise);
                     return promise;
                 },
 
@@ -1960,20 +2066,25 @@ export const useConfigStore = create<ConfigStore>()(
 
                 loadAgents: async (options) => {
                     const requestedDirectory = options?.directory ?? fromDirectoryKey(get().activeDirectoryKey);
+                    const operationScopeKey = getSyncScopeKey();
+                    const operationService = getSyncOpencodeService();
                     // Agents are project-scoped: resolve a worktree to its project
                     // so it reuses one shared snapshot instead of its own.
-                    const configDirectory = resolveConfigDirectory(requestedDirectory);
+                    const configDirectory = resolveConfigDirectory(requestedDirectory, {
+                        allowUnregistered: isWorkspaceConfigScope(operationScopeKey),
+                    });
                     if (!configDirectory) {
                         markStartupTrace('loadAgents:skippedUnknownDirectory', { requestedDirectory, source: options?.source ?? 'unknown' });
                         return false;
                     }
-                    const effectiveDirectory = configDirectory ?? opencodeClient.getDirectory() ?? null;
+                    const effectiveDirectory = configDirectory ?? operationService.getDirectory() ?? null;
                     const directoryKey = toDirectoryKey(configDirectory);
+                    const requestKey = scopedConfigLoadKey(operationScopeKey, directoryKey);
                     const source = options?.source ?? 'unknown';
                     markStartupTrace('loadAgents:called', { directoryKey, source, requestedDirectory, effectiveDirectory });
 
                     // Dedup: if a load is already in-flight for this directory, reuse it
-                    const existing = _inFlightAgents.get(directoryKey);
+                    const existing = _inFlightAgents.get(requestKey);
                     if (existing) {
                         markStartupTrace('loadAgents:deduped', { directoryKey, source, requestedDirectory, effectiveDirectory });
                         return existing;
@@ -2000,7 +2111,7 @@ export const useConfigStore = create<ConfigStore>()(
                             const [agents, openChamberDefaults] = await Promise.all([
                                 measureStartupTrace(
                                     'loadAgents:api',
-                                    () => opencodeClient.listAgents(configDirectoryPath),
+                                    () => operationService.listAgents(configDirectoryPath),
                                     { directoryKey, source, requestedDirectory, effectiveDirectory, attempt: attempt + 1 },
                                 ),
                                 fetchOpenChamberDefaults(),
@@ -2008,11 +2119,13 @@ export const useConfigStore = create<ConfigStore>()(
 
                             const safeAgents = Array.isArray(agents) ? agents : [];
 
-                            const providerLoad = _inFlightProviders.get(directoryKey);
+                            const providerLoad = _inFlightProviders.get(requestKey);
                             if (providerLoad) {
                                 markStartupTrace('loadAgents:awaitProviders', { directoryKey, source });
                                 await providerLoad;
                             }
+
+                            if (!isCurrentConfigScope(operationScopeKey)) return false;
 
                             const latestSyncedOpencodeConfig = getSyncConfig(requestedDirectory ?? undefined)
                                 ?? getSyncConfig(configDirectoryPath ?? undefined);
@@ -2045,6 +2158,8 @@ export const useConfigStore = create<ConfigStore>()(
                             const resolvedGitSelection = resolvedExistingGitSelection || resolvedDefaultGitSelection;
                             const resolvedGitModelId = resolvedGitSelection?.modelId;
                             const resolvedZenModel = resolvedGitModelId || defaultZenModel || existingZenModel;
+
+                            if (!isCurrentConfigScope(operationScopeKey)) return false;
 
                             set((state) => {
                                 const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
@@ -2166,7 +2281,7 @@ export const useConfigStore = create<ConfigStore>()(
                                     durationMs: Math.round(loaderEnded - loaderStarted),
                                     agents: safeAgents.length,
                                 });
-                                _agentsLoadedAt.set(directoryKey, Date.now());
+                                _agentsLoadedAt.set(requestKey, Date.now());
                                 return true;
                             }
 
@@ -2215,6 +2330,8 @@ export const useConfigStore = create<ConfigStore>()(
                             const resolvedProviderId = resolvedDefault.providerId;
                             const resolvedModelId = resolvedDefault.modelId;
                             const resolvedVariant = resolvedDefault.variant;
+
+                            if (!isCurrentConfigScope(operationScopeKey)) return false;
 
                             set((state) => {
                                 const baseSnapshot: DirectoryScopedConfig = state.directoryScoped[directoryKey] ?? {
@@ -2304,7 +2421,7 @@ export const useConfigStore = create<ConfigStore>()(
                                 durationMs: Math.round(loaderEnded - loaderStarted),
                                 agents: safeAgents.length,
                             });
-                            _agentsLoadedAt.set(directoryKey, Date.now());
+                            _agentsLoadedAt.set(requestKey, Date.now());
                             return true;
                         } catch (error) {
                             lastError = error;
@@ -2329,6 +2446,8 @@ export const useConfigStore = create<ConfigStore>()(
                         effectiveDirectory,
                         error: lastError instanceof Error ? lastError.message : String(lastError),
                     });
+
+                    if (!isCurrentConfigScope(operationScopeKey)) return false;
 
                     set((state) => {
                         const providers = state.activeDirectoryKey === directoryKey
@@ -2367,9 +2486,9 @@ export const useConfigStore = create<ConfigStore>()(
                     });
 
                     return false;
-                    })().finally(() => _inFlightAgents.delete(directoryKey));
+                    })().finally(() => _inFlightAgents.delete(requestKey));
 
-                    _inFlightAgents.set(directoryKey, promise);
+                    _inFlightAgents.set(requestKey, promise);
                     return promise;
                 },
 
@@ -3054,7 +3173,7 @@ export const useConfigStore = create<ConfigStore>()(
                             markStartupTrace('checkConnection:attempt', { attempt: attempt + 1 });
                             const isHealthy = await measureStartupTrace(
                                 'checkConnection:health',
-                                () => opencodeClient.checkHealth(),
+                                () => getSyncOpencodeService().checkHealth(),
                                 { attempt: attempt + 1 },
                             );
                             if (!isHealthy && attempt < maxAttempts - 1) {
@@ -3138,22 +3257,31 @@ export const useConfigStore = create<ConfigStore>()(
                             // app starts on a worktree directory, load config under the owning
                             // project's key so the initial draft — which activates the project — finds
                             // a ready snapshot instead of triggering a second provider/agent load.
-                            const initialDirectory = opencodeClient.getDirectory()
-                                ?? useDirectoryStore.getState().currentDirectory
-                                ?? fromDirectoryKey(get().activeDirectoryKey);
+                            const operationScopeKey = getSyncScopeKey();
+                            const workspaceScoped = isWorkspaceConfigScope(operationScopeKey);
+                            const initialDirectory = workspaceScoped
+                                ? getSyncOpencodeService().getDirectory()
+                                    ?? fromDirectoryKey(get().activeDirectoryKey)
+                                : opencodeClient.getDirectory()
+                                    ?? useDirectoryStore.getState().currentDirectory
+                                    ?? fromDirectoryKey(get().activeDirectoryKey);
                             const resolvedProject = resolveProjectForSessionDirectory(
                                 useProjectsStore.getState().projects,
                                 useSessionUIStore.getState().availableWorktreesByProject,
                                 initialDirectory ?? null,
                             );
-                            const resolvedInitialDirectory = resolveConfigDirectory(resolvedProject?.path ?? initialDirectory ?? null);
-                            const configDirectory = resolvedInitialDirectory ?? getFallbackProjectDirectory();
+                            const resolvedInitialDirectory = resolveConfigDirectory(
+                                resolvedProject?.path ?? initialDirectory ?? null,
+                                { allowUnregistered: workspaceScoped },
+                            );
+                            const configDirectory = resolvedInitialDirectory
+                                ?? (workspaceScoped ? normalizeConfigPath(initialDirectory) : getFallbackProjectDirectory());
                             if (!configDirectory) {
                                 markStartupTrace('initializeApp:noProjectConfigDirectory');
                                 set({ isInitialized: true, isConnected: true, hasEverConnected: true, connectionPhase: "connected" });
                                 return;
                             }
-                            if (!resolvedInitialDirectory && initialDirectory !== configDirectory) {
+                            if (!workspaceScoped && !resolvedInitialDirectory && initialDirectory !== configDirectory) {
                                 markStartupTrace('initializeApp:normalizedUnknownDirectoryToProject', {
                                     initialDirectory,
                                     configDirectory,
@@ -3298,50 +3426,32 @@ export const useConfigStore = create<ConfigStore>()(
             {
                 name: "config-store",
                 storage: createDeferredSafeJSONStorage(),
-                merge: (persistedState, currentState) =>
-                    hydrateActiveDirectorySnapshot({
+                merge: (persistedState, currentState) => {
+                    const merged = hydrateActiveDirectorySnapshot({
                         ...currentState,
                         ...(persistedState && typeof persistedState === 'object'
                             ? (persistedState as Partial<ConfigStore>)
                             : {}),
-                    }),
+                    });
+                    ambientConfigByScope.set(
+                        (merged as ConfigStore).scopeKey,
+                        sanitizePersistedConfigState(merged as ConfigStore),
+                    );
+                    return merged;
+                },
                 // Stale-while-revalidate: persist the last-known provider/agent
                 // snapshots so the model/agent pickers paint instantly on cold
                 // start. Freshness is guaranteed by the background refresh in
                 // initializeApp() / activateDirectory() (which overwrite these on
                 // success) and by the provider/agent config-change subscriptions.
-                partialize: (state) => ({
-                    activeDirectoryKey: state.activeDirectoryKey,
-                    directoryScoped: Object.fromEntries(
-                        Object.entries(state.directoryScoped).map(([directoryKey, snapshot]) => [
-                            directoryKey,
-                            {
-                                ...snapshot,
-                                selectedProviderId: sanitizePersistedSelectedProviderId(snapshot.selectedProviderId),
-                            },
-                        ]),
-                    ),
-                    providers: state.providers,
-                    agents: state.agents,
-                    currentProviderId: state.currentProviderId,
-                    currentModelId: state.currentModelId,
-                    currentVariant: state.currentVariant,
-                    currentAgentName: state.currentAgentName,
-                    selectedProviderId: sanitizePersistedSelectedProviderId(state.selectedProviderId),
-                    agentModelSelections: state.agentModelSelections,
-                    defaultProviders: state.defaultProviders,
-                    settingsDefaultModel: state.settingsDefaultModel,
-                    settingsDefaultVariant: state.settingsDefaultVariant,
-                    settingsDefaultAgent: state.settingsDefaultAgent,
-                    settingsAutoCreateWorktree: state.settingsAutoCreateWorktree,
-                    settingsGitmojiEnabled: state.settingsGitmojiEnabled,
-                    settingsDefaultFileViewerPreview: state.settingsDefaultFileViewerPreview,
-                    settingsZenModel: state.settingsZenModel,
-                    settingsMessageStreamTransport: state.settingsMessageStreamTransport,
-                    speechRate: state.speechRate,
-                    speechPitch: state.speechPitch,
-                    speechVolume: state.speechVolume,
-                }),
+                partialize: (state) => {
+                    const current = sanitizePersistedConfigState(state);
+                    if (!isWorkspaceConfigScope(state.scopeKey)) {
+                        ambientConfigByScope.set(state.scopeKey, current);
+                        return current;
+                    }
+                    return ambientConfigByScope.get(state.scopeKey) ?? current;
+                },
              },
          ),
     ),
@@ -3382,7 +3492,7 @@ if (!unsubscribeConfigStoreChanges) {
     unsubscribeConfigStoreChanges = subscribeToConfigChanges(async (event) => {
             const tasks: Promise<void>[] = [];
 
-        opencodeClient.clearConfigCache();
+        getSyncOpencodeService().clearConfigCache();
 
         if (scopeMatches(event, "agents")) {
             const { loadAgents } = useConfigStore.getState();

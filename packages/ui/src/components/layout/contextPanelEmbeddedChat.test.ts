@@ -73,6 +73,24 @@ describe('embedded session chat URL', () => {
     expect(url.searchParams.get('currentTheme')).toBeNull();
   });
 
+  test('carries the workspace target and isolates cached iframe URLs by workspace', () => {
+    const theme = {
+      mode: 'system' as const,
+      lightThemeId: 'light',
+      darkThemeId: 'dark',
+      currentTheme: makeTheme('dark', 'dark'),
+    };
+    const srcA = buildEmbeddedSessionChatURL('ses_same', '/repo', false, theme, 'ws-a');
+    const srcB = buildEmbeddedSessionChatURL('ses_same', '/repo', false, theme, 'ws-b');
+    expect(new URL(srcA).searchParams.get('workspace')).toBe('ws-a');
+    expect(new URL(srcB).searchParams.get('workspace')).toBe('ws-b');
+
+    const cache = new Map<string, EmbeddedSessionChatURLCacheEntry>();
+    const cachedA = getOrCreateEmbeddedSessionChatURL(cache, 'tab', 'ses_same', '/repo', false, theme, 'ws-a');
+    const cachedB = getOrCreateEmbeddedSessionChatURL(cache, 'tab', 'ses_same', '/repo', false, theme, 'ws-b');
+    expect(cachedA).not.toBe(cachedB);
+  });
+
   test('does not encode syntax tokens in the URL', () => {
     const currentTheme = makeTheme('token-rich-dark', 'dark');
     currentTheme.colors.syntax.tokens = Object.fromEntries(

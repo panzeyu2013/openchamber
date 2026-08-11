@@ -10,7 +10,10 @@ mock.module("@/lib/runtime-fetch", () => ({
   },
 }))
 mock.module("@/lib/desktop", () => ({ isVSCodeRuntime: () => true }))
-mock.module("@/sync/sync-refs", () => ({ getAllSyncSessionMap: () => new Map() }))
+mock.module("@/sync/sync-refs", () => ({
+  getAllSyncSessionMap: () => new Map(),
+  getSyncScopeKey: () => "runtime-test",
+}))
 mock.module("@/sync/session-ui-store", () => ({
   useSessionUIStore: { getState: () => ({ getDirectoryForSession: () => "/repo" }) },
 }))

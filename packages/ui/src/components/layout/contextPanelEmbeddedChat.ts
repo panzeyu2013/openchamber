@@ -104,13 +104,15 @@ const buildEmbeddedSessionChatURLSignature = (
   sessionID: string,
   directory: string | null,
   readOnly: boolean,
-): string => JSON.stringify({ sessionID, directory: directory || '', readOnly: readOnly === true });
+  workspaceId: string | null,
+): string => JSON.stringify({ sessionID, directory: directory || '', readOnly: readOnly === true, workspaceId: workspaceId || '' });
 
 export const buildEmbeddedSessionChatURL = (
   sessionID: string,
   directory: string | null,
   readOnly: boolean,
   theme: EmbeddedSessionChatThemeBootstrap,
+  workspaceId?: string | null,
 ): string => {
   if (typeof window === 'undefined') {
     return '';
@@ -120,6 +122,11 @@ export const buildEmbeddedSessionChatURL = (
   url.searchParams.set('ocPanel', 'session-chat');
   url.searchParams.set('surface', 'desktop');
   url.searchParams.set('sessionId', sessionID);
+  if (workspaceId && workspaceId.trim().length > 0) {
+    url.searchParams.set('workspace', workspaceId);
+  } else {
+    url.searchParams.delete('workspace');
+  }
   if (readOnly) {
     url.searchParams.set('readOnly', '1');
   } else {
@@ -146,14 +153,15 @@ export const getOrCreateEmbeddedSessionChatURL = (
   directory: string | null,
   readOnly: boolean,
   theme: EmbeddedSessionChatThemeBootstrap,
+  workspaceId?: string | null,
 ): string => {
-  const signature = buildEmbeddedSessionChatURLSignature(sessionID, directory, readOnly);
+  const signature = buildEmbeddedSessionChatURLSignature(sessionID, directory, readOnly, workspaceId ?? null);
   const existing = cache.get(tabID);
   if (existing?.signature === signature) {
     return existing.src;
   }
 
-  const src = buildEmbeddedSessionChatURL(sessionID, directory, readOnly, theme);
+  const src = buildEmbeddedSessionChatURL(sessionID, directory, readOnly, theme, workspaceId);
   cache.set(tabID, { signature, src });
   return src;
 };

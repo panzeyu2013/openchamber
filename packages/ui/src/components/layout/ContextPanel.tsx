@@ -51,7 +51,7 @@ import {
 } from './contextPanelEmbeddedChat';
 import { getContextSurfaceWidthFraction } from '@/lib/surfaces/registry';
 import { isTerminalEventTarget } from '@/lib/terminalFocus';
-import { useActiveWorkspaceCapabilities } from '@/workspaces/useActiveWorkspace';
+import { useActiveWorkspaceCapabilities, useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import {
   type PreviewElementMetadata,
   isPreviewElementMetadata,
@@ -2247,6 +2247,7 @@ export const ContextPanel: React.FC = () => {
   // A remote workspace whose connection cannot host a terminal must not
   // mount a dead PTY when its terminal tab is (already) open.
   const workspaceCapabilities = useActiveWorkspaceCapabilities();
+  const activeWorkspaceId = useActiveWorkspaceId();
   const terminalUnavailable = workspaceCapabilities !== null && workspaceCapabilities.terminal === false;
 
   const panelState = useUIStore((state) => (directoryKey ? state.contextPanelByDirectory[directoryKey] : undefined));
@@ -2504,7 +2505,7 @@ export const ContextPanel: React.FC = () => {
         return;
       }
 
-      markSessionViewed(activeChatSessionID);
+      markSessionViewed(activeChatSessionID, activeWorkspaceId);
       setExternallyViewedSession(directoryKey, activeChatSessionID, true);
     };
 
@@ -2521,7 +2522,7 @@ export const ContextPanel: React.FC = () => {
       document.removeEventListener('visibilitychange', markActiveChatViewed);
       setExternallyViewedSession(directoryKey, activeChatSessionID, false);
     };
-  }, [activeChatSessionID, directoryKey, isOpen]);
+  }, [activeChatSessionID, activeWorkspaceId, directoryKey, isOpen]);
 
   const getEmbeddedChatSrc = React.useCallback((tabID: string, sessionID: string, readOnly: boolean): string => {
     return getOrCreateEmbeddedSessionChatURL(chatFrameSrcByTabIDRef.current, tabID, sessionID, directoryKey || null, readOnly, {
@@ -2529,8 +2530,8 @@ export const ContextPanel: React.FC = () => {
       lightThemeId,
       darkThemeId,
       currentTheme,
-    });
-  }, [currentTheme, darkThemeId, directoryKey, lightThemeId, themeMode]);
+    }, activeWorkspaceId);
+  }, [activeWorkspaceId, currentTheme, darkThemeId, directoryKey, lightThemeId, themeMode]);
 
   React.useEffect(() => {
     const liveTabIDs = new Set(tabs.map((tab) => tab.id));

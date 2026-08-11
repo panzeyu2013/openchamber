@@ -127,6 +127,19 @@ mock.module('./useGlobalSessionsStore', () => ({
 }));
 
 mock.module('@/sync/sync-refs', () => ({
+  getSyncOpencodeService: () => ({
+    createSession: async (params?: { title?: string }, directory?: string | null): Promise<Session> => {
+      const targetDirectory = directory ?? currentDirectory;
+      operationOrder.push(`createSession:${targetDirectory}`);
+      return {
+        id: 'ses_multirun',
+        title: params?.title ?? '',
+        directory: targetDirectory,
+        time: { created: 1, updated: 1 },
+      } as Session;
+    },
+  }),
+  getSyncScopeKey: () => 'runtime-test',
   getSyncSessionDirectory: () => null,
   registerSessionDirectory: (sessionID: string, directory: string) => {
     registeredDirectories.push({ sessionID, directory });

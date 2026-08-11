@@ -1,7 +1,7 @@
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { normalizePath } from '@/lib/pathNormalization';
 import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { getPinnedSessionKey } from '@/stores/useSessionPinnedStore';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import type { SessionNode } from './types';
 
 /**
@@ -171,7 +171,6 @@ export const nodeHasPinnedMembershipChange = (
   prevGroupDirectory?: string | null,
   nextGroupDirectory?: string | null,
 ): boolean => {
-  const runtimeKey = getRuntimeKey();
   const visit = (previous: SessionNode, current: SessionNode): boolean => {
     if (previous.session.id !== current.session.id || previous.children.length !== current.children.length) {
       return true;
@@ -181,8 +180,16 @@ export const nodeHasPinnedMembershipChange = (
       ?? prevGroupDirectory;
     const nextDirectory = (current.session as SessionNode['session'] & { directory?: string | null }).directory
       ?? nextGroupDirectory;
-    const prevKey = getPinnedSessionKey(runtimeKey, prevDirectory ?? '', previous.session.id);
-    const nextKey = getPinnedSessionKey(runtimeKey, nextDirectory ?? '', current.session.id);
+    const prevKey = getPinnedSessionKey(
+      resolveSessionScopeKey(previous.session.id, prevDirectory),
+      prevDirectory ?? '',
+      previous.session.id,
+    );
+    const nextKey = getPinnedSessionKey(
+      resolveSessionScopeKey(current.session.id, nextDirectory),
+      nextDirectory ?? '',
+      current.session.id,
+    );
     if (
       (prevKey ? prevPinnedSessionIds.has(prevKey) : false)
       !== (nextKey ? nextPinnedSessionIds.has(nextKey) : false)

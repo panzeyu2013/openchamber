@@ -3,13 +3,11 @@ import { getMessageQueueKey, parseMessageQueueKey, useMessageQueueStore, type Me
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveSessionScopeKey, useSelectionStore } from '@/sync/selection-store';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useContextStore } from '@/stores/contextStore';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { getDirectoryState } from '@/sync/sync-refs';
-import { useDirectorySync } from '@/sync/sync-context';
+import { useDirectorySync, useSyncDirectory } from '@/sync/sync-context';
 import { getRuntimeKey } from '@/lib/runtime-switch';
-import { useDirectoryStore } from '@/stores/useDirectoryStore';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
@@ -122,19 +120,17 @@ export const sendQueuedAutoSendPayload = (
 };
 
 const resolveSessionSendConfig = (sessionId: string) => {
-  const context = useContextStore.getState();
   const config = useConfigStore.getState();
   const selection = useSelectionStore.getState();
 
   const selectedAgent =
-    context.getSessionAgentSelection(sessionId)
-    ?? context.getCurrentAgent(sessionId)
+    selection.getSessionAgentSelection(sessionId)
     ?? config.currentAgentName
     ?? undefined;
 
-  const sessionModel = context.getSessionModelSelection(sessionId);
+  const sessionModel = selection.getSessionModelSelection(sessionId);
   const agentModel = selectedAgent
-    ? context.getAgentModelForSession(sessionId, selectedAgent)
+    ? selection.getAgentModelForSession(sessionId, selectedAgent)
     : null;
 
   const providerID =
@@ -150,8 +146,7 @@ const resolveSessionSendConfig = (sessionId: string) => {
 
   const variant =
     selectedAgent && providerID && modelID
-      ? (selection.getAgentModelVariantForSession(sessionId, selectedAgent, providerID, modelID)
-        ?? context.getAgentModelVariantForSession(sessionId, selectedAgent, providerID, modelID))
+      ? selection.getAgentModelVariantForSession(sessionId, selectedAgent, providerID, modelID)
       : undefined;
 
   return {
@@ -216,7 +211,8 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
   // resolveQueuedSessionStatusType; subscribe so the queue drains the moment
   // the trailing assistant message completes even if status events were missed.
   const sessionMessages = useDirectorySync((state) => state.message);
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  const currentDirectory = useSyncDirectory();
+  const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
 
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
   const sendFailuresRef = React.useRef<Map<string, QueuedAutoSendFailure>>(new Map());
@@ -337,7 +333,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
       // after queueing; any other mismatch means the runtime or workspace
       // changed.
       if (!target || (
-        target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory)
+        target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory, currentWorkspaceId)
         && target.scopeKey !== getRuntimeKey()
       ) || target.directory !== currentDirectory) return;
       const { sessionId } = target;
@@ -362,5 +358,5 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     });
 
     previousStatusRef.current = nextStatusMap;
-  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, autoReviewRuns, currentDirectory, retryTick, retryScheduler]);
+  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, autoReviewRuns, currentDirectory, currentWorkspaceId, retryTick, retryScheduler]);
 }

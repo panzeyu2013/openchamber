@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
 let fetchImpl: (input: string, init?: RequestInit) => Promise<Response>;
+let currentScopeKey = 'runtime-test';
 mock.module('@/lib/runtime-fetch', () => ({
   runtimeFetch: (input: string, init?: RequestInit) => fetchImpl(input, init),
 }));
-mock.module('@/sync/sync-refs', () => ({ getAllSyncSessionMap: () => new Map() }));
+mock.module('@/sync/sync-refs', () => ({
+  getAllSyncSessionMap: () => new Map(),
+  getSyncScopeKey: () => currentScopeKey,
+}));
 mock.module('@/sync/session-ui-store', () => ({
   useSessionUIStore: { getState: () => ({ getDirectoryForSession: () => '/project' }) },
 }));
@@ -17,6 +21,7 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 
 describe('permission store server policy', () => {
   beforeEach(() => {
+    currentScopeKey = 'runtime-test';
     usePermissionStore.getState().reset();
     usePermissionStore.setState({ legacyCandidate: null, legacyRuntimeKey: null });
     fetchImpl = async () => json({ sessions: {} });
@@ -114,5 +119,32 @@ describe('permission store server policy', () => {
     usePermissionStore.getState().applySnapshot({ sessions: { stale: true }, revision: 3 });
 
     expect(usePermissionStore.getState().autoAccept).toEqual({ current: true });
+  });
+
+  test('clears the previous scope policy before hydration of a new scope', async () => {
+    usePermissionStore.getState().applySnapshot({ sessions: { old: true }, revision: 1 });
+    currentScopeKey = 'runtime-next';
+    fetchImpl = async () => json({ sessions: { next: true }, revision: 2 });
+
+    const hydration = usePermissionStore.getState().hydrate();
+    expect(usePermissionStore.getState().autoAccept).toEqual({});
+    await hydration;
+
+    expect(usePermissionStore.getState().autoAccept).toEqual({ next: true });
+  });
+
+  test('does not send the ambient policy request for a workspace scope', async () => {
+    usePermissionStore.getState().applySnapshot({ sessions: { old: true }, revision: 1 });
+    currentScopeKey = 'workspace:remote';
+    let requestCount = 0;
+    fetchImpl = async () => {
+      requestCount += 1;
+      return json({ sessions: { unsafe: true }, revision: 2 });
+    };
+
+    await usePermissionStore.getState().hydrate();
+
+    expect(requestCount).toBe(0);
+    expect(usePermissionStore.getState().autoAccept).toEqual({});
   });
 });

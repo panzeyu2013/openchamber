@@ -6,18 +6,24 @@ import type { ConnectionCapabilities, WorkspaceCatalogSnapshot, WorkspaceId } fr
 
 /**
  * Hook form of `resolveActiveWorkspaceId` (see session-index-store.ts for
- * the matching contract). Returns the workspace of the currently selected
- * session, or null when the selection is not a workspace session — the
+ * the matching contract). An explicit workspace target recorded on a draft or
+ * by `setCurrentSession(..., workspaceId)` wins over tuple inference, which is
+ * required when two connections expose the same upstream session ID and
+ * directory. Returns null when the selection is not a workspace session — the
  * legacy ambient-runtime sync path then stays in charge.
  */
 export const useActiveWorkspaceId = (): WorkspaceId | null => {
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const currentSessionDirectory = useSessionUIStore((state) => state.currentSessionDirectory);
+  const selectedWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+  const draftWorkspaceId = useSessionUIStore((state) => state.newSessionDraft?.open ? state.newSessionDraft.workspaceId ?? null : null);
   const sessions = useWorkspaceSessionIndexStore((state) => state.snapshot?.sessions);
 
   return React.useMemo(
-    () => resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory),
-    [currentSessionDirectory, currentSessionId, sessions],
+    () => draftWorkspaceId
+      ?? selectedWorkspaceId
+      ?? resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory),
+    [currentSessionDirectory, currentSessionId, draftWorkspaceId, selectedWorkspaceId, sessions],
   );
 };
 

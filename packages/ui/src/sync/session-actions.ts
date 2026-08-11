@@ -9,10 +9,10 @@ import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
 import type { ChildStoreManager } from "./child-store"
 import { computeSubtreeIds } from "./scoped-blocking-requests"
-import { opencodeClient } from "@/lib/opencode/client"
+import { opencodeClient, type OpencodeService } from "@/lib/opencode/client"
 import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
-import { registerSessionDirectory } from "./sync-refs"
+import { getSyncScopeKey, registerSessionDirectory } from "./sync-refs"
 import { recordSendFailure } from "./send-failure-log"
 import { isSyntheticPart } from "@/lib/messages/synthetic"
 import { materializeSessionSnapshots } from "./materialization"
@@ -33,6 +33,7 @@ import { getRuntimeKey } from "@/lib/runtime-switch"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
+import { workspaceIdFromScopeKey, workspaceScopeKey } from "@/workspaces/identity"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -50,11 +51,15 @@ const SEND_CONFIRMATION_RECONNECT_POLL_MS = 100
 const MESSAGE_REFETCH_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const UNREVERT_REFETCH_ATTEMPTS = 3
 const UNREVERT_REFETCH_RETRY_MS = 150
+const WORKSPACE_ACTION_SCOPE_WAIT_MS = 3000
+const WORKSPACE_ACTION_SCOPE_POLL_MS = 25
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
+let _service: OpencodeService | null = null
 let _childStores: ChildStoreManager | null = null
 let _getDirectory: () => string = () => ""
+let _scopeKey: string | null = null
 // Optional ref into the sync layer's session-tail materialization queue. Used
 // to reconcile a trailing running tool part after a blocking request is
 // confirmed stale server-side (see recoverStaleBlockingRequest).
@@ -147,11 +152,32 @@ export function setActionRefs(
   childStores: ChildStoreManager,
   getDirectory: () => string,
   enqueueSessionMaterialization?: (directory: string, sessionID: string, messageID: string) => void,
+  service: OpencodeService = opencodeClient,
+  scopeKey?: string,
 ) {
   _sdk = sdk
+  _service = service
   _childStores = childStores
   _getDirectory = getDirectory
   _enqueueSessionMaterialization = enqueueSessionMaterialization ?? null
+  _scopeKey = scopeKey ?? null
+}
+
+/** Clear action refs only when the owning SyncProvider is unmounting. */
+export function clearActionRefs(
+  sdk?: OpencodeClient,
+  childStores?: ChildStoreManager,
+  scopeKey?: string,
+): void {
+  if (sdk && _sdk !== sdk) return
+  if (childStores && _childStores !== childStores) return
+  if (scopeKey && _scopeKey !== scopeKey) return
+  _sdk = null
+  _service = null
+  _childStores = null
+  _getDirectory = () => ""
+  _enqueueSessionMaterialization = null
+  _scopeKey = null
 }
 
 export function setOptimisticRefs(
@@ -167,6 +193,28 @@ export function setOptimisticRefs(
 function sdk() {
   if (!_sdk) throw new Error("SDK not initialized — is SyncProvider mounted?")
   return _sdk
+}
+
+function actionService(): OpencodeService {
+  return _service ?? opencodeClient
+}
+
+function actionScopeKey(): string {
+  return _scopeKey ?? getRuntimeKey()
+}
+
+const waitForWorkspaceActionScope = async (workspaceId: string): Promise<void> => {
+  const expectedScopeKey = workspaceScopeKey(workspaceId)
+  const deadline = Date.now() + WORKSPACE_ACTION_SCOPE_WAIT_MS
+  while (getSyncScopeKey() !== expectedScopeKey && Date.now() < deadline) {
+    await new Promise<void>((resolve) => setTimeout(resolve, WORKSPACE_ACTION_SCOPE_POLL_MS))
+  }
+  if (getSyncScopeKey() !== expectedScopeKey) {
+    const error = new Error('Workspace session is not connected') as Error & { code: string; status: number }
+    error.code = 'capability_unavailable'
+    error.status = 501
+    throw error
+  }
 }
 
 function dirStore() {
@@ -340,7 +388,7 @@ export async function moveSessionToDirectory(
   destinationDirectory: string,
   moveChanges = true,
 ): Promise<void> {
-  const result = await opencodeClient.getSdkClient().experimental.controlPlane.moveSession({
+  const result = await actionService().getSdkClient().experimental.controlPlane.moveSession({
     sessionID: session.id,
     destination: { directory: destinationDirectory },
     moveChanges,
@@ -472,7 +520,7 @@ function getSessionReplyClient(sessionId?: string): OpencodeClient {
     ? useSessionUIStore.getState().getDirectoryForSession(sessionId)
     : null
   if (directory) {
-    return opencodeClient.getScopedSdkClient(directory)
+    return actionService().getScopedSdkClient(directory)
   }
   return sdk()
 }
@@ -710,7 +758,7 @@ function getRequestReplyClient(
 ): OpencodeClient {
   const requestDirectory = resolveDirectoryForBlockingRequest(type, sessionId, requestId)
   if (requestDirectory) {
-    return opencodeClient.getScopedSdkClient(requestDirectory)
+    return actionService().getScopedSdkClient(requestDirectory)
   }
   return getSessionReplyClient(sessionId)
 }
@@ -732,7 +780,7 @@ export async function createSession(
     // opencodeClient.getDirectory() value and group the session under the
     // wrong project (closes #1637, #2270).
     const effectiveDirectory = directoryOverride ?? dir()
-    const session = await opencodeClient.createSession({
+    const session = await actionService().createSession({
       title,
       parentID: parentID ?? undefined,
       metadata,
@@ -744,7 +792,11 @@ export async function createSession(
     if (sessionDirectory) {
       registerSessionDirectory(session.id, sessionDirectory)
     }
-    useSessionUIStore.getState().setCurrentSession(session.id, sessionDirectory)
+    useSessionUIStore.getState().setCurrentSession(
+      session.id,
+      sessionDirectory,
+      workspaceIdFromScopeKey(actionScopeKey()),
+    )
     useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id)
     useGlobalSessionsStore.getState().upsertSession(session)
     return session
@@ -761,7 +813,7 @@ export async function createSession(
  * unguarded behavior.
  */
 function isStaleRuntime(expectedRuntimeKey: string | undefined): boolean {
-  return expectedRuntimeKey !== undefined && getRuntimeKey() !== expectedRuntimeKey
+  return expectedRuntimeKey !== undefined && actionScopeKey() !== expectedRuntimeKey
 }
 
 /**
@@ -782,10 +834,10 @@ export async function patchSessionMetadata(
 ): Promise<Session> {
   if (isStaleRuntime(expectedRuntimeKey)) throw new Error("runtime changed")
   const targetDirectory = directory ?? getSessionDirectory(sessionId)
-  const current = await opencodeClient.getSession(sessionId, targetDirectory)
+  const current = await actionService().getSession(sessionId, targetDirectory)
   if (isStaleRuntime(expectedRuntimeKey)) throw new Error("runtime changed")
   const nextMetadata = updater(getSessionMetadata(current))
-  const updated = await opencodeClient.updateSession(sessionId, { metadata: nextMetadata }, targetDirectory)
+  const updated = await actionService().updateSession(sessionId, { metadata: nextMetadata }, targetDirectory)
   if (isStaleRuntime(expectedRuntimeKey)) throw new Error("runtime changed")
   useGlobalSessionsStore.getState().upsertSession(updated)
   const sessionDirectory = (updated as { directory?: string | null }).directory ?? targetDirectory
@@ -827,7 +879,7 @@ async function cleanupReviewMetadataBeforeDelete(
   if (isStaleRuntime(expectedRuntimeKey)) return
   let session: Session
   try {
-    session = await opencodeClient.getSession(sessionId, directory ?? getSessionDirectory(sessionId))
+    session = await actionService().getSession(sessionId, directory ?? getSessionDirectory(sessionId))
   } catch {
     return
   }
@@ -900,7 +952,7 @@ function cleanupSessionWorktreeMetadata(sessionId: string): void {
 function finalizeConfirmedSessionDeletion(
   sessionId: string,
   sessionDirectory?: string,
-  expectedRuntimeKey = getRuntimeKey(),
+  expectedRuntimeKey = actionScopeKey(),
 ): void {
   const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
   invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
@@ -942,13 +994,13 @@ export type DeleteSessionOptions = {
  * failure and leaves reconciliation to the next authoritative load.
  */
 export async function deleteSession(sessionId: string, options?: DeleteSessionOptions): Promise<boolean> {
-  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? actionScopeKey()
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
-    const deleted = await opencodeClient.deleteSession(sessionId, sessionDirectory)
+    const deleted = await actionService().deleteSession(sessionId, sessionDirectory)
     if (isStaleRuntime(expectedRuntimeKey)) return false
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
@@ -973,13 +1025,13 @@ export async function deleteSession(sessionId: string, options?: DeleteSessionOp
 export async function deleteSessionInDirectory(
   sessionId: string,
   directory: string,
-  expectedRuntimeKey = getRuntimeKey(),
+  expectedRuntimeKey = actionScopeKey(),
 ): Promise<boolean> {
   if (isStaleRuntime(expectedRuntimeKey)) return false
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, directory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
-    const deleted = await opencodeClient.deleteSession(sessionId, directory)
+    const deleted = await actionService().deleteSession(sessionId, directory)
     if (isStaleRuntime(expectedRuntimeKey)) return false
     if (deleted !== true) {
       throw new Error("session.delete failed: server did not confirm deletion")
@@ -1020,7 +1072,7 @@ export async function deleteSessions(
 ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
   const deletedIds: string[] = []
   const failedIds: string[] = []
-  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? actionScopeKey()
 
   for (const [index, id] of ids.entries()) {
     if (isStaleRuntime(expectedRuntimeKey)) {
@@ -1046,14 +1098,14 @@ export async function deleteSessions(
  * stays archived on that runtime and is re-read from the server the next time
  * the runtime is loaded.
  */
-export async function archiveSession(sessionId: string, expectedRuntimeKey = getRuntimeKey()): Promise<boolean> {
+export async function archiveSession(sessionId: string, expectedRuntimeKey = actionScopeKey()): Promise<boolean> {
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
   const archivedAt = Date.now()
   try {
     await cleanupReviewMetadataBeforeDelete(sessionId, sessionDirectory, expectedRuntimeKey)
     if (isStaleRuntime(expectedRuntimeKey)) return false
-    const archived = await opencodeClient.updateSession(sessionId, { time: { archived: archivedAt } }, sessionDirectory)
+    const archived = await actionService().updateSession(sessionId, { time: { archived: archivedAt } }, sessionDirectory)
     if (isStaleRuntime(expectedRuntimeKey)) return false
     if (!archived) {
       throw new Error("session.update failed: server did not return the archived session")
@@ -1095,7 +1147,7 @@ export async function archiveSessions(
 ): Promise<{ archivedIds: string[]; failedIds: string[] }> {
   const archivedIds: string[] = []
   const failedIds: string[] = []
-  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? actionScopeKey()
 
   for (const [index, id] of ids.entries()) {
     if (isStaleRuntime(expectedRuntimeKey)) {
@@ -1136,11 +1188,11 @@ const UNARCHIVED_TIMESTAMP = 0
  * buckets from it); the live directory store is re-populated by the
  * authoritative `session.updated` event the server publishes for the update.
  */
-export async function unarchiveSession(sessionId: string, expectedRuntimeKey = getRuntimeKey()): Promise<boolean> {
+export async function unarchiveSession(sessionId: string, expectedRuntimeKey = actionScopeKey()): Promise<boolean> {
   if (isStaleRuntime(expectedRuntimeKey)) return false
   const sessionDirectory = getSessionDirectory(sessionId)
   try {
-    const restored = await opencodeClient.updateSession(sessionId, { time: { archived: UNARCHIVED_TIMESTAMP } }, sessionDirectory)
+    const restored = await actionService().updateSession(sessionId, { time: { archived: UNARCHIVED_TIMESTAMP } }, sessionDirectory)
     if (isStaleRuntime(expectedRuntimeKey)) return false
     if (!restored) {
       throw new Error("session.update failed: server did not return the restored session")
@@ -1181,7 +1233,7 @@ export async function unarchiveSessions(
 ): Promise<{ restoredIds: string[]; failedIds: string[] }> {
   const restoredIds: string[] = []
   const failedIds: string[] = []
-  const expectedRuntimeKey = options?.expectedRuntimeKey ?? getRuntimeKey()
+  const expectedRuntimeKey = options?.expectedRuntimeKey ?? actionScopeKey()
 
   for (const [index, id] of ids.entries()) {
     if (isStaleRuntime(expectedRuntimeKey)) {
@@ -1197,7 +1249,7 @@ export async function unarchiveSessions(
 
 export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
   const sessionDirectory = getSessionDirectory(sessionId)
-  const session = await opencodeClient.updateSession(sessionId, { title }, sessionDirectory)
+  const session = await actionService().updateSession(sessionId, { title }, sessionDirectory)
   useGlobalSessionsStore.getState().upsertSession(session)
   mirrorSessionIntoLiveStores(session, sessionDirectory)
 }
@@ -1293,7 +1345,7 @@ export async function optimisticSend(input: {
   const optimisticConfirm = _optimisticConfirm
 
   const assertRuntimeUnchanged = () => {
-    if (input.runtimeKey && input.runtimeKey !== getRuntimeKey()) {
+    if (input.runtimeKey && input.runtimeKey !== actionScopeKey()) {
       throw new Error("Message was not sent because the runtime changed.")
     }
   }
@@ -1549,14 +1601,16 @@ export async function respondToPermission(
   requestId: string,
   response: "once" | "always" | "reject",
   directoryOverride?: string,
+  workspaceId?: string,
 ): Promise<void> {
+  if (workspaceId) await waitForWorkspaceActionScope(workspaceId)
   await waitForConnectionOrThrow()
   const directory = directoryOverride
     || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
     || getSessionDirectory(sessionId)
     || dir()
   const client = directoryOverride
-    ? opencodeClient.getScopedSdkClient(directoryOverride)
+    ? actionService().getScopedSdkClient(directoryOverride)
     : getRequestReplyClient("permission", sessionId, requestId)
   const result = await client.permission.reply({
     requestID: requestId,
@@ -1873,7 +1927,7 @@ export async function revertToMessage(sessionId: string, messageId: string): Pro
 
   // Call SDK and merge authoritative result into store
   try {
-    const revertedSession = await opencodeClient.revertSession(sessionId, messageId, undefined, directory)
+    const revertedSession = await actionService().revertSession(sessionId, messageId, undefined, directory)
     const current = store.getState()
     const updated = [...current.session]
     const idx = updated.findIndex((s) => s.id === sessionId)
@@ -1997,7 +2051,7 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
     .trim()
   const fileParts = parts.filter((p) => p.type === "file" && !isSyntheticPart(p)) as Array<Record<string, unknown>>
 
-  const forkedSession = await opencodeClient.forkSession(sessionId, messageId, directory)
+  const forkedSession = await actionService().forkSession(sessionId, messageId, directory)
 
   // Insert new session into child store so sidebar updates immediately
   const current = store.getState()
@@ -2009,7 +2063,11 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
   }
 
   // Switch to new session
-  useSessionUIStore.getState().setCurrentSession(forkedSession.id)
+  useSessionUIStore.getState().setCurrentSession(
+    forkedSession.id,
+    directory ?? null,
+    workspaceIdFromScopeKey(actionScopeKey()),
+  )
 
   // Restore forked message text and file attachments to input
   if (messageText) {

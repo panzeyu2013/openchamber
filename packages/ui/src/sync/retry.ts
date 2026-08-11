@@ -22,6 +22,7 @@ const TRANSIENT_MESSAGES = [
 
 function isTransientError(error: unknown): boolean {
   if (!error) return false
+  if ((error as { code?: unknown }).code === "capability_unavailable") return false
   const message = String(error instanceof Error ? error.message : error).toLowerCase()
   if (TRANSIENT_MESSAGES.some((m) => message.includes(m))) return true
   // Any HTTP 5xx is considered transient — server-side issues during warmup

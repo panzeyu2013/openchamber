@@ -3,6 +3,7 @@ import { TUNNEL_PARSE_BASE } from './relay/tunnel-payloads';
 import { buildRuntimeAuthHeaders } from './runtime-auth';
 import { readWindowRuntimeOriginContext, shouldIgnoreRuntimeApiBaseUrl } from './runtime-origin';
 import { getRuntimeUrlResolver, type RuntimeUrlQuery } from './runtime-url';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export interface RuntimeFetchOptions extends RequestInit {
   query?: RuntimeUrlQuery;
@@ -11,6 +12,34 @@ export interface RuntimeFetchOptions extends RequestInit {
 const shouldResolveApiPath = (input: string): boolean => {
   return input.startsWith('/api/') || input === '/api' || input.startsWith('/auth/') || input === '/auth' || input === '/health';
 };
+
+const isWorkspaceConfigPath = (input: string | URL | Request): boolean => {
+  const raw = input instanceof Request ? input.url : input.toString();
+  try {
+    const pathname = new URL(raw, TUNNEL_PARSE_BASE).pathname;
+    return pathname === '/api/config'
+      || pathname.startsWith('/api/config/')
+      // OpenChamber's provider source/config CRUD is host-owned and has no
+      // workspace contract. Upstream provider/auth SDK calls use the bound
+      // workspace SDK instead; these legacy routes must be unavailable rather
+      // than silently targeting the ambient host.
+      || pathname === '/api/provider'
+      || pathname.startsWith('/api/provider/');
+  } catch {
+    return false;
+  }
+};
+
+const workspaceCapabilityUnavailableResponse = (): Response => new Response(
+  JSON.stringify({
+    error: 'This workspace capability is not available',
+    code: 'capability_unavailable',
+  }),
+  {
+    status: 501,
+    headers: { 'content-type': 'application/json' },
+  },
+);
 
 const getCurrentOrigin = (): string => {
   if (typeof window === 'undefined') return '';
@@ -253,6 +282,14 @@ const coalesceReadKey = (method: string, url: string, hasSignal: boolean): strin
 
 export const runtimeFetch = async (input: string | URL | Request, init: RuntimeFetchOptions = {}): Promise<Response> => {
   const { query, ...requestInit } = init;
+
+  // OpenCode config is machine/runtime-wide and has no workspace contract.
+  // Returning the same typed 501 as the server proxy prevents legacy callers
+  // that fall back after an unavailable RuntimeAPI from writing to the
+  // ambient endpoint.
+  if (isWorkspaceRuntimeActive() && isWorkspaceConfigPath(input)) {
+    return workspaceCapabilityUnavailableResponse();
+  }
 
   // Resolve the transport once — relay tunnel or network — then apply the SAME
   // read-coalescing to both. On a relay the tunnel is bandwidth/latency-bound, so

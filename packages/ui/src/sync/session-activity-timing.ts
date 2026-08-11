@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
 import { getSafeStorage } from '@/stores/utils/safeStorage';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 
 // Per-session turn timing behind the sidebar activity readout.
 //
@@ -52,8 +53,18 @@ type SessionActivityPhase = 'active' | 'settled';
 
 
 type SessionActivityTimingState = {
+  scopeKey: string;
   startedAt: ReadonlyMap<string, number>;
   settledMs: ReadonlyMap<string, number>;
+  bindScope: (scopeKey: string) => void;
+};
+
+type SessionActivityScope = {
+  startedAt: Map<string, number>;
+  settledMs: Map<string, number>;
+  liveSeen: Map<string, number>;
+  restoredStarts: Map<string, PersistedStart> | null;
+  lastPersistAt: number;
 };
 
 /** Persisted per session: when this turn began, and when it was last alive. */
@@ -80,30 +91,73 @@ const LIVENESS_PERSIST_INTERVAL_MS = 15_000;
  * must count from zero.
  */
 const RESTORE_ADOPTION_WINDOW_MS = 90_000;
-// One key, not one per runtime. These records live for seconds and are keyed by
-// instance-unique session IDs, so runtime scoping bought nothing while adding a
-// real failure mode: the runtime key is derived from injected globals and is not
-// guaranteed stable across early startup, and a read under a key the previous
-// page did not write to looks exactly like "no turn was running".
 const STORAGE_KEY = 'oc.session-activity.v1';
 
 const EMPTY_ACTIVE: ReadonlySet<string> = new Set();
 const EMPTY_RESTORED: ReadonlyMap<string, PersistedStart> = new Map();
 
-export const useSessionActivityTimingStore = create<SessionActivityTimingState>(() => ({
+const legacyScopeKey = getRuntimeKey();
+const scopeStates = new Map<string, SessionActivityScope>();
+
+const normalizeScopeKey = (scopeKey?: string): string => {
+  const normalized = scopeKey?.trim();
+  return normalized || getRuntimeKey();
+};
+
+const createScopeState = (): SessionActivityScope => ({
   startedAt: new Map(),
   settledMs: new Map(),
-}));
+  liveSeen: new Map(),
+  restoredStarts: null,
+  lastPersistAt: 0,
+});
 
-/** Last moment each live start was observed active, for the liveness stamp. */
-const liveSeen = new Map<string, number>();
-let lastPersistAt = 0;
+const readScopeState = (scopeKey: string): SessionActivityScope => {
+  const existing = scopeStates.get(scopeKey);
+  if (existing) return existing;
+  const created = createScopeState();
+  scopeStates.set(scopeKey, created);
+  return created;
+};
+
+const currentScopeKey = (): string => useSessionActivityTimingStore.getState().scopeKey;
+
+export const useSessionActivityTimingStore = create<SessionActivityTimingState>((set, get) => {
+  const scopeKey = legacyScopeKey;
+  const scope = readScopeState(scopeKey);
+
+  return {
+    scopeKey,
+    startedAt: scope.startedAt,
+    settledMs: scope.settledMs,
+    bindScope: (nextScopeKey) => {
+      const normalizedScopeKey = normalizeScopeKey(nextScopeKey);
+      const current = get();
+      const currentScope = readScopeState(current.scopeKey);
+      currentScope.startedAt = current.startedAt as Map<string, number>;
+      currentScope.settledMs = current.settledMs as Map<string, number>;
+      if (current.scopeKey === normalizedScopeKey) return;
+      const nextScope = readScopeState(normalizedScopeKey);
+      set({
+        scopeKey: normalizedScopeKey,
+        startedAt: nextScope.startedAt,
+        settledMs: nextScope.settledMs,
+      });
+    },
+  };
+});
+
+useSessionActivityTimingStore.subscribe((state, previous) => {
+  if (state.scopeKey !== previous.scopeKey || state.startedAt !== previous.startedAt || state.settledMs !== previous.settledMs) {
+    const scope = readScopeState(state.scopeKey);
+    scope.startedAt = state.startedAt as Map<string, number>;
+    scope.settledMs = state.settledMs as Map<string, number>;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Persistence
 // ---------------------------------------------------------------------------
-
-let restoredStarts: Map<string, PersistedStart> | null = null;
 
 /** Epoch ms of this page's navigation start; the reference for "how long gone". */
 const readPageLoadAt = (): number => {
@@ -131,28 +185,63 @@ const parseEntry = (value: unknown): PersistedStart | null => {
   return { start, seen };
 };
 
-const readRestoredStarts = (): Map<string, PersistedStart> => {
-  const restored = new Map<string, PersistedStart>();
+const readPersistedPayload = (): Record<string, unknown> => {
   let raw: string | null = null;
   try {
     raw = getSafeStorage().getItem(STORAGE_KEY);
   } catch {
-    return restored;
+    return {};
   }
-  if (!raw) return restored;
+  if (!raw) return {};
 
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
   } catch {
     // Malformed payload is a failed read, not authoritative "no turns were
     // running": live status re-seeds every counter from now either way.
-    return restored;
+    return {};
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return restored;
+};
+
+let persistedPayload: Record<string, unknown> | null = null;
+
+const storageKeyFor = (scopeKey: string, sessionId: string): string => (
+  scopeKey === legacyScopeKey ? sessionId : JSON.stringify([scopeKey, sessionId])
+);
+
+const decodeStorageKey = (key: string): { scopeKey: string; sessionId: string } | null => {
+  try {
+    const parsed = JSON.parse(key) as unknown;
+    if (
+      Array.isArray(parsed)
+      && parsed.length === 2
+      && typeof parsed[0] === 'string'
+      && typeof parsed[1] === 'string'
+    ) {
+      return { scopeKey: parsed[0], sessionId: parsed[1] };
+    }
+  } catch {
+    // Legacy bare session IDs are handled by the caller.
+  }
+  return null;
+};
+
+const readRestoredStarts = (scopeKey: string): Map<string, PersistedStart> => {
+  const restored = new Map<string, PersistedStart>();
+  persistedPayload ??= readPersistedPayload();
 
   const now = Date.now();
-  for (const [sessionId, value] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [key, value] of Object.entries(persistedPayload)) {
+    const decoded = decodeStorageKey(key);
+    const sessionId = decoded?.scopeKey === scopeKey
+      ? decoded.sessionId
+      : !decoded && scopeKey === legacyScopeKey
+        ? key
+        : null;
+    if (!sessionId) continue;
     const entry = parseEntry(value);
     // Rejects stale turns, quiet stamps, and clock-skewed futures rather than
     // rendering a counter that reads days long or negative.
@@ -161,9 +250,10 @@ const readRestoredStarts = (): Map<string, PersistedStart> => {
   return restored;
 };
 
-const getRestoredStarts = (): Map<string, PersistedStart> => {
-  restoredStarts ??= readRestoredStarts();
-  return restoredStarts;
+const getRestoredStarts = (scopeKey: string): Map<string, PersistedStart> => {
+  const scope = readScopeState(scopeKey);
+  scope.restoredStarts ??= readRestoredStarts(scopeKey);
+  return scope.restoredStarts;
 };
 
 /**
@@ -171,28 +261,38 @@ const getRestoredStarts = (): Map<string, PersistedStart> => {
  * are dropped for good, so a turn that starts later counts from zero instead of
  * inheriting the start of whatever ran before the reload.
  */
-const getAdoptableStarts = (now: number): ReadonlyMap<string, PersistedStart> => {
+const getAdoptableStarts = (scopeKey: string, now: number): ReadonlyMap<string, PersistedStart> => {
+  const restoredStarts = getRestoredStarts(scopeKey);
   if (now - pageLoadAt > RESTORE_ADOPTION_WINDOW_MS) {
-    restoredStarts?.clear();
+    restoredStarts.clear();
     return EMPTY_RESTORED;
   }
-  return getRestoredStarts();
+  return restoredStarts;
 };
 
 // Live starts merged over restored-but-unconfirmed ones, so a reload landing
 // before the first authoritative snapshot does not drop the starts that
 // snapshot is about to confirm. Restored entries whose stamp has gone quiet are
 // dropped here, which is the only way they leave storage.
-const persistStarts = (startedAt: ReadonlyMap<string, number>, now: number): void => {
-  const payload: Record<string, PersistedStart> = {};
-  for (const [sessionId, entry] of getRestoredStarts()) {
-    if (isResumable(entry, now)) payload[sessionId] = entry;
+const persistStarts = (scopeKey: string, startedAt: ReadonlyMap<string, number>, now: number): void => {
+  const payload = { ...(persistedPayload ??= readPersistedPayload()) };
+  const restoredStarts = getRestoredStarts(scopeKey);
+  for (const key of Object.keys(payload)) {
+    const decoded = decodeStorageKey(key);
+    if (decoded?.scopeKey === scopeKey || (!decoded && scopeKey === legacyScopeKey)) {
+      delete payload[key];
+    }
+  }
+  for (const [sessionId, entry] of restoredStarts) {
+    if (isResumable(entry, now)) payload[storageKeyFor(scopeKey, sessionId)] = entry;
   }
   for (const [sessionId, start] of startedAt) {
-    payload[sessionId] = { start, seen: liveSeen.get(sessionId) ?? now };
+    const scope = readScopeState(scopeKey);
+    payload[storageKeyFor(scopeKey, sessionId)] = { start, seen: scope.liveSeen.get(sessionId) ?? now };
   }
 
-  lastPersistAt = now;
+  readScopeState(scopeKey).lastPersistAt = now;
+  persistedPayload = payload;
   try {
     const storage = getSafeStorage();
     if (Object.keys(payload).length === 0) {
@@ -209,11 +309,12 @@ const persistStarts = (startedAt: ReadonlyMap<string, number>, now: number): voi
 // running turn was still running as of now. Writes are immediate (not deferred)
 // so this cannot lose the race against a deferred flush on the same event.
 const stampLiveness = (): void => {
-  const { startedAt } = useSessionActivityTimingStore.getState();
-  if (startedAt.size === 0) return;
   const now = Date.now();
-  for (const sessionId of startedAt.keys()) liveSeen.set(sessionId, now);
-  persistStarts(startedAt, now);
+  for (const [scopeKey, scope] of scopeStates) {
+    if (scope.startedAt.size === 0) continue;
+    for (const sessionId of scope.startedAt.keys()) scope.liveSeen.set(sessionId, now);
+    persistStarts(scopeKey, scope.startedAt, now);
+  }
 };
 
 let lifecycleHooked = false;
@@ -265,10 +366,16 @@ type SettleInput =
 const applyTransitions = (
   activeSessionIds: ReadonlySet<string>,
   settle: SettleInput | null,
+  scopeKey?: string,
 ): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? currentScopeKey());
+  const scope = readScopeState(targetScopeKey);
   const now = Date.now();
-  const restored = getAdoptableStarts(now);
-  const state = useSessionActivityTimingStore.getState();
+  const restored = getAdoptableStarts(targetScopeKey, now);
+  const state = {
+    startedAt: scope.startedAt,
+    settledMs: scope.settledMs,
+  };
 
   const next: { started: Map<string, number> | null; settled: Map<string, number> | null } = {
     started: null,
@@ -282,7 +389,7 @@ const applyTransitions = (
 
   for (const sessionId of activeSessionIds) {
     sawActive = true;
-    liveSeen.set(sessionId, now);
+    scope.liveSeen.set(sessionId, now);
     if ((next.started ?? state.startedAt).has(sessionId)) continue;
     // Busy carries no turn boundary from either source: the server re-publishes
     // `session.status: busy` on every step of the agent loop, so a busy event
@@ -294,7 +401,7 @@ const applyTransitions = (
 
   const settleTurn = (sessionId: string, start: number): void => {
     draftStarted().delete(sessionId);
-    liveSeen.delete(sessionId);
+    scope.liveSeen.delete(sessionId);
     draftSettled().set(sessionId, Math.max(0, now - start));
   };
 
@@ -304,7 +411,7 @@ const applyTransitions = (
     // An idle/error event is a live, unambiguous end of turn, so it also retires
     // the persisted record. A snapshot's silence is not: it may simply not see
     // the session yet.
-    if (getRestoredStarts().delete(settle.sessionId)) restoredChanged = true;
+    if (getRestoredStarts(targetScopeKey).delete(settle.sessionId)) restoredChanged = true;
     const start = state.startedAt.get(settle.sessionId);
     // Only a turn watched from its start yields a duration.
     if (start !== undefined) settleTurn(settle.sessionId, start);
@@ -324,25 +431,29 @@ const applyTransitions = (
   if (next.settled) trimSettled(next.settled);
 
   if (next.started || next.settled) {
-    useSessionActivityTimingStore.setState({
-      startedAt: next.started ?? state.startedAt,
-      settledMs: next.settled ?? state.settledMs,
-    });
+    scope.startedAt = next.started ?? state.startedAt;
+    scope.settledMs = next.settled ?? state.settledMs;
+    if (currentScopeKey() === targetScopeKey) {
+      useSessionActivityTimingStore.setState({
+        startedAt: scope.startedAt,
+        settledMs: scope.settledMs,
+      });
+    }
   }
 
   if (next.started) {
     if (next.started.size > 0) ensureLivenessStampOnHide();
-    persistStarts(next.started, now);
+    persistStarts(targetScopeKey, next.started, now);
     return;
   }
   if (restoredChanged) {
-    persistStarts(state.startedAt, now);
+    persistStarts(targetScopeKey, state.startedAt, now);
     return;
   }
   // Nothing structural changed, but a long-running turn still needs its stamp
   // refreshed so a reload can tell it apart from one that ended unobserved.
-  if (sawActive && state.startedAt.size > 0 && now - lastPersistAt >= LIVENESS_PERSIST_INTERVAL_MS) {
-    persistStarts(state.startedAt, now);
+  if (sawActive && state.startedAt.size > 0 && now - scope.lastPersistAt >= LIVENESS_PERSIST_INTERVAL_MS) {
+    persistStarts(targetScopeKey, state.startedAt, now);
   }
 };
 
@@ -354,12 +465,13 @@ const applyTransitions = (
 export const observeSessionActivityTiming = (
   sessionId: string,
   phase: SessionActivityPhase,
+  scopeKey?: string,
 ): void => {
   if (phase === 'active') {
-    applyTransitions(new Set([sessionId]), null);
+    applyTransitions(new Set([sessionId]), null, scopeKey);
     return;
   }
-  applyTransitions(EMPTY_ACTIVE, { source: 'event', sessionId });
+  applyTransitions(EMPTY_ACTIVE, { source: 'event', sessionId }, scopeKey);
 };
 
 /**
@@ -372,19 +484,25 @@ export const observeSessionActivityTiming = (
 export const reconcileSessionActivityTiming = (
   activeSessionIds: ReadonlySet<string>,
   isCoveredBySnapshot: (sessionId: string) => boolean,
+  scopeKey?: string,
 ): void => {
-  applyTransitions(activeSessionIds, { source: 'snapshot', isCovered: isCoveredBySnapshot });
+  applyTransitions(activeSessionIds, { source: 'snapshot', isCovered: isCoveredBySnapshot }, scopeKey);
 };
 
-export const removeSessionActivityTiming = (sessionId: string): void => {
-  const restoredChanged = getRestoredStarts().delete(sessionId);
-  const state = useSessionActivityTimingStore.getState();
+export const removeSessionActivityTiming = (sessionId: string, scopeKey?: string): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? currentScopeKey());
+  const scope = readScopeState(targetScopeKey);
+  const restoredChanged = getRestoredStarts(targetScopeKey).delete(sessionId);
+  const state = {
+    startedAt: scope.startedAt,
+    settledMs: scope.settledMs,
+  };
   const hadStart = state.startedAt.has(sessionId);
   const hadSettled = state.settledMs.has(sessionId);
-  liveSeen.delete(sessionId);
+  scope.liveSeen.delete(sessionId);
 
   if (!hadStart && !hadSettled) {
-    if (restoredChanged) persistStarts(state.startedAt, Date.now());
+    if (restoredChanged) persistStarts(targetScopeKey, state.startedAt, Date.now());
     return;
   }
 
@@ -401,8 +519,12 @@ export const removeSessionActivityTiming = (sessionId: string): void => {
     settledMs = draft;
   }
 
-  useSessionActivityTimingStore.setState({ startedAt, settledMs });
-  if (hadStart || restoredChanged) persistStarts(startedAt, Date.now());
+  scope.startedAt = startedAt as Map<string, number>;
+  scope.settledMs = settledMs as Map<string, number>;
+  if (currentScopeKey() === targetScopeKey) {
+    useSessionActivityTimingStore.setState({ startedAt: scope.startedAt, settledMs: scope.settledMs });
+  }
+  if (hadStart || restoredChanged) persistStarts(targetScopeKey, scope.startedAt, Date.now());
 };
 
 /**
@@ -413,9 +535,9 @@ export const removeSessionActivityTiming = (sessionId: string): void => {
  * past (slow bootstrap, expired window).
  */
 export const resetSessionActivityTiming = (options: { pageLoadAt?: number } = {}): void => {
-  restoredStarts = null;
-  liveSeen.clear();
-  lastPersistAt = 0;
+  const targetScopeKey = currentScopeKey();
+  scopeStates.set(targetScopeKey, createScopeState());
+  persistedPayload = null;
   pageLoadAt = options.pageLoadAt ?? Date.now();
   useSessionActivityTimingStore.setState({ startedAt: new Map(), settledMs: new Map() });
 };

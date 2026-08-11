@@ -33,11 +33,14 @@
   Workspace Catalog and the server-side Session Index (Phase 4). One flat
   list of workspaces with their sessions; connection labels appear only as
   secondary disambiguation; per-connection freshness is textual (stale /
-  error / loading — never color-only). Local AND remote sessions open through
-  the same unified selection path (`openWorkspaceSession` →
-  `setCurrentSession`; the sync then runs against the workspace-bound runtime
-  handle keyed by workspaceId), and the click path never switches the global
-  runtime endpoint. Each workspace group header carries a "new session"
+  error / loading — never color-only), and an unavailable Session Index is
+  rendered explicitly instead of looking like an empty list. Local AND remote
+  sessions open through the same unified selection path
+  (`openWorkspaceSession` → `setCurrentSession`), passing the composite
+  `(workspaceId, upstreamSessionId)` target so equal IDs/directories cannot
+  collide; the sync then runs against the workspace-bound runtime handle keyed
+  by workspaceId, and the click path never switches the global runtime
+  endpoint. Each workspace group header carries a "new session"
   affordance that creates the session server-side via
   `session-index-client.createWorkspaceSession` (`POST
   /api/workspaces/:id/sessions`); the new session surfaces through the index
@@ -52,6 +55,7 @@
 - `sortableItems.tsx`: DnD sortable wrapper for project ordering plus the sticky zone-band project header and its action affordances.
 - `sessionFolderDnd.tsx`: Folder/session DnD scope and wrappers for dropping/moving sessions into folders.
 - `sessionOwnership.ts`: Resolves session directories once into shared project/worktree ownership and folder-scope indexes.
+- `worktreeFirstSeen.ts`: Keeps the discovery-order hint in memory, keyed by SyncProvider scope plus worktree path so equal paths on different workspaces do not share ordering state.
 
 ### Hooks
 

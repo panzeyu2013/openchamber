@@ -26,7 +26,6 @@ import { mergeModelMetadataWithLiveModel } from '@/lib/modelMetadata';
 import { getModelDisplayName as getSharedModelDisplayName } from '@/lib/modelDisplay';
 import { getEditModeColors } from '@/lib/permissions/editModeColors';
 import { cn, fuzzyMatch } from '@/lib/utils';
-import { useContextStore } from '@/stores/contextStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
@@ -345,7 +344,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const saveAgentModelVariantForSession = useSelectionStore((state) => state.saveAgentModelVariantForSession);
     const getAgentModelVariantForSession = useSelectionStore((state) => state.getAgentModelVariantForSession);
 
-    const contextHydrated = useContextStore((state) => state.hasHydrated);
+    const [selectionHydrated, setSelectionHydrated] = React.useState(
+        () => useSelectionStore.persist.hasHydrated(),
+    );
+
+    React.useEffect(() => {
+        if (useSelectionStore.persist.hasHydrated()) {
+            setSelectionHydrated(true);
+            return;
+        }
+        return useSelectionStore.persist.onFinishHydration(() => setSelectionHydrated(true));
+    }, []);
 
     const sessionSavedAgentName = useSelectionStore((state) =>
         currentSessionId ? state.getSessionAgentSelection(currentSessionId) : null
@@ -793,7 +802,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (!contextHydrated || providers.length === 0 || !hasRenderableCurrentSessionSnapshot || !latestLoadedUserChoice?.providerID || !latestLoadedUserChoice.modelID) {
+        if (!selectionHydrated || providers.length === 0 || !hasRenderableCurrentSessionSnapshot || !latestLoadedUserChoice?.providerID || !latestLoadedUserChoice.modelID) {
             return;
         }
 
@@ -863,7 +872,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     }, [
         currentSessionId,
         currentAgentName,
-        contextHydrated,
+        selectionHydrated,
         providers,
         hasRenderableCurrentSessionSnapshot,
         latestLoadedUserChoice,
@@ -883,7 +892,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             return;
         }
 
-        if (!contextHydrated || providers.length === 0 || agents.length === 0) {
+        if (!selectionHydrated || providers.length === 0 || agents.length === 0) {
             return;
         }
 
@@ -1015,13 +1024,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         setAgent,
         tryApplyModelSelection,
         saveSessionAgentSelection,
-        contextHydrated,
+        selectionHydrated,
         providers,
         sync,
     ]);
 
     React.useEffect(() => {
-        if (!contextHydrated) {
+        if (!selectionHydrated) {
             return;
         }
         const abortController = new AbortController();
@@ -1106,11 +1115,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         saveAgentModelForSession,
         saveSessionModelSelection,
         tryApplyModelSelection,
-        contextHydrated,
+        selectionHydrated,
     ]);
 
     React.useEffect(() => {
-        if (!contextHydrated || !currentAgentName) {
+        if (!selectionHydrated || !currentAgentName) {
             manualVariantSelectionRef.current = false;
             setCurrentVariant(undefined);
             return;
@@ -1162,7 +1171,7 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         manualVariantSelectionRef.current = false;
     }, [
         availableVariants,
-        contextHydrated,
+        selectionHydrated,
         currentSessionId,
         currentAgentName,
         currentProviderId,

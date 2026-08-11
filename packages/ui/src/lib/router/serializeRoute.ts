@@ -7,6 +7,8 @@ import { ROUTE_PARAMS } from './types';
  */
 export interface AppRouteState {
   sessionId: string | null;
+  /** Optional during the compatibility window; old callers remain valid. */
+  workspaceId?: string | null;
   tab: MainTab;
   isSettingsOpen: boolean;
   settingsPath: string;
@@ -28,6 +30,9 @@ function serializeRoute(state: AppRouteState): URLSearchParams {
   // Session ID - always include if present
   if (state.sessionId && state.sessionId.trim().length > 0) {
     params.set(ROUTE_PARAMS.SESSION, state.sessionId);
+  }
+  if (state.workspaceId && state.workspaceId.trim().length > 0) {
+    params.set(ROUTE_PARAMS.WORKSPACE, state.workspaceId);
   }
 
   // Settings takes precedence - if open, include settings section

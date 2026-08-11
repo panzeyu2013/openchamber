@@ -7,17 +7,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Icon } from '@/components/icon/Icon';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useI18n } from '@/lib/i18n';
-import { opencodeClient } from '@/lib/opencode/client';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
-import { getSyncMessages, getSyncParts } from '@/sync/sync-refs';
+import { getSyncMessages, getSyncOpencodeService, getSyncParts, getSyncScopeKey } from '@/sync/sync-refs';
+import type { OpencodeService } from '@/lib/opencode/client';
 import { flattenAssistantTextParts } from '@/lib/messages/messageText';
 import { getFusionSessionTitle, parseMultiRunSessionTitle } from '@/lib/multirun/title';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { AgentSelector } from './AgentSelector';
 import { ModelMultiSelect, generateInstanceId, type ModelSelectionWithId } from './ModelMultiSelect';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 type FusionSource = {
   session: Session;
@@ -35,18 +36,16 @@ const getSessionProjectDirectory = (sessionId: string, directory: string | null)
   return metadata?.projectDirectory ?? directory;
 };
 
-const getLastAssistantText = async (source: FusionSource): Promise<string> => {
+const getLastAssistantText = async (source: FusionSource, service: OpencodeService): Promise<string> => {
   const directory = source.directory ?? undefined;
   const messages = getSyncMessages(source.session.id, directory);
 
   if (messages.length === 0 && source.directory) {
-    const result = await opencodeClient.withDirectory(source.directory, () =>
-      opencodeClient.getSdkClient().session.messages({
-        sessionID: source.session.id,
-        directory: source.directory ?? undefined,
-        limit: 50,
-      })
-    );
+    const result = await service.getSdkClient().session.messages({
+      sessionID: source.session.id,
+      directory: source.directory ?? undefined,
+      limit: 50,
+    });
     const records = result.data ?? [];
     for (let index = records.length - 1; index >= 0; index -= 1) {
       const record = records[index] as { info?: { role?: string }; parts?: unknown[] };
@@ -75,6 +74,7 @@ export function MultiRunFusionDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
+  const activeWorkspaceId = useActiveWorkspaceId();
   const liveSessions = useAllLiveSessions();
   const activeSessions = useGlobalSessionsStore((state) => state.activeSessions);
   const archivedSessions = useGlobalSessionsStore((state) => state.archivedSessions);
@@ -143,8 +143,10 @@ export function MultiRunFusionDialog({
   const handleStart = async () => {
     if (!parsed || !providerID || !modelID) return;
     setIsStarting(true);
+    const service = getSyncOpencodeService();
+    const scopeKey = getSyncScopeKey();
     try {
-      const sourceTexts = await Promise.all(sources.map((source) => getLastAssistantText(source)));
+      const sourceTexts = await Promise.all(sources.map((source) => getLastAssistantText(source, service)));
       const usableSources = sources
         .map((source, index) => ({ source, text: sourceTexts[index] ?? '' }))
         .filter((item) => item.text.trim().length > 0);
@@ -160,13 +162,17 @@ export function MultiRunFusionDialog({
         renderMagicPrompt('session.fusion.visible'),
         renderMagicPrompt('session.fusion.instructions'),
       ]);
-      const fusionSession = await useSessionUIStore.getState().createSession(fusionTitle, directory, null);
+      if (getSyncScopeKey() !== scopeKey) {
+        throw new Error('Fusion was cancelled because the workspace changed.');
+      }
+      const fusionSession = await service.createSession({ title: fusionTitle }, directory);
       if (!fusionSession) throw new Error('Failed to create fusion session');
 
-      useSessionUIStore.getState().setCurrentSession(fusionSession.id, directory);
+      useSessionUIStore.getState().setCurrentSession(fusionSession.id, directory, activeWorkspaceId);
       onOpenChange(false);
 
-      await opencodeClient.sendMessage({
+      await service.sendMessage({
+        runtimeKey: scopeKey,
         id: fusionSession.id,
         providerID,
         modelID,
@@ -178,7 +184,7 @@ export function MultiRunFusionDialog({
           ...usableSources.map((item, index) => ({ text: buildSourcePart(item.source, item.text, index), synthetic: true })),
           { text: '\n\n--- FUSION INPUTS END ---\nNow write the final fused answer.', synthetic: true },
         ],
-        directory: directory ?? opencodeClient.getDirectory(),
+        directory: directory ?? service.getDirectory(),
       });
     } catch (error) {
       console.error('[MultiRunFusion] Failed to start fusion', error);

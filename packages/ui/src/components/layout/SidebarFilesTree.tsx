@@ -30,8 +30,9 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
-import { useFileSearchStore } from '@/stores/useFileSearchStore';
+import { useScopedFileSearch } from '@/stores/useFileSearchStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGitStatus } from '@/stores/useGitStore';
@@ -39,7 +40,6 @@ import { useDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { useFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { cn, getRevealLabelKey } from '@/lib/utils';
-import { opencodeClient } from '@/lib/opencode/client';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { getContextFileOpenFailureMessage, validateContextFileOpen } from '@/lib/contextFileOpenGuard';
@@ -123,10 +123,10 @@ type FileTreeCache = {
 };
 const FILE_TREE_CACHE_MAX_ROOTS = 8;
 const fileTreeCacheByRoot = new Map<string, FileTreeCache>();
-const fileTreeCacheKey = (root: string): string => JSON.stringify([getRuntimeKey(), root]);
+const fileTreeCacheKey = (scopeKey: string, root: string): string => JSON.stringify([scopeKey, root]);
 
-const touchCache = (root: string): FileTreeCache | null => {
-  const key = fileTreeCacheKey(root);
+const touchCache = (scopeKey: string, root: string): FileTreeCache | null => {
+  const key = fileTreeCacheKey(scopeKey, root);
   const entry = fileTreeCacheByRoot.get(key);
   if (!entry) return null;
   entry.touchedAt = Date.now();
@@ -137,8 +137,8 @@ const touchCache = (root: string): FileTreeCache | null => {
   return entry;
 };
 
-const getOrCreateCache = (root: string): FileTreeCache => {
-  const key = fileTreeCacheKey(root);
+const getOrCreateCache = (scopeKey: string, root: string): FileTreeCache => {
+  const key = fileTreeCacheKey(scopeKey, root);
   const existing = fileTreeCacheByRoot.get(key);
   if (existing) {
     existing.touchedAt = Date.now();
@@ -160,8 +160,8 @@ const getOrCreateCache = (root: string): FileTreeCache => {
   return created;
 };
 
-const dropCacheForRoot = (root: string): void => {
-  fileTreeCacheByRoot.delete(fileTreeCacheKey(root));
+const dropCacheForRoot = (scopeKey: string, root: string): void => {
+  fileTreeCacheByRoot.delete(fileTreeCacheKey(scopeKey, root));
 };
 
 const getFileIcon = (filePath: string, extension?: string): React.ReactNode => {
@@ -430,12 +430,14 @@ const MemoizedFileRow = React.memo(FileRow, areFileRowPropsEqual);
 export const SidebarFilesTree: React.FC = () => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
+  const { handle } = useWorkspaceRuntime();
+  const scopeKey = handle?.scopeKey ?? getRuntimeKey();
   const isBrowserClient = isBrowserClientRuntime(runtime.platform);
   const currentDirectory = useEffectiveDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());
   const showHidden = useDirectoryShowHidden();
   const showGitignored = useFilesViewShowGitignored();
-  const searchFiles = useFileSearchStore((state) => state.searchFiles);
+  const searchFiles = useScopedFileSearch();
   const openContextFile = useUIStore((state) => state.openContextFile);
   const gitStatus = useGitStatus(currentDirectory);
 
@@ -463,7 +465,7 @@ export const SidebarFilesTree: React.FC = () => {
       loadedDirsRef.current = new Set();
       return;
     }
-    const cached = touchCache(root);
+    const cached = touchCache(scopeKey, root);
     if (cached) {
       // Shallow-clone so the state and cache hold independent references.
       // This protects the cache from accidental in-place mutation of state
@@ -476,22 +478,22 @@ export const SidebarFilesTree: React.FC = () => {
       setLoadErrorsByDir({});
       loadedDirsRef.current = new Set();
     }
-  }, [root]);
+  }, [root, scopeKey]);
 
   // Mirror local state into the per-root cache. Don't bump touchedAt here:
   // writes are frequent and the LRU should reflect user attention, not
   // background re-renders.
   React.useEffect(() => {
     if (!root) return;
-    const cache = getOrCreateCache(root);
+    const cache = getOrCreateCache(scopeKey, root);
     cache.childrenByDir = childrenByDir;
-  }, [root, childrenByDir]);
+  }, [root, scopeKey, childrenByDir]);
 
   React.useEffect(() => {
     if (!root) return;
-    const cache = getOrCreateCache(root);
+    const cache = getOrCreateCache(scopeKey, root);
     cache.loadErrorsByDir = loadErrorsByDir;
-  }, [root, loadErrorsByDir]);
+  }, [root, scopeKey, loadErrorsByDir]);
 
   // The ref's contents must be persisted to the cache so a remount (e.g.
   // close-and-reopen of the right sidebar) skips re-listing already-known
@@ -500,9 +502,9 @@ export const SidebarFilesTree: React.FC = () => {
   // `loadDirectory` and isn't tracked by React otherwise.
   React.useEffect(() => {
     if (!root) return;
-    const cache = getOrCreateCache(root);
+    const cache = getOrCreateCache(scopeKey, root);
     cache.loadedDirs = new Set(loadedDirsRef.current);
-  }, [root, childrenByDir, loadErrorsByDir]);
+  }, [root, scopeKey, childrenByDir, loadErrorsByDir]);
 
   // Drop the cache entry for this root on unmount when no data was loaded
   // (e.g. user opened the tab and immediately switched projects before any
@@ -510,11 +512,11 @@ export const SidebarFilesTree: React.FC = () => {
   // rehydrates instantly.
   React.useEffect(() => () => {
     if (!root) return;
-    const cache = fileTreeCacheByRoot.get(root);
+    const cache = fileTreeCacheByRoot.get(fileTreeCacheKey(scopeKey, root));
     if (cache && cache.loadedDirs.size === 0 && Object.keys(cache.childrenByDir).length === 0) {
-      dropCacheForRoot(root);
+      dropCacheForRoot(scopeKey, root);
     }
-  }, [root]);
+  }, [root, scopeKey]);
 
   const EMPTY_PATHS: string[] = React.useMemo(() => [], []);
   const EMPTY_CONTEXT_TABS: Array<{ mode: string; targetPath: string | null }> = React.useMemo(() => [], []);
@@ -594,13 +596,7 @@ export const SidebarFilesTree: React.FC = () => {
     inFlightDirsRef.current = new Set(inFlightDirsRef.current);
     inFlightDirsRef.current.add(normalizedDir);
 
-    const listPromise = files.listDirectory
-      ? files.listDirectory(normalizedDir).then((result) => result.entries.map((entry) => ({
-        name: entry.name,
-        path: entry.path,
-        isDirectory: entry.isDirectory,
-      })))
-      : opencodeClient.listLocalDirectory(normalizedDir).then((result) => result.map((entry) => ({
+    const listPromise = files.listDirectory(normalizedDir).then((result) => result.entries.map((entry) => ({
         name: entry.name,
         path: entry.path,
         isDirectory: entry.isDirectory,

@@ -22,7 +22,7 @@ import { cn } from '@/lib/utils';
 import type { ModelMetadata } from '@/types';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { shouldLoadAvailableProviders } from './providerAvailability';
 import {
   getOAuthAuthMethods,
@@ -199,7 +199,7 @@ export const ProvidersPage: React.FC = () => {
     const loadAuthMethods = async () => {
       setAuthLoading(true);
       try {
-        const result = await opencodeClient.getSdkClient().provider.auth();
+        const result = await getSyncOpencodeService().getSdkClient().provider.auth();
         if (result.error) {
           throw new Error(`provider.auth failed: ${String(result.error)}`);
         }
@@ -234,7 +234,7 @@ export const ProvidersPage: React.FC = () => {
       setAvailableLoading(true);
       setAvailableError(null);
       try {
-        const result = await opencodeClient.getSdkClient().provider.list();
+        const result = await getSyncOpencodeService().getSdkClient().provider.list();
         if (result.error) {
           throw new Error(`provider.list failed: ${String(result.error)}`);
         }
@@ -384,7 +384,7 @@ export const ProvidersPage: React.FC = () => {
     setAuthBusyKey(busyKey);
 
     try {
-      const result = await opencodeClient.getSdkClient().auth.set({
+      const result = await getSyncOpencodeService().getSdkClient().auth.set({
         providerID: providerId,
         auth: { type: 'api', key: apiKey },
       });
@@ -415,7 +415,7 @@ export const ProvidersPage: React.FC = () => {
       // blocks create validation, and so PUT can pass hasStoredAuth for literal keys.
       const authRequest = buildAuthSetRequest(plan);
       if (authRequest) {
-        const authResult = await opencodeClient.getSdkClient().auth.set(authRequest);
+        const authResult = await getSyncOpencodeService().getSdkClient().auth.set(authRequest);
         if (authResult.error) {
           throw new Error(t('settings.providers.page.toast.apiKeySaveFailed'));
         }

@@ -193,7 +193,7 @@ const DebugPanel: React.FC<DebugPanelProps> = ({ onClose }) => {
         isCurrent: session.id === currentSessionId
       };
     }).sort((a, b) => b.lastAccessed - a.lastAccessed);
-  }, [sessions, messageRecord, sessionMemoryState, currentSessionId, t]);
+  }, [sessions, messageRecord, currentSessionId, t]);
 
   const cachedSessionCount = Object.keys(messageRecord).length;
 

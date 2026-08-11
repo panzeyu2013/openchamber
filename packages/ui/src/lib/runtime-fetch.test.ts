@@ -3,6 +3,7 @@ import { createOpencodeClient } from '@opencode-ai/sdk/v2';
 import { buildRuntimeFetchUrl, isLatin1Safe, runtimeFetch, sanitizeHeadersForBrowser } from './runtime-fetch';
 import { clearRuntimeAuthCredentialProvider, setRuntimeBearerToken } from './runtime-auth';
 import { configureRuntimeUrlResolver, getRuntimeUrlResolver, setRuntimeUrlResolver } from './runtime-url';
+import { isWorkspaceRuntimeActive, setWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 const originalFetch = globalThis.fetch;
 
@@ -79,6 +80,57 @@ describe('buildRuntimeFetchUrl', () => {
 });
 
 describe('runtimeFetch transport contract', () => {
+  test('returns explicit capability_unavailable for workspace config CRUD without touching the ambient fetch', async () => {
+    const calls: Array<string | URL | Request> = [];
+    const previousActive = isWorkspaceRuntimeActive();
+    try {
+      setWorkspaceRuntimeActive(true);
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        calls.push(input);
+        throw new Error('ambient fetch must not run');
+      }) as typeof fetch;
+
+      const response = await runtimeFetch('/api/config/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ theme: 'dark' }),
+      });
+
+      expect(response.status).toBe(501);
+      expect(await response.json()).toEqual({
+        error: 'This workspace capability is not available',
+        code: 'capability_unavailable',
+      });
+      expect(calls).toHaveLength(0);
+    } finally {
+      setWorkspaceRuntimeActive(previousActive);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('keeps host-owned provider config routes unavailable in workspace scope', async () => {
+    const calls: Array<string | URL | Request> = [];
+    const previousActive = isWorkspaceRuntimeActive();
+    try {
+      setWorkspaceRuntimeActive(true);
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        calls.push(input);
+        throw new Error('ambient fetch must not run');
+      }) as typeof fetch;
+
+      const response = await runtimeFetch('/api/provider/example/auth?scope=all', { method: 'DELETE' });
+
+      expect(response.status).toBe(501);
+      expect(await response.json()).toEqual({
+        error: 'This workspace capability is not available',
+        code: 'capability_unavailable',
+      });
+      expect(calls).toHaveLength(0);
+    } finally {
+      setWorkspaceRuntimeActive(previousActive);
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test('preserves bodies from actual SDK mutation requests on same-origin runtimes', async () => {
     const previous = getRuntimeUrlResolver();
     const originalWindow = globalThis.window;

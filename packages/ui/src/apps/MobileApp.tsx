@@ -46,7 +46,7 @@ import { useUpdateStore } from '@/stores/useUpdateStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { SyncProvider } from '@/sync/sync-context';
 
-import { SyncAppEffects } from './AppEffects';
+import { SyncAppEffects, WorkspaceCatalogSessionIndexEffects } from './AppEffects';
 import { BusyDots } from '@/components/chat/message/parts/BusyDots';
 import { MobileConnectionWelcome, type MobileConnectionNotice } from './MobileConnectionWelcome';
 import { MobileHeader } from './MobileHeader';
@@ -65,12 +65,38 @@ import { useDeepLinkHandlers, useDeepLinkSource } from './deepLinkNavigation';
 import { useEdgeSwipe } from './useEdgeSwipe';
 import { useNativePushRegistration } from './useNativePushRegistration';
 import { IpadSidebarResizeHandle } from './IpadSidebarResizeHandle';
+import { WorkspaceRuntimeGate, WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import {
   IPAD_LEFT_SIDEBAR_WIDTH,
   IPAD_RIGHT_SIDEBAR_WIDTH,
   IPAD_WORKSPACE_SIDEBAR_MAX_WIDTH,
   useIpadSidebarResize,
 } from './ipadSidebarResize';
+
+const MobileWorkspaceSyncMount: React.FC<{
+  runtimeEndpointEpoch: number;
+  directory: string;
+  children: React.ReactNode;
+}> = ({ runtimeEndpointEpoch, directory, children }) => {
+  const { handle } = useWorkspaceRuntime();
+  const workspaceId = useActiveWorkspaceId();
+  if (workspaceId && !handle) {
+    return <WorkspaceRuntimeGate />;
+  }
+
+  return (
+    <SyncProvider
+      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
+      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
+      directory={directory}
+      workspaceHandle={handle}
+    >
+      {children}
+    </SyncProvider>
+  );
+};
 
 const MOBILE_SETTINGS_PAGES = [
   'general',
@@ -624,6 +650,7 @@ export function MobileApp({ apis }: MobileAppProps) {
   const loadProviders = useConfigStore((state) => state.loadProviders);
   const loadAgents = useConfigStore((state) => state.loadAgents);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const error = useSessionUIStore((state) => state.error);
   const clearError = useSessionUIStore((state) => state.clearError);
   const setIsMobile = useUIStore((state) => state.setIsMobile);
@@ -935,6 +962,13 @@ export function MobileApp({ apis }: MobileAppProps) {
     void (async () => {
       // `null` = fetch failure — keep the ref unset so the next connect (a
       // stale persisted isConnected can fire this early) retries the restore.
+      const workspaceRestore = await refreshWorkspaceStateAfterResume().catch(() => ({ restored: false as const, reason: 'no-control-plane' as const }));
+      if (cancelled) return;
+      if (workspaceRestore.restored) {
+        lastSessionRestoreDoneRef.current = true;
+        setLastSessionRestorePending(false);
+        return;
+      }
       const snapshot = await refreshGlobalSessions().catch(() => null);
       if (cancelled) return;
       if (!snapshot) {
@@ -967,8 +1001,9 @@ export function MobileApp({ apis }: MobileAppProps) {
 
   React.useEffect(() => {
     if (!isConnected) return;
+    if (activeWorkspaceId) return;
     opencodeClient.setDirectory(currentDirectory);
-  }, [currentDirectory, isConnected]);
+  }, [activeWorkspaceId, currentDirectory, isConnected]);
 
   // Gated on isConnected (and re-run on reconnect/instance switch): probing the
   // GitHub auth status before the runtime is reachable cached a "not connected"
@@ -1204,10 +1239,12 @@ export function MobileApp({ apis }: MobileAppProps) {
 
   return (
     <ErrorBoundary>
-      <SyncProvider key={runtimeEndpointEpoch} sdk={opencodeClient.getSdkClient()} directory={currentDirectory || ''}>
-        <RuntimeAPIProvider apis={apis}>
-          <TooltipProvider delayDuration={300} skipDelayDuration={150}>
-            <div className="h-full bg-background text-foreground">
+      <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
+        <WorkspaceCatalogSessionIndexEffects />
+        <MobileWorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch} directory={currentDirectory || ''}>
+          <RuntimeAPIProvider apis={apis}>
+            <TooltipProvider delayDuration={300} skipDelayDuration={150}>
+              <div className="h-full bg-background text-foreground">
               {/* Cold-launch continuity: keep the boot logo up over the shell
                   until the last-session restore decides between session and
                   draft — otherwise the auto-opened draft flashes first. The
@@ -1217,7 +1254,7 @@ export function MobileApp({ apis }: MobileAppProps) {
                   <OpenChamberLogo width={120} height={120} isAnimated />
                 </div>
               ) : null}
-              <SyncAppEffects embeddedBackgroundWorkEnabled={isInitialized} />
+              <SyncAppEffects embeddedBackgroundWorkEnabled={isInitialized} includeWorkspaceState={false} />
               <OpenCodeUpdateToast />
               <MobileAppUpdateToast />
               <MobileShell onActiveConnectionDeleted={() => {
@@ -1227,10 +1264,11 @@ export function MobileApp({ apis }: MobileAppProps) {
               }} />
               <Toaster position="top-center" offset="calc(var(--oc-safe-area-top, 0px) + 16px)" />
               {isInitialized ? <ConfigUpdateOverlay /> : null}
-            </div>
-          </TooltipProvider>
-        </RuntimeAPIProvider>
-      </SyncProvider>
+              </div>
+            </TooltipProvider>
+          </RuntimeAPIProvider>
+        </MobileWorkspaceSyncMount>
+      </WorkspaceRuntimeProvider>
     </ErrorBoundary>
   );
 }

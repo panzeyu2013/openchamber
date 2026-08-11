@@ -36,11 +36,16 @@ const createContext = (overrides = {}) => ({
 
 describe('safe upstream validator (SSRF)', () => {
   it('rejects loopback, private, link-local and metadata addresses', async () => {
-    const { assertSafeUpstreamUrl } = createSafeUpstreamValidator({ lookup: createLookup({ ...PUBLIC, ...BLOCKED }) });
+    const { assertSafeUpstreamUrl } = createSafeUpstreamValidator({ lookup: createLookup({
+      ...PUBLIC,
+      ...BLOCKED,
+      'mapped-loopback.internal': ['::ffff:127.0.0.1'],
+    }) });
     for (const baseUrl of [
       'http://127.0.0.1:3000',
       'http://localhost:3000',
       'http://[::1]:3000',
+      'http://mapped-loopback.internal:3000',
       'http://10.0.0.5',
       'http://192.168.1.10',
       'http://172.16.0.1',
@@ -202,6 +207,29 @@ describe('direct adapter', () => {
     await expect(adapter.fetch(context, { method: 'GET', headers: new Headers() }, '/api/session')).rejects.toThrow('aborted');
   });
 
+  it('keeps the adapter timeout active when the proxy supplies a disconnect signal', async () => {
+    let capturedHeaders;
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      timeoutMs: 20,
+      fetchImpl: async (_url, init) => {
+        capturedHeaders = init.headers;
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => reject(new Error('timed out')));
+        });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const disconnect = new AbortController();
+    const context = createContext();
+    await expect(adapter.fetch(
+      context,
+      { method: 'GET', headers: { accept: 'application/json' }, signal: disconnect.signal },
+      '/api/session',
+    )).rejects.toThrow('timed out');
+    expect(capturedHeaders.get('accept')).toBe('application/json');
+  });
+
   it('probes /health and classifies failures', async () => {
     const adapter = createDirectWorkspaceAdapter({
       connectionId: 'conn-1',
@@ -220,6 +248,34 @@ describe('direct adapter', () => {
       profile: { id: 'conn-1', target: { kind: 'direct', baseUrl: 'https://api.example.com' } },
     }), null);
     expect(unreachable.ok).toBe(true);
+  });
+
+  it('probes a remote workspace path before reporting it as usable', async () => {
+    const calls = [];
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async (url, init) => {
+        calls.push({ url, init });
+        if (url.endsWith('/health')) return new Response('ok', { status: 200 });
+        return new Response(JSON.stringify({ entries: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const result = await adapter.probe(createContext(), '/remote/project');
+    expect(result).toEqual({
+      ok: true,
+      canonicalPath: '/remote/project',
+      capabilities: { pathBrowse: true, terminal: true, files: true, git: true, eventStream: true },
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      'https://api.example.com/health',
+      'https://api.example.com/api/fs/list?path=%2Fremote%2Fproject',
+    ]);
+    expect(calls[1].init.headers.get('x-opencode-directory')).toBe('/remote/project');
+    expect(calls[1].init.headers.get('x-openchamber-directory')).toBe('/remote/project');
   });
 
   it('probe returns typed failures without throwing', async () => {
@@ -244,6 +300,7 @@ describe('direct adapter', () => {
       connectionId: 'conn-1',
       fetchImpl: async (url, init) => {
         expect(init.headers.get('x-openchamber-directory')).toBe('/remote/proj');
+        expect(new URL(url).searchParams.get('path')).toBe('/remote/proj');
         return new Response(JSON.stringify([
           { name: 'src', path: '/remote/proj/src', isDirectory: true },
           { name: 'README.md', path: '/remote/proj/README.md', isFile: true },
@@ -283,6 +340,67 @@ describe('direct adapter', () => {
       adapter.fetch(context, { method: 'GET', headers: new Headers(), query: { directory: '/remote/other' } }, '/api/session'),
     ).rejects.toMatchObject({ code: 'catalog_path_outside_workspace', status: 403 });
     expect(calls).toBe(0);
+  });
+
+  it('scopes filesystem directory listing queries to the workspace', async () => {
+    let capturedUrl = '';
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async (url) => {
+        capturedUrl = url;
+        return new Response(JSON.stringify({ entries: [] }), { status: 200 });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = { ...createContext(), canonicalPath: '/remote/proj' };
+    await adapter.fetch(context, { method: 'GET', headers: new Headers() }, '/api/fs/list');
+    expect(capturedUrl).toBe('https://api.example.com/api/fs/list?path=%2Fremote%2Fproj');
+    await expect(adapter.fetch(
+      context,
+      { method: 'GET', headers: new Headers() },
+      '/api/fs/list?path=%2Fetc',
+    )).rejects.toMatchObject({ code: 'catalog_path_outside_workspace', status: 403 });
+  });
+
+  it('rejects filesystem and terminal path fields outside the workspace', async () => {
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => new Response('ok', { status: 200 }),
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = { ...createContext(), canonicalPath: '/remote/proj' };
+    for (const [restPath, body] of [
+      ['/api/fs/mkdir', { path: '/etc/new-dir' }],
+      ['/api/fs/write', { path: '/etc/file', content: 'x' }],
+      ['/api/fs/delete', { path: '/etc/file' }],
+      ['/api/fs/rename', { oldPath: '/remote/proj/file', newPath: '/etc/file' }],
+      ['/api/fs/reveal', { path: '/etc' }],
+      ['/api/fs/serve/etc/passwd', {}],
+      ['/api/fs/clone', { destinationPath: '/etc/clone' }],
+      ['/api/fs/exec', { cwd: '/etc' }],
+      ['/api/terminal/create', { cwd: '/etc' }],
+      ['/api/git/stage', { paths: ['/etc/file'] }],
+    ]) {
+      await expect(adapter.fetch(context, { method: 'POST', headers: new Headers(), body }, restPath))
+        .rejects.toMatchObject({ code: 'catalog_path_outside_workspace', status: 403 });
+    }
+  });
+
+  it('accepts workspace-relative filesystem and Git paths', async () => {
+    let calls = 0;
+    const adapter = createDirectWorkspaceAdapter({
+      connectionId: 'conn-1',
+      fetchImpl: async () => {
+        calls += 1;
+        return new Response('ok', { status: 200 });
+      },
+      lookupImpl: createLookup(PUBLIC),
+    });
+    const context = { ...createContext(), canonicalPath: '/remote/proj' };
+    await adapter.fetch(context, { method: 'POST', headers: new Headers(), body: { path: 'src/file.ts' } }, '/api/fs/write');
+    await adapter.fetch(context, { method: 'POST', headers: new Headers(), body: { paths: ['src/a.ts', 'README.md'] } }, '/api/git/stage');
+    await adapter.fetch(context, { method: 'GET', headers: new Headers() }, '/api/fs/read?path=src%2Ffile.ts');
+    expect(calls).toBe(3);
   });
 
   it('overwrites the directory headers with the canonical path on forward', async () => {

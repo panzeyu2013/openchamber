@@ -21,7 +21,7 @@ export type ViewTarget = 'files' | 'mcp' | 'instances' | 'update';
  * that keeps the "blocks" composable without leaking ad-hoc URL parsing into features.
  */
 export type DeepLinkIntent =
-  | { type: 'session'; sessionId: string; directory?: string }
+  | { type: 'session'; sessionId: string; directory?: string; workspaceId?: string }
   | { type: 'new-session'; directory?: string; projectId?: string; agent?: string; model?: string }
   | { type: 'sessions'; filter?: SessionsFilter }
   | { type: 'status' }
@@ -30,6 +30,14 @@ export type DeepLinkIntent =
   | { type: 'view'; target: ViewTarget };
 
 const trimSlashes = (value: string): string => value.replace(/^\/+|\/+$/g, '');
+
+const decodeSegment = (value: string): string => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+};
 
 const segmentsOf = (url: URL): string[] => {
   // Custom-scheme URLs put the first route token in `host` (openchamber://session/<id>),
@@ -70,11 +78,16 @@ export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | 
 
   switch (route) {
     case 'session': {
-      const sessionId = rest[0] || query.get('id') || '';
+      const sessionId = decodeSegment(rest[0] || query.get('id') || '');
       if (!sessionId) {
         return null;
       }
-      return { type: 'session', sessionId, directory: query.get('dir') ?? undefined };
+      return {
+        type: 'session',
+        sessionId,
+        directory: query.get('dir') ?? undefined,
+        workspaceId: query.get('workspace') ?? undefined,
+      };
     }
 
     case 'new':
@@ -145,7 +158,10 @@ export function buildDeepLink(intent: DeepLinkIntent): string {
 
   switch (intent.type) {
     case 'session':
-      return withQuery(`session/${encodeURIComponent(intent.sessionId)}`, { dir: intent.directory });
+      return withQuery(`session/${encodeURIComponent(intent.sessionId)}`, {
+        dir: intent.directory,
+        workspace: intent.workspaceId,
+      });
     case 'new-session':
       return withQuery('new', {
         dir: intent.directory,

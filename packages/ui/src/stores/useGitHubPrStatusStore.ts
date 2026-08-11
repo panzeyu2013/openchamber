@@ -107,7 +107,7 @@ type GitHubPrStatusStore = {
   refresh: (key: string, options?: RefreshOptions) => Promise<void>;
   refreshTargets: (targets: PrTrackingTarget[], options?: RefreshOptions) => Promise<void>;
   updateStatus: (key: string, updater: (prev: GitHubPullRequestStatus | null) => GitHubPullRequestStatus | null) => void;
-  resetForRuntimeSwitch: () => void;
+  resetForRuntimeSwitch: (scopeKeys?: string | string[]) => void;
 };
 
 const timers = new Map<string, number>();
@@ -393,6 +393,12 @@ const boundEntries = (entries: Record<string, PrStatusEntry>): Record<string, Pr
     .slice(0, PR_MAX_ENTRIES));
 };
 
+const entryScopeKey = (key: string, entry: PrStatusEntry): string | null => {
+  const parsed = parseStatusKey(key);
+  if (parsed?.runtimeKey) return parsed.runtimeKey;
+  return entry.params?.runtimeKey ?? entry.identity?.runtimeKey ?? null;
+};
+
 export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
   persist(
     (set, get) => ({
@@ -400,7 +406,11 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
       activeRequestCount: 0,
       totalRequestCount: 0,
 
-      resetForRuntimeSwitch: () => {
+      resetForRuntimeSwitch: (scopeKeys) => {
+        const targets = new Set(
+          (Array.isArray(scopeKeys) ? scopeKeys : [scopeKeys ?? resolveActiveWorkspaceScopeKey()])
+            .filter((scopeKey): scopeKey is string => typeof scopeKey === 'string' && scopeKey.length > 0),
+        );
         prRuntimeGeneration += 1;
         for (const timerId of timers.values()) window.clearInterval(timerId);
         for (const timerIds of bootstrapTimers.values()) timerIds.forEach((timerId) => window.clearTimeout(timerId));
@@ -410,13 +420,21 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
         lastRefreshBySignature.clear();
         set((state) => ({
           activeRequestCount: 0,
-          entries: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => [key, {
-            ...entry,
-            watchers: 0,
-            isLoading: false,
-            params: null,
-            paramsRevision: entry.paramsRevision + 1,
-          }])),
+          entries: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => {
+            const scopeKey = entryScopeKey(key, entry);
+            const shouldReset = scopeKey !== null && targets.has(scopeKey);
+            return [key, {
+              ...entry,
+              isLoading: false,
+              ...(shouldReset
+                ? {
+                    watchers: 0,
+                    params: null,
+                    paramsRevision: entry.paramsRevision + 1,
+                  }
+                : {}),
+            }];
+          })),
         }));
       },
 

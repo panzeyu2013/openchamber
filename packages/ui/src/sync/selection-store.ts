@@ -20,17 +20,22 @@ import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from "@/works
 /**
  * Resolves the scope key for a session: the workspace scope when the session
  * index maps (sessionId, directory) to a workspace, otherwise the ambient
- * runtime key (non-workspace compatibility). The result is byte-identical to
- * `getRuntimeKey()` in non-workspace mode.
+ * runtime key (non-workspace compatibility). A caller that already has the
+ * authoritative workspace target may pass `workspaceId` to avoid ambiguity
+ * when two connections expose the same upstream session ID and directory.
+ * The result is byte-identical to `getRuntimeKey()` in non-workspace mode.
  */
 export const resolveSessionScopeKey = (
   sessionId: string | null | undefined,
   directory?: string | null,
+  workspaceId?: string | null,
 ): string => {
+  const explicitWorkspaceId = typeof workspaceId === 'string' ? workspaceId.trim() : ''
+  if (explicitWorkspaceId) return workspaceScopeKey(explicitWorkspaceId)
   const snapshot = useWorkspaceSessionIndexStore.getState().snapshot
   const sessions = snapshot?.sessions
-  const workspaceId = resolveActiveWorkspaceId(sessions, sessionId ?? null, directory ?? null)
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey()
+  const inferredWorkspaceId = resolveActiveWorkspaceId(sessions, sessionId ?? null, directory ?? null)
+  return inferredWorkspaceId ? workspaceScopeKey(inferredWorkspaceId) : getRuntimeKey()
 }
 
 type ModelSelection = { providerId: string; modelId: string }

@@ -3,11 +3,10 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { Button } from '@/components/ui/button';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useProjectsStore } from '@/stores/useProjectsStore';
 import { cn } from '@/lib/utils';
 import { SettingsProjectSelector } from '@/components/sections/shared/SettingsProjectSelector';
 import { Icon } from "@/components/icon/Icon";
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { SETTINGS_PANEL_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
@@ -27,7 +26,7 @@ interface ProviderSources {
 }
 
 const getCurrentDirectory = (): string | null => {
-  const dir = opencodeClient.getDirectory();
+  const dir = getSyncOpencodeService().getDirectory();
   if (typeof dir === 'string' && dir.trim().length > 0) {
     return dir.trim();
   }
@@ -43,13 +42,10 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
   const providers = useConfigStore((state) => state.providers);
   const selectedProviderId = useConfigStore((state) => state.selectedProviderId);
   const setSelectedProvider = useConfigStore((state) => state.setSelectedProvider);
-  const activeProjectId = useProjectsStore((s) => s.activeProjectId);
   const [sourcesByProvider, setSourcesByProvider] = React.useState<Record<string, ProviderSources>>({});
-  const directory = React.useMemo(() => {
-    // tie refresh to active project changes (directory is stored in the client)
-    void activeProjectId;
-    return getCurrentDirectory();
-  }, [activeProjectId]);
+  // The bound service is read during render so a provider/config refresh also
+  // re-evaluates the directory after a workspace scope changes.
+  const directory = getCurrentDirectory();
 
   React.useEffect(() => {
     if (providers.length === 0) {

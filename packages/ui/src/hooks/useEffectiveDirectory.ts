@@ -3,6 +3,8 @@ import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { getAttachedSessionDirectory } from '@/sync/session-worktree-contract';
 import { useSessionDirectory } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 /**
  * Hook that resolves the effective working directory for tabs (Git, Diff, Files, Terminal).
@@ -11,18 +13,21 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
  * 1. Worktree metadata path (for worktree sessions)
  * 2. Session directory (for active sessions)
  * 3. Draft session directoryOverride (when creating a new session)
- * 4. Fallback directory from DirectoryStore
+ * 4. Bound workspace directory, or the ambient DirectoryStore only when no
+ *    workspace target is active
  *
  * This ensures that tabs show content from the correct project directory
  * even when a draft session is being created.
  */
 export const useEffectiveDirectory = (): string | undefined => {
+    const { handle } = useWorkspaceRuntime();
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
     const currentSessionDirectory = useSessionDirectory(currentSessionId);
     const worktreeAttachment = useSessionWorktreeStore((s) => currentSessionId ? s.getAttachment(currentSessionId) : undefined);
     const worktreeMap = useSessionUIStore((s) => s.worktreeMetadata);
     const fallbackDirectory = useDirectoryStore((s) => s.currentDirectory);
+    const activeWorkspaceId = useActiveWorkspaceId();
 
     // If we have an active session, use its directory
     if (currentSessionId) {
@@ -44,6 +49,11 @@ export const useEffectiveDirectory = (): string | undefined => {
         return (newSessionDraft.bootstrapPendingDirectory || newSessionDraft.directoryOverride) ?? undefined;
     }
 
-    // Fall back to the global directory
-    return fallbackDirectory ?? undefined;
+    // A workspace target with no resolved handle is unavailable, not a reason
+    // to borrow the ambient directory from another runtime/project.
+    if (activeWorkspaceId) {
+        return handle?.directory ?? undefined;
+    }
+
+    return handle?.directory ?? fallbackDirectory ?? undefined;
 };

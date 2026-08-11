@@ -2,90 +2,151 @@ import { create } from 'zustand';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { isSessionPinned } from '@/stores/useSessionPinnedStore';
 import { normalizePath } from '@/lib/pathNormalization';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type SessionActivityPhase = 'active' | 'settled';
 
 type SessionOrderingState = {
+  scopeKey: string;
+  rankById: Map<string, number>;
+  bindScope: (scopeKey: string) => void;
+};
+
+type SessionOrderingScope = {
+  phaseById: Map<string, SessionActivityPhase>;
+  baselineRankById: Map<string, { created?: number; updated?: number }>;
   rankById: Map<string, number>;
 };
 
 export const EMPTY_SESSION_ORDER_RANKS: ReadonlyMap<string, number> = new Map();
 
-const phaseById = new Map<string, SessionActivityPhase>();
-const baselineRankById = new Map<string, { created?: number; updated?: number }>();
+const scopeStates = new Map<string, SessionOrderingScope>();
 let lastRank = 0;
 
-export const useSessionOrderingStore = create<SessionOrderingState>(() => ({
+const normalizeScopeKey = (scopeKey?: string): string => {
+  const normalized = scopeKey?.trim();
+  return normalized || getRuntimeKey();
+};
+
+const createScopeState = (): SessionOrderingScope => ({
+  phaseById: new Map(),
+  baselineRankById: new Map(),
   rankById: new Map(),
-}));
+});
+
+const readScopeState = (scopeKey: string): SessionOrderingScope => {
+  const existing = scopeStates.get(scopeKey);
+  if (existing) return existing;
+  const created = createScopeState();
+  scopeStates.set(scopeKey, created);
+  return created;
+};
+
+export const useSessionOrderingStore = create<SessionOrderingState>((set, get) => {
+  const scopeKey = getRuntimeKey();
+  const scope = readScopeState(scopeKey);
+
+  return {
+    scopeKey,
+    rankById: scope.rankById,
+    bindScope: (nextScopeKey) => {
+      const normalizedScopeKey = normalizeScopeKey(nextScopeKey);
+      const current = get();
+      const currentScope = readScopeState(current.scopeKey);
+      currentScope.rankById = current.rankById;
+      if (current.scopeKey === normalizedScopeKey) return;
+      const nextScope = readScopeState(normalizedScopeKey);
+      set({ scopeKey: normalizedScopeKey, rankById: nextScope.rankById });
+    },
+  };
+});
+
+useSessionOrderingStore.subscribe((state, previous) => {
+  if (state.scopeKey !== previous.scopeKey || state.rankById !== previous.rankById) {
+    readScopeState(state.scopeKey).rankById = state.rankById;
+  }
+});
 
 const nextRank = (): number => {
   lastRank = Math.max(lastRank + 1, Date.now());
   return lastRank;
 };
 
-const promoteSessions = (sessionIds: Iterable<string>, useSharedRank = false): void => {
+const promoteSessions = (scopeKey: string, sessionIds: Iterable<string>, useSharedRank = false): void => {
   const ids = [...sessionIds];
   if (ids.length === 0) return;
 
-  useSessionOrderingStore.setState((state) => {
-    const rankById = new Map(state.rankById);
-    const sharedRank = useSharedRank ? nextRank() : null;
-    for (const sessionId of ids) {
-      rankById.set(sessionId, sharedRank ?? nextRank());
-    }
-    return { rankById };
-  });
+  const scope = readScopeState(scopeKey);
+  const rankById = new Map(scope.rankById);
+  const sharedRank = useSharedRank ? nextRank() : null;
+  for (const sessionId of ids) {
+    rankById.set(sessionId, sharedRank ?? nextRank());
+  }
+  scope.rankById = rankById;
+  if (useSessionOrderingStore.getState().scopeKey === scopeKey) {
+    useSessionOrderingStore.setState({ rankById });
+  }
 };
 
 export const observeSessionActivityEvent = (
   sessionId: string,
   phase: SessionActivityPhase,
+  scopeKey?: string,
 ): void => {
-  const previous = phaseById.get(sessionId);
-  phaseById.set(sessionId, phase);
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  const scope = readScopeState(targetScopeKey);
+  const previous = scope.phaseById.get(sessionId);
+  scope.phaseById.set(sessionId, phase);
 
   if (previous === phase) return;
   if (previous === undefined && phase === 'settled') return;
-  promoteSessions([sessionId]);
+  promoteSessions(targetScopeKey, [sessionId]);
 };
 
 export const reconcileSessionActivitySnapshot = (
   activeSessionIds: Iterable<string>,
   knownSessionIds: Iterable<string>,
+  scopeKey?: string,
 ): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  const scope = readScopeState(targetScopeKey);
   const active = new Set(activeSessionIds);
   const observed = new Set([...knownSessionIds, ...active]);
   const promoted: string[] = [];
 
   for (const sessionId of observed) {
     const phase: SessionActivityPhase = active.has(sessionId) ? 'active' : 'settled';
-    const previous = phaseById.get(sessionId);
-    phaseById.set(sessionId, phase);
+    const previous = scope.phaseById.get(sessionId);
+    scope.phaseById.set(sessionId, phase);
     if (previous !== undefined && previous !== phase) promoted.push(sessionId);
   }
 
   // A snapshot cannot recover the order of missed transitions. Give the batch
   // one rank and let authoritative timestamps break ties deterministically.
-  promoteSessions(promoted, true);
+  promoteSessions(targetScopeKey, promoted, true);
 };
 
-export const removeSessionOrdering = (sessionId: string): void => {
-  phaseById.delete(sessionId);
-  baselineRankById.delete(sessionId);
-  useSessionOrderingStore.setState((state) => {
-    if (!state.rankById.has(sessionId)) return state;
-    const rankById = new Map(state.rankById);
-    rankById.delete(sessionId);
-    return { rankById };
-  });
+export const removeSessionOrdering = (sessionId: string, scopeKey?: string): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  const scope = readScopeState(targetScopeKey);
+  scope.phaseById.delete(sessionId);
+  scope.baselineRankById.delete(sessionId);
+  if (!scope.rankById.has(sessionId)) return;
+  const rankById = new Map(scope.rankById);
+  rankById.delete(sessionId);
+  scope.rankById = rankById;
+  if (useSessionOrderingStore.getState().scopeKey === targetScopeKey) {
+    useSessionOrderingStore.setState({ rankById });
+  }
 };
 
-export const resetSessionOrdering = (): void => {
-  phaseById.clear();
-  baselineRankById.clear();
+export const resetSessionOrdering = (scopeKey?: string): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  scopeStates.set(targetScopeKey, createScopeState());
   lastRank = 0;
-  useSessionOrderingStore.setState({ rankById: new Map() });
+  if (useSessionOrderingStore.getState().scopeKey === targetScopeKey) {
+    useSessionOrderingStore.setState({ rankById: new Map() });
+  }
 };
 
 const finiteTime = (value: unknown): number => (
@@ -110,13 +171,13 @@ const sessionDirectory = (session: Session): string | null => {
   return normalizePath(record.directory ?? null) ?? normalizePath(record.project?.worktree ?? null);
 };
 
-const baselineRank = (session: Session, pinned: boolean): number => {
-  const existing = baselineRankById.get(session.id);
+const baselineRank = (session: Session, pinned: boolean, scope: SessionOrderingScope): number => {
+  const existing = scope.baselineRankById.get(session.id);
   const key = pinned ? 'created' : 'updated';
   const existingRank = existing?.[key];
   if (existingRank !== undefined) return existingRank;
   const rank = pinned ? createdAt(session) : updatedAt(session);
-  baselineRankById.set(session.id, { ...existing, [key]: rank });
+  scope.baselineRankById.set(session.id, { ...existing, [key]: rank });
   return rank;
 };
 
@@ -129,8 +190,10 @@ const baselineRank = (session: Session, pinned: boolean): number => {
  * baseline pins it in place forever. Call this when an authoritative session
  * SNAPSHOT arrives (global refresh); monotonic, so it can never demote.
  */
-export const raiseSessionOrderingBaselines = (sessions: Iterable<Session>): void => {
-  const currentRanks = useSessionOrderingStore.getState().rankById;
+export const raiseSessionOrderingBaselines = (sessions: Iterable<Session>, scopeKey?: string): void => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  const scope = readScopeState(targetScopeKey);
+  const currentRanks = scope.rankById;
   let nextRanks: Map<string, number> | null = null;
   let baselinesChanged = false;
 
@@ -148,17 +211,22 @@ export const raiseSessionOrderingBaselines = (sessions: Iterable<Session>): void
       }
       continue;
     }
-    const existing = baselineRankById.get(session.id);
+    const existing = scope.baselineRankById.get(session.id);
     if (existing?.updated !== undefined && existing.updated >= fresh) continue;
-    baselineRankById.set(session.id, { ...existing, updated: fresh });
+    scope.baselineRankById.set(session.id, { ...existing, updated: fresh });
     baselinesChanged = true;
   }
 
   if (nextRanks) {
-    useSessionOrderingStore.setState({ rankById: nextRanks });
+    scope.rankById = nextRanks;
+    if (useSessionOrderingStore.getState().scopeKey === targetScopeKey) {
+      useSessionOrderingStore.setState({ rankById: nextRanks });
+    }
   } else if (baselinesChanged) {
     // Baselines live outside the store; nudge subscribers so open lists re-sort.
-    useSessionOrderingStore.setState((state) => ({ rankById: new Map(state.rankById) }));
+    if (useSessionOrderingStore.getState().scopeKey === targetScopeKey) {
+      useSessionOrderingStore.setState((state) => ({ rankById: new Map(state.rankById) }));
+    }
   }
 };
 
@@ -166,29 +234,37 @@ export const getSessionLifecycleOrderValue = (
   session: Session,
   rankById: ReadonlyMap<string, number>,
   pinned = false,
-): number => rankById.get(session.id) ?? baselineRank(session, pinned);
+  scopeKey?: string,
+): number => rankById.get(session.id) ?? baselineRank(
+  session,
+  pinned,
+  readScopeState(normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey)),
+);
 
 export const compareSessionsByLifecycleOrder = (
   left: Session,
   right: Session,
   pinnedSessionIds: Set<string>,
   rankById: ReadonlyMap<string, number>,
+  scopeKey?: string,
 ): number => {
+  const targetScopeKey = normalizeScopeKey(scopeKey ?? useSessionOrderingStore.getState().scopeKey);
+  const scope = readScopeState(targetScopeKey);
   const leftPinned = isSessionPinned(pinnedSessionIds, sessionDirectory(left), left.id);
   const rightPinned = isSessionPinned(pinnedSessionIds, sessionDirectory(right), right.id);
   if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
 
-  const leftFallback = baselineRank(left, leftPinned);
-  const rightFallback = baselineRank(right, rightPinned);
+  const leftFallback = baselineRank(left, leftPinned, scope);
+  const rightFallback = baselineRank(right, rightPinned, scope);
   if (parentIdOf(left) === parentIdOf(right)) {
-    const rankDelta = getSessionLifecycleOrderValue(right, rankById, rightPinned)
-      - getSessionLifecycleOrderValue(left, rankById, leftPinned);
+    const rankDelta = getSessionLifecycleOrderValue(right, rankById, rightPinned, targetScopeKey)
+      - getSessionLifecycleOrderValue(left, rankById, leftPinned, targetScopeKey);
     if (rankDelta !== 0) return rankDelta;
   }
 
   const baselineDelta = rightFallback - leftFallback;
   if (baselineDelta !== 0) return baselineDelta;
-  const createdDelta = baselineRank(right, true) - baselineRank(left, true);
+  const createdDelta = baselineRank(right, true, scope) - baselineRank(left, true, scope);
   if (createdDelta !== 0) return createdDelta;
   return left.id.localeCompare(right.id);
 };

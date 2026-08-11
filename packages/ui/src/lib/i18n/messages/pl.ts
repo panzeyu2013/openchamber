@@ -1739,6 +1739,8 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.serverHasMoreSessions': 'Na tym serwerze dostępnych jest więcej sesji',
   'workspaces.sidebar.openSessionAria': 'Otwórz {title} w {workspace}',
   'workspaces.sidebar.unavailable': 'Obszary robocze są niedostępne w tym środowisku.',
+  'workspaces.sidebar.capabilityDisabled.title': 'Katalog obszarów roboczych jest wyłączony',
+  'workspaces.sidebar.capabilityDisabled.description': 'Administrator serwera wyłączył katalog obszarów roboczych. Twoje obszary robocze pozostają zapisane i są wyświetlane w trybie tylko do odczytu — dodawanie, edytowanie i otwieranie obszarów roboczych jest niedostępne.',
   'workspaces.capability.terminalUnavailable': 'Terminal nie jest dostępny dla połączenia tego obszaru roboczego.',
   'workspaces.dialog.description': 'Wybierz serwer i ścieżkę na nim. Obszary robocze ze wszystkich serwerów znajdują się na jednej liście.',
   'workspaces.dialog.server.label': 'Serwer',

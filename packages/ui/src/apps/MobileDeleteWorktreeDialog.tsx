@@ -12,6 +12,7 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 type MobileDeleteWorktreeDialogProps = {
@@ -100,7 +101,15 @@ export const MobileDeleteWorktreeDialog: React.FC<MobileDeleteWorktreeDialogProp
         });
 
         // If the removed worktree was the active directory, fall back to the project root.
-        if (normalizePath(currentDirectory) === worktreePath && normalizePath(project.path)) {
+        const sessionTarget = useSessionUIStore.getState();
+        const workspaceTargetActive = isWorkspaceRuntimeActive()
+          || Boolean(
+            sessionTarget.currentWorkspaceId
+            || (sessionTarget.newSessionDraft?.open && sessionTarget.newSessionDraft.workspaceId),
+          );
+        if (!workspaceTargetActive
+          && normalizePath(currentDirectory) === worktreePath
+          && normalizePath(project.path)) {
           useDirectoryStore.getState().setDirectory(normalizePath(project.path), { showOverlay: false });
         }
 

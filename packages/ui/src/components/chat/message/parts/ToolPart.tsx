@@ -69,6 +69,7 @@ import { toAbsoluteFilePath } from '@/lib/path-utils';
 import { getToolDescriptionFallback } from './toolRenderUtils';
 import { ApplyPatchFileButtons } from './ApplyPatchFileButtons';
 import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const TOOL_ROW_TEXT_CLASS = '!text-[length:var(--text-meta)] !leading-5 sm:!leading-6 tracking-normal';
 const TOOL_ROW_TITLE_CLASS = cn('typography-meta font-medium', TOOL_ROW_TEXT_CLASS);
@@ -995,6 +996,7 @@ const TaskToolSummary: React.FC<{
 }> = ({ entries, isExpanded, isMobile, output, sessionId, onShowPopup, input, animateTailText = true, isActive = false }) => {
     const { t } = useI18n();
     const currentDirectory = useEffectiveDirectory();
+    const activeWorkspaceId = useActiveWorkspaceId();
     const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
     const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
     const showToolFileIcons = useUIStore((state) => state.showToolFileIcons);
@@ -1013,7 +1015,7 @@ const TaskToolSummary: React.FC<{
             // or single-surface layouts (mobile, VS Code), navigate in place.
             // Otherwise open a new side-panel tab.
             if (isEmbeddedSessionChat() || isMobile || runtime?.runtime.isVSCode) {
-                setCurrentSession(sessionId, currentDirectory);
+                setCurrentSession(sessionId, currentDirectory, activeWorkspaceId);
                 return;
             }
 

@@ -15,7 +15,7 @@ const getNotificationClaimKey = (payload?: NotificationPayload): string => {
   const tag = typeof payload?.tag === 'string' ? payload.tag.trim() : '';
   if (tag) return tag;
 
-  return [payload?.sessionId, payload?.kind, payload?.title, payload?.body]
+  return [payload?.workspaceId, payload?.sessionId, payload?.kind, payload?.title, payload?.body]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .map((value) => value.trim())
     .join('|');
@@ -196,6 +196,7 @@ const notifyWithDesktop = async (payload?: NotificationPayload): Promise<boolean
         body: payload?.body,
         tag: payload?.tag,
         kind: payload?.kind,
+        workspaceId: payload?.workspaceId,
         sessionId: payload?.sessionId,
         directory: payload?.directory,
         requireHidden: payload?.requireHidden,

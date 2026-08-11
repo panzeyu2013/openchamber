@@ -32,6 +32,20 @@ const descriptor = (id: string, overrides: Partial<WorkspaceDescriptor> = {}): W
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
+const expectCapabilityUnavailable = async (operation: Promise<unknown>): Promise<void> => {
+  let error: unknown;
+  try {
+    await operation;
+  } catch (caught) {
+    error = caught;
+  }
+
+  expect(error).toBeDefined();
+  const details = error as { code?: unknown; status?: unknown };
+  expect(details.code).toBe('capability_unavailable');
+  expect(details.status).toBe(501);
+};
+
 describe('workspace runtime registry', () => {
   let registry: ReturnType<typeof createWorkspaceRuntimeRegistry> | undefined;
 
@@ -49,6 +63,8 @@ describe('workspace runtime registry', () => {
     const handle = registry.get(descriptor('ws-1', { canonicalPath: '/projects/alpha' }));
     expect(handle.scopeKey).toBe('workspace:ws-1');
     expect(handle.directory).toBe('/projects/alpha');
+    expect(handle.service.getSdkClient()).toBe(handle.sdk);
+    expect(handle.service.getDirectory()).toBe('/projects/alpha');
     expect(sdkCalls).toEqual([{ baseUrl: '/api/workspaces/ws-1/runtime/api', directory: '/projects/alpha' }]);
   });
 
@@ -60,6 +76,31 @@ describe('workspace runtime registry', () => {
     expect(second.sdk).toBe(first.sdk);
     expect(second.directory).toBe('/canonical/ws-1');
     expect(sdkCalls).toHaveLength(1);
+  });
+
+  test('workspace Git mutations carry the workspace directory query', async () => {
+    const requests: Array<{ url: string; query?: unknown }> = [];
+    registry = createWorkspaceRuntimeRegistry({
+      createSdkClient: fakeCreateSdkClient,
+      controlPlaneFetch: async (input, init) => {
+        requests.push({ url: String(input), query: (init as RequestInit & { query?: unknown })?.query });
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      },
+    });
+    const handle = registry.get(descriptor('ws-1', { canonicalPath: '/projects/alpha' }));
+    await handle.apis.git.stageGitFiles!('/projects/alpha', ['src/main.ts']);
+    expect(requests).toEqual([{
+      url: '/api/workspaces/ws-1/runtime/api/git/stage',
+      query: { directory: '/projects/alpha' },
+    }]);
+  });
+
+  test('workspace settings stay explicitly unavailable instead of using the ambient API', async () => {
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
+    const handle = registry.get(descriptor('ws-1'));
+
+    await expectCapabilityUnavailable(handle.apis.settings.load());
+    await expectCapabilityUnavailable(handle.apis.settings.save({ theme: 'dark' }));
   });
 
   test('a handle survives the grace window while retained, then is evicted after release', async () => {

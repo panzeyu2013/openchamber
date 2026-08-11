@@ -71,4 +71,29 @@ describe("global session status index", () => {
 
     expect(useGlobalSessionStatusStore.getState().statusById.has("session-a")).toBe(false)
   })
+
+  test("keeps equal session ids in separate workspace status partitions", () => {
+    const defaultScope = useGlobalSessionStatusStore.getState().scopeKey
+    const firstScope = "workspace:status-a"
+    const secondScope = "workspace:status-b"
+
+    useGlobalSessionStatusStore.getState().bindScope(firstScope)
+    applyGlobalSessionStatusEvent("/repo/a", {
+      type: "session.status",
+      properties: { sessionID: "same-session", status: { type: "busy" } },
+    } as Event, firstScope)
+
+    useGlobalSessionStatusStore.getState().bindScope(secondScope)
+    expect(useGlobalSessionStatusStore.getState().statusById.has("same-session")).toBe(false)
+    applyGlobalSessionStatusEvent("/repo/b", {
+      type: "session.status",
+      properties: { sessionID: "same-session", status: { type: "retry", attempt: 1 } },
+    } as Event, secondScope)
+    expect(useGlobalSessionStatusStore.getState().statusById.get("same-session")?.status.type).toBe("retry")
+
+    useGlobalSessionStatusStore.getState().bindScope(firstScope)
+    expect(useGlobalSessionStatusStore.getState().statusById.get("same-session")?.status.type).toBe("busy")
+
+    useGlobalSessionStatusStore.getState().bindScope(defaultScope)
+  })
 })

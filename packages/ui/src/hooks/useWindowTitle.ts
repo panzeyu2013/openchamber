@@ -4,6 +4,9 @@ import { isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { setDesktopWindowTitle } from '@/lib/desktopNative';
 import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import type { WorkspaceCatalogSnapshot } from '@/workspaces/types';
 
 const APP_TITLE = 'OpenChamber';
 
@@ -22,7 +25,41 @@ const buildWindowTitle = (projectLabel: string | null, instanceLabel: string | n
   return parts.join(' | ');
 };
 
+type WorkspaceTitleContext = {
+  projectLabel: string | null;
+  instanceLabel: string | null;
+};
+
+/**
+ * Resolve title identity from the authoritative workspace catalog. A
+ * connection label is safe UI metadata; URL matching is intentionally left to
+ * the legacy no-workspace fallback in the hook below.
+ */
+export const resolveWorkspaceTitleContext = (
+  workspaceId: string | null,
+  snapshot: WorkspaceCatalogSnapshot | null,
+): WorkspaceTitleContext | null => {
+  if (!workspaceId || !snapshot) return null;
+  const workspace = snapshot.workspaces.find((entry) => entry.id === workspaceId);
+  if (!workspace) return null;
+  const connection = snapshot.connections.find((entry) => entry.id === workspace.connectionId);
+  const workspaceLabel = workspace.label.trim() || getProjectNameFromPath(workspace.path);
+  const connectionLabel = connection?.label?.trim() || '';
+  return {
+    projectLabel: workspaceLabel ? formatProjectLabel(workspaceLabel) : null,
+    instanceLabel: workspace.connectionId === 'local'
+      ? null
+      : redactSensitiveUrl(connectionLabel || 'Workspace'),
+  };
+};
+
 export const useWindowTitle = () => {
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const catalogSnapshot = useWorkspaceCatalogStore((state) => state.snapshot);
+  const workspaceTitleContext = React.useMemo(
+    () => resolveWorkspaceTitleContext(activeWorkspaceId, catalogSnapshot),
+    [activeWorkspaceId, catalogSnapshot],
+  );
   const activeProject = useProjectsStore((state) => {
     if (!state.activeProjectId) {
       return null;
@@ -31,6 +68,9 @@ export const useWindowTitle = () => {
   });
 
   const projectLabel = React.useMemo(() => {
+    if (workspaceTitleContext?.projectLabel) {
+      return workspaceTitleContext.projectLabel;
+    }
     if (!activeProject) {
       return null;
     }
@@ -46,13 +86,21 @@ export const useWindowTitle = () => {
     }
 
     return null;
-  }, [activeProject]);
+  }, [activeProject, workspaceTitleContext]);
 
   const [instanceLabel, setInstanceLabel] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     if (typeof window === 'undefined' || !isDesktopShell()) {
       setInstanceLabel(null);
+      return;
+    }
+
+    if (activeWorkspaceId) {
+      // A workspace title is scoped by the Catalog, not by the ambient
+      // Desktop Host Switcher endpoint. Keep a temporary generic label while
+      // the catalog is loading rather than leaking the previous host name.
+      setInstanceLabel(workspaceTitleContext?.instanceLabel ?? 'Workspace');
       return;
     }
 
@@ -101,7 +149,7 @@ export const useWindowTitle = () => {
       cancelled = true;
       window.removeEventListener('focus', handleFocus);
     };
-  }, []);
+  }, [activeWorkspaceId, workspaceTitleContext]);
 
   const title = React.useMemo(() => buildWindowTitle(projectLabel, instanceLabel), [projectLabel, instanceLabel]);
 

@@ -46,6 +46,7 @@ import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { getCurrentIntlLocale, useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { TodoSendDialog, type TodoSendExecution } from './TodoSendDialog';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const TODO_PANEL_MIN_ITEMS = 5;
 const TODO_PANEL_MAX_ITEMS = 15;
@@ -195,6 +196,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
   const initializeNewOpenChamberSession = useSessionUIStore((state) => state.initializeNewOpenChamberSession);
   const sendMessage = useSessionUIStore((state) => state.sendMessage);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const setPendingInputText = useInputStore((state) => state.setPendingInputText);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
@@ -585,7 +587,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
           );
         }
 
-        setCurrentSession(sessionId, directoryHint);
+        setCurrentSession(sessionId, directoryHint, activeWorkspaceId);
         await sendMessage(
           visiblePrompt,
           execution.providerID,
@@ -612,7 +614,7 @@ export const ProjectNotesTodoPanel: React.FC<ProjectNotesTodoPanelProps> = ({
         setSendingTodoId(null);
       }
     },
-    [canCreateWorktree, createSession, initializeNewOpenChamberSession, onActionComplete, pendingSendTarget, projectRef, routeToChat, sendMessage, setCurrentSession, t]
+    [activeWorkspaceId, canCreateWorktree, createSession, initializeNewOpenChamberSession, onActionComplete, pendingSendTarget, projectRef, routeToChat, sendMessage, setCurrentSession, t]
   );
 
   const planFileInputRef = React.useRef<HTMLInputElement | null>(null);

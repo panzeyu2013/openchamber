@@ -1655,6 +1655,8 @@ export const dict = {
   'workspaces.sidebar.serverHasMoreSessions': 'More sessions available on this server',
   'workspaces.sidebar.openSessionAria': 'Open {title} in {workspace}',
   'workspaces.sidebar.unavailable': 'Workspaces are unavailable in this runtime.',
+  'workspaces.sidebar.capabilityDisabled.title': 'Workspace catalog is disabled',
+  'workspaces.sidebar.capabilityDisabled.description': 'The server administrator disabled the workspace catalog. Your workspaces are preserved and shown read-only — adding, editing, and opening workspaces is unavailable.',
   'workspaces.capability.terminalUnavailable': 'Terminal is not available for this workspace\'s connection.',
   'workspaces.dialog.description': 'Choose a server and a path on it. Workspaces from all servers live in one list.',
   'workspaces.dialog.server.label': 'Server',

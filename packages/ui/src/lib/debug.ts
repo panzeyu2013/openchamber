@@ -2,11 +2,10 @@
 import { useSessionUIStore, getRememberedSessionDirectory } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
-import { opencodeClient } from '@/lib/opencode/client';
 import { checkIsGitRepository } from '@/lib/gitApi';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import { copyTextToClipboard as copyPlainTextToClipboard } from '@/lib/clipboard';
-import { getSyncSessions, getSyncMessages, getSyncParts, getAllSyncSessions, getSyncSessionDirectory } from '@/sync/sync-refs';
+import { getSyncSessions, getSyncMessages, getSyncParts, getAllSyncSessions, getSyncSessionDirectory, getSyncOpencodeService } from '@/sync/sync-refs';
 import {
   describeSessionDirectorySources,
   resolveSessionDirectoryFromSources,
@@ -192,8 +191,9 @@ export const debugUtils = {
     const directoryState = useDirectoryStore.getState();
     const sessionState = useSessionUIStore.getState();
     const projectsState = useProjectsStore.getState();
+    const boundService = getSyncOpencodeService();
     const currentDirectory = directoryState.currentDirectory || null;
-    const opencodeDirectory = opencodeClient.getDirectory() ?? null;
+    const opencodeDirectory = boundService.getDirectory() ?? null;
 
     const sessions = getSyncSessions();
     const sessionDirectories = new Set<string>();
@@ -261,7 +261,7 @@ export const debugUtils = {
     let opencodeHealth: unknown = null;
 
     try {
-      const pathResult = await opencodeClient.getSdkClient().path.get(
+      const pathResult = await boundService.getSdkClient().path.get(
         currentDirectory ? { directory: currentDirectory } : undefined
       );
       pathInfo = pathResult.error ? { error: pathResult.error } : pathResult.data;
@@ -270,7 +270,7 @@ export const debugUtils = {
     }
 
     try {
-      const projectResult = await opencodeClient.getSdkClient().project.current(
+      const projectResult = await boundService.getSdkClient().project.current(
         currentDirectory ? { directory: currentDirectory } : undefined
       );
       projectInfo = projectResult.error ? { error: projectResult.error } : projectResult.data;
@@ -468,7 +468,7 @@ export const debugUtils = {
         rememberedForRuntime: remembered.runtime,
         persistedAcrossRestarts: remembered.persisted,
         activeDirectory: useDirectoryStore.getState().currentDirectory ?? null,
-        opencodeClientDirectory: opencodeClient.getDirectory() ?? null,
+        opencodeClientDirectory: getSyncOpencodeService().getDirectory() ?? null,
       },
     };
 

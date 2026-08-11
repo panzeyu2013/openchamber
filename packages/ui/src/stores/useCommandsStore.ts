@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import type { StoreApi, UseBoundStore } from "zustand";
 import { devtools, persist } from "zustand/middleware";
-import { opencodeClient } from "@/lib/opencode/client";
+import { getSyncOpencodeService } from "@/sync/sync-refs";
 import {
   startConfigUpdate,
   finishConfigUpdate,
@@ -13,6 +13,7 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 import { noteDeferredRestartFromPayload } from "@/lib/opencode/deferredRestart";
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 
 export type CommandScope = 'user' | 'project';
@@ -104,6 +105,13 @@ const removeCommandLocal = (
 
 const getRequestDirectory = (): string | null => {
   try {
+    const boundService = getSyncOpencodeService();
+    if (isWorkspaceRuntimeActive()) {
+      // Commands are still served by the legacy config route. Do not let a
+      // workspace request inherit the ambient project selector's directory.
+      return boundService.getDirectory()?.trim() || null;
+    }
+
     const projectsStore = useProjectsStore.getState();
     const activeProject = projectsStore.getActiveProject?.();
     
@@ -113,7 +121,7 @@ const getRequestDirectory = (): string | null => {
     }
 
     // 2. Fallback: current OpenCode directory (session / runtime)
-    const clientDir = opencodeClient.getDirectory();
+    const clientDir = boundService.getDirectory();
     if (clientDir?.trim()) {
       return clientDir.trim();
     }
@@ -197,6 +205,7 @@ export const useCommandsStore = create<CommandsStore>()(
           }
 
           const request = (async () => {
+            const service = getSyncOpencodeService();
             set({ isLoading: true });
             const previousCommands = get().commands;
             const previousSignature = buildCommandsSignature(previousCommands);
@@ -207,9 +216,9 @@ export const useCommandsStore = create<CommandsStore>()(
                 const queryParams = directory ? `?directory=${encodeURIComponent(directory)}` : '';
 
                 // Ensure the list is scoped to the same directory we use for config source detection.
-                const commands = await runBackgroundNetworkTask(() => opencodeClient.withDirectory(
+                const commands = await runBackgroundNetworkTask(() => service.withDirectory(
                   directory,
-                  () => opencodeClient.listCommandsWithDetails()
+                  () => service.listCommandsWithDetails()
                 ));
 
                 const configurableCommands = commands.filter((cmd) => cmd.source !== 'skill');
@@ -497,6 +506,7 @@ if (typeof window !== "undefined") {
 }
 
 async function waitForOpenCodeConnection(delayMs?: number) {
+  const service = getSyncOpencodeService();
   const initialPause = typeof delayMs === "number" && delayMs > 0
     ? Math.min(delayMs, FAST_HEALTH_POLL_INTERVAL_MS)
     : 0;
@@ -514,7 +524,7 @@ async function waitForOpenCodeConnection(delayMs?: number) {
     updateConfigUpdateMessage(`Waiting for OpenCode… (attempt ${attempt})`);
 
     try {
-      const isHealthy = await opencodeClient.checkHealth();
+      const isHealthy = await service.checkHealth();
       if (isHealthy) {
         return;
       }

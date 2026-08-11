@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { updateBrowserURL } from './serializeRoute';
 import type { AppRouteState } from './serializeRoute';
+import { parseRoute } from './parseRoute';
 import { isEmbeddedSessionChat, resetEmbeddedSessionChatCache } from '@/components/layout/contextPanelEmbeddedChat';
 
 const originalWindow = globalThis.window;
@@ -96,6 +97,21 @@ describe('updateBrowserURL embedded-session-chat guard', () => {
 
     const writtenURL = historyOf().lastURL ?? '';
     expect(writtenURL).toContain('session=ses_main');
+  });
+
+  test('serializes and parses an explicit workspace session target', () => {
+    updateBrowserURL({ ...sessionState('ses_remote'), workspaceId: 'ws-remote' }, { replace: true, force: true });
+
+    const writtenURL = historyOf().lastURL ?? '';
+    expect(writtenURL).toContain('session=ses_remote');
+    expect(writtenURL).toContain('workspace=ws-remote');
+    expect(parseRoute(new URL(writtenURL, 'http://127.0.0.1:5173').searchParams)).toEqual({
+      sessionId: 'ses_remote',
+      workspaceId: 'ws-remote',
+      tab: null,
+      settingsPath: null,
+      diffFile: null,
+    });
   });
 });
 

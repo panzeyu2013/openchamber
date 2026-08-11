@@ -6,11 +6,16 @@
  */
 
 import type { Config, OpencodeClient } from "@opencode-ai/sdk/v2/client"
+import { opencodeClient, type OpencodeService } from "@/lib/opencode/client"
+import { getRuntimeKey } from "@/lib/runtime-switch"
 import type { ChildStoreManager } from "./child-store"
 import { getSessionMaterializationStatus } from "./materialization"
 import type { State } from "./types"
 
 let _childStores: ChildStoreManager | null = null
+let _sdk: OpencodeClient | null = null
+let _service: OpencodeService | null = null
+let _scopeKey: string | null = null
 let _directory: string = ""
 let _registerSessionDirectory: ((sessionID: string, directory: string) => void) | null = null
 const configListeners = new Set<(directory: string, config: Config) => void>()
@@ -20,11 +25,16 @@ let cachedSessionsById = new Map<string, State["session"][number]>()
 let cachedSessionDirectoryById = new Map<string, string>()
 
 export function setSyncRefs(
-  _sdk: OpencodeClient,
+  sdk: OpencodeClient,
   childStores: ChildStoreManager,
   directory: string,
   registerSessionDirectory?: (sessionID: string, directory: string) => void,
+  service?: OpencodeService,
+  scopeKey?: string,
 ) {
+  _sdk = sdk
+  _service = service ?? opencodeClient
+  _scopeKey = scopeKey ?? getRuntimeKey()
   _childStores = childStores
   if (cachedSessionManager !== childStores) {
     cachedSessionManager = null
@@ -36,6 +46,44 @@ export function setSyncRefs(
   if (registerSessionDirectory) {
     _registerSessionDirectory = registerSessionDirectory
   }
+}
+
+/** Return the service bound to the currently mounted SyncProvider. */
+export function getSyncOpencodeService(): OpencodeService {
+  return _service ?? opencodeClient
+}
+
+/** Return the raw SDK bound to the currently mounted SyncProvider. */
+export function getSyncSdk(): OpencodeClient | null {
+  return _sdk
+}
+
+/** Scope identity of the currently mounted sync provider. */
+export function getSyncScopeKey(): string {
+  return _scopeKey ?? getRuntimeKey()
+}
+
+/**
+ * Clear imperative refs only when they still belong to the provider that is
+ * being unmounted. A workspace switch must not leave actions pointing at the
+ * previous workspace while the next provider is mounting.
+ */
+export function clearSyncRefs(
+  sdk?: OpencodeClient,
+  childStores?: ChildStoreManager,
+): void {
+  if (sdk && _sdk !== sdk) return
+  if (childStores && _childStores !== childStores) return
+  _sdk = null
+  _service = null
+  _scopeKey = null
+  _childStores = null
+  _directory = ""
+  _registerSessionDirectory = null
+  cachedSessionManager = null
+  cachedSessionSlices = new Map()
+  cachedSessionsById = new Map()
+  cachedSessionDirectoryById = new Map()
 }
 
 /** Pre-register a session→directory mapping in the routing index.

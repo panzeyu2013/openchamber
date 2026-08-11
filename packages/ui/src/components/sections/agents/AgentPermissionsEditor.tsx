@@ -6,7 +6,7 @@ import { toast } from '@/components/ui';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import {
   useAgentsStore,
   getConfigDirectory,
@@ -103,6 +103,7 @@ export const AgentPermissionsEditor: React.FC<AgentPermissionsEditorProps> = ({ 
   const [toolIds, setToolIds] = React.useState<string[]>([]);
   const [customKeyDraft, setCustomKeyDraft] = React.useState('');
   const [reloadToken, setReloadToken] = React.useState(0);
+  const syncScopeKey = getSyncScopeKey();
 
   const agentName = agent.name;
 
@@ -143,7 +144,7 @@ export const AgentPermissionsEditor: React.FC<AgentPermissionsEditorProps> = ({ 
     let cancelled = false;
     void (async () => {
       try {
-        const ids = await opencodeClient.listToolIds({ directory: getConfigDirectory() });
+        const ids = await getSyncOpencodeService().listToolIds({ directory: getConfigDirectory() });
         if (!cancelled && Array.isArray(ids)) {
           setToolIds(ids.filter((id) => typeof id === 'string' && !FOLDED_TOOL_IDS.has(id)));
         }
@@ -154,7 +155,7 @@ export const AgentPermissionsEditor: React.FC<AgentPermissionsEditorProps> = ({ 
     return () => {
       cancelled = true;
     };
-  }, [agentName]);
+  }, [agentName, syncScopeKey]);
 
   // --- Effective rules from the resolved view (read-only hints). ---
   const effectiveRules = React.useMemo<EffectiveRule[]>(() => {

@@ -57,8 +57,9 @@ import { isFullySyntheticMessage } from '@/lib/messages/synthetic';
 import { normalizeUserDisplayParts } from './message/normalizeUserDisplayParts';
 import { findShellCommandForMessage, isUserShellMarkerMessage } from './lib/shellBridge';
 import { resolveChatPromptReadOnly } from './chatPromptReadOnly';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { createFirstVisibleSessionPerformanceTracker } from '@/sync/session-load-performance';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const EMPTY_MESSAGES: Array<{ info: Message; parts: Part[] }> = [];
 const IDLE_SESSION_STATUS = { type: 'idle' as const };
@@ -541,6 +542,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     // Session UI state
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
     const currentSessionDirectory = useSessionUIStore((s) => s.currentSessionDirectory);
+    const activeWorkspaceId = useActiveWorkspaceId();
     const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
     const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);
@@ -550,7 +552,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const syncDirectory = useSyncDirectory();
     const effectiveSessionDirectory = currentSessionDirectory ?? syncDirectory;
     const currentSessionKey = currentSessionId
-        ? JSON.stringify([getRuntimeKey(), effectiveSessionDirectory, currentSessionId])
+        ? JSON.stringify([resolveSessionScopeKey(currentSessionId, effectiveSessionDirectory, activeWorkspaceId), effectiveSessionDirectory, currentSessionId])
         : null;
     const ensureSessionRenderable = React.useCallback(
         (sessionId: string) => sync.ensureSessionRenderable(sessionId, false, effectiveSessionDirectory),
@@ -755,8 +757,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({ active = true, aut
     const handleReturnToParentSession = React.useCallback(() => {
         if (!parentSession) return;
         const parentDirectory = (parentSession as Session & { directory?: string | null }).directory ?? null;
-        setCurrentSession(parentSession.id, parentDirectory);
-    }, [parentSession, setCurrentSession]);
+        setCurrentSession(parentSession.id, parentDirectory, activeWorkspaceId);
+    }, [activeWorkspaceId, parentSession, setCurrentSession]);
 
     const returnToParentButton = parentSession && !hideReturnToParent ? (
         <Button

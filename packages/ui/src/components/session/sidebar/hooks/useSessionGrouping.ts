@@ -21,6 +21,7 @@ type Args = {
   sessionOrderRanks: ReadonlyMap<string, number>;
   gitBranches: Map<string, string | null>;
   isVSCode: boolean;
+  scopeKey: string;
 };
 
 const isArchivedSession = (session: Session): boolean => Boolean(session.time?.archived);
@@ -200,8 +201,8 @@ export const useSessionGrouping = (args: Args) => {
         // Third priority: for inactive worktrees, most recently discovered
         // first (a worktree created mid-session surfaces at the top of the
         // list; startup discovery ties and falls through to labels).
-        const aSeen = getWorktreeFirstSeenAt(a.path);
-        const bSeen = getWorktreeFirstSeenAt(b.path);
+        const aSeen = getWorktreeFirstSeenAt(a.path, args.scopeKey);
+        const bSeen = getWorktreeFirstSeenAt(b.path, args.scopeKey);
         if (aSeen !== bSeen) {
           return bSeen - aSeen;
         }
@@ -257,7 +258,7 @@ export const useSessionGrouping = (args: Args) => {
 
       return groups;
     },
-    [args.homeDirectory, args.worktreeMetadata, args.pinnedSessionIds, args.sessionOrderRanks, args.gitBranches, args.isVSCode, t],
+    [args.homeDirectory, args.worktreeMetadata, args.pinnedSessionIds, args.sessionOrderRanks, args.gitBranches, args.isVSCode, args.scopeKey, t],
   );
 
   return {

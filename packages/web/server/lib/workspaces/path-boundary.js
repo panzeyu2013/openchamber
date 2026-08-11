@@ -64,6 +64,132 @@ export const isPathWithinRoot = (root, candidate) => {
   return normalizedCandidate.startsWith(normalizedRoot);
 };
 
+const isAbsoluteBoundaryPath = (value) => (
+  typeof value === 'string'
+  && (value.startsWith('/')
+    || /^[A-Za-z]:[\\/]/.test(value)
+    || value.startsWith('\\\\'))
+);
+
+/** Resolves a path hint against the workspace root for boundary checks. A
+ * relative file/Git path is intentionally interpreted as workspace-relative;
+ * an absolute path must already be inside the root. Returns null when the
+ * candidate would escape the workspace. */
+export const resolvePathWithinWorkspace = (root, candidate) => {
+  if (typeof root !== 'string' || typeof candidate !== 'string') return null;
+  const trimmed = candidate.trim();
+  if (!trimmed) return null;
+  if (isPathWithinRoot(root, trimmed)) return normalizePathForBoundary(trimmed);
+  if (isAbsoluteBoundaryPath(trimmed)) return null;
+  const resolved = normalizePathForBoundary(`${root}/${trimmed}`);
+  return isPathWithinRoot(root, resolved) ? resolved : null;
+};
+
+/** Workspace boundary check that accepts the relative paths used by Git and
+ * filesystem APIs while still rejecting absolute and `..` escapes. */
+export const isPathWithinWorkspace = (root, candidate) => (
+  resolvePathWithinWorkspace(root, candidate) !== null
+);
+
+/**
+ * Scopes the filesystem directory-list endpoint to the workspace root.
+ * `/api/fs/list` is an intentionally simple route that selects its directory
+ * from the `path` query parameter, not from the workspace directory headers.
+ * Workspace adapters therefore validate that query here and fill it from the
+ * authoritative workspace path when omitted.
+ */
+export const scopeWorkspaceDirectoryListRequest = (canonicalPath, restPath) => {
+  if (typeof canonicalPath !== 'string' || canonicalPath.length === 0) return restPath;
+  let url;
+  try {
+    url = new URL(restPath, 'http://workspace.local');
+  } catch {
+    return restPath;
+  }
+  if (url.pathname !== '/api/fs/list') return restPath;
+
+  const pathValues = url.searchParams.getAll('path');
+  const scopedPaths = pathValues.map((value) => resolvePathWithinWorkspace(canonicalPath, value));
+  if (scopedPaths.some((value) => value === null)) {
+    const error = new Error('directory is outside the workspace');
+    error.code = 'catalog_path_outside_workspace';
+    error.status = 403;
+    throw error;
+  }
+  url.searchParams.delete('path');
+  if (scopedPaths.length === 0) {
+    url.searchParams.set('path', normalizePathForBoundary(canonicalPath));
+  } else {
+    for (const scopedPath of scopedPaths) url.searchParams.append('path', scopedPath);
+  }
+  return `${url.pathname}${url.search}`;
+};
+
+/** Reads filesystem/terminal path fields whose owning routes do not reliably
+ * resolve the active workspace from the directory header (for example
+ * `/api/fs/reveal`, `/api/fs/clone`, `/api/fs/exec`, and terminal `cwd`). */
+export const readRequestWorkspacePathHints = (restPath, request) => {
+  let url;
+  try {
+    url = new URL(restPath, 'http://workspace.local');
+  } catch {
+    return [];
+  }
+  const pathname = url.pathname;
+  const hints = [];
+  const push = (value) => {
+    if (typeof value === 'string' && value.trim().length > 0 && !hints.includes(value)) hints.push(value);
+  };
+  const pushMany = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) push(item);
+      return;
+    }
+    push(value);
+  };
+  const body = request?.body && typeof request.body === 'object' && !Buffer.isBuffer(request.body)
+    ? request.body
+    : null;
+
+  if (pathname.startsWith('/api/fs/') || pathname.startsWith('/api/file/') || pathname.startsWith('/api/find/')) {
+    for (const key of ['path', 'file', 'worktreeRoot']) {
+      for (const value of url.searchParams.getAll(key)) push(value);
+    }
+  }
+  if (pathname.startsWith('/api/fs/serve/')) {
+    const encodedPath = pathname.slice('/api/fs/serve/'.length);
+    try {
+      const decodedPath = decodeURIComponent(encodedPath);
+      push(decodedPath.startsWith('/') ? decodedPath : `/${decodedPath}`);
+    } catch {
+      push(encodedPath.startsWith('/') ? encodedPath : `/${encodedPath}`);
+    }
+  }
+  if (pathname.startsWith('/api/git/') || pathname.startsWith('/api/vcs/')) {
+    for (const key of ['path', 'file', 'worktreeRoot']) {
+      for (const value of url.searchParams.getAll(key)) push(value);
+    }
+  }
+  if (pathname.startsWith('/api/fs/')) {
+    for (const key of ['path', 'destinationPath', 'oldPath', 'newPath', 'cwd']) {
+      pushMany(body?.[key]);
+    }
+  }
+  if (pathname.startsWith('/api/git/') || pathname.startsWith('/api/vcs/')) {
+    for (const key of ['path', 'file', 'oldPath', 'newPath', 'worktreeRoot']) {
+      pushMany(body?.[key]);
+    }
+    for (const key of ['paths', 'files', 'stageFiles']) {
+      pushMany(body?.[key]);
+    }
+  }
+  if (pathname === '/api/fs/exec') push(body?.cwd);
+  if (pathname === '/api/terminal/create' || /\/api\/terminal\/[^/]+\/restart$/.test(pathname)) {
+    push(body?.cwd);
+  }
+  return hints;
+};
+
 /** Reads directory hints from an Express request: the x-opencode-directory /
  * x-openchamber-directory headers and the `directory` query parameter.
  * Returns a de-duplicated list of hint values (empty when absent). */

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 
 import {
   isGlobalSessionRecencyOnlyUpdate,
@@ -23,6 +24,7 @@ const buildSession = (shareUrl: string, extra: SessionExtra = {}): Session => ({
 
 describe('useGlobalSessionsStore', () => {
   beforeEach(() => {
+    useGlobalSessionsStore.getState().bindScope(getRuntimeKey());
     useGlobalSessionsStore.setState({
       activeSessions: [],
       archivedSessions: [],
@@ -135,6 +137,37 @@ describe('useGlobalSessionsStore', () => {
     unsubscribe();
     expect(useGlobalSessionsStore.getState().activeSessions.map((session) => session.id)).toEqual(['ses_2', 'ses_1']);
     expect(publications).toBe(1);
+  });
+
+  test('keeps full-session compatibility data isolated by workspace scope', () => {
+    useGlobalSessionsStore.getState().bindScope('workspace:one');
+    useGlobalSessionsStore.getState().upsertSession(buildSession('https://one.example/s', {
+      id: 'same-session',
+      directory: '/repo',
+    }));
+
+    useGlobalSessionsStore.getState().bindScope('workspace:two');
+    expect(useGlobalSessionsStore.getState().activeSessions).toEqual([]);
+    useGlobalSessionsStore.getState().upsertSession(buildSession('https://two.example/s', {
+      id: 'same-session',
+      directory: '/repo',
+    }));
+
+    useGlobalSessionsStore.getState().bindScope('workspace:one');
+    expect(useGlobalSessionsStore.getState().activeSessions[0]?.share?.url).toBe('https://one.example/s');
+    useGlobalSessionsStore.getState().bindScope('workspace:two');
+    expect(useGlobalSessionsStore.getState().activeSessions[0]?.share?.url).toBe('https://two.example/s');
+  });
+
+  test('does not fall back to the ambient SDK when a workspace binding is missing', async () => {
+    const existing = buildSession('https://workspace.example/s', { directory: '/workspace' });
+    useGlobalSessionsStore.getState().bindScope('workspace:without-sdk');
+    useGlobalSessionsStore.getState().applySnapshot([existing], []);
+
+    const result = await useGlobalSessionsStore.getState().loadSessions();
+
+    expect(result.activeSessions[0]?.share?.url).toBe('https://workspace.example/s');
+    expect(useGlobalSessionsStore.getState().status).toBe('error');
   });
 });
 

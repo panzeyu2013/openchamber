@@ -41,7 +41,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
-import { useFileSearchStore } from '@/stores/useFileSearchStore';
+import { useScopedFileSearch } from '@/stores/useFileSearchStore';
 import { useDeviceInfo } from '@/lib/device';
 import { cn, getModifierLabel, getRevealLabelKey, hasModifier } from '@/lib/utils';
 import { getLanguageFromExtension, getImageMimeType, isBinaryFile, isDrawioFile, isImageFile, isPdfFile, isSvgFile, looksLikeBinaryText } from '@/lib/toolHelpers';
@@ -60,11 +60,11 @@ import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
 import { useGitStatus } from '@/stores/useGitStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { buildCodeMirrorCommentWidgets, normalizeLineRange, useInlineCommentController } from '@/components/comments';
-import { opencodeClient } from '@/lib/opencode/client';
 import { useDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { useFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
+import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { useMessageTTS } from '@/hooks/useMessageTTS';
@@ -725,6 +725,7 @@ const useAssetAuthRefresh = (
 export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
+  const { handle: workspaceHandle } = useWorkspaceRuntime();
   const { currentTheme, availableThemes, lightThemeId, darkThemeId } = useThemeSystem();
   const { isMobile, isTablet, screenWidth } = useDeviceInfo();
   const isBrowserClient = isBrowserClientRuntime(runtime.platform);
@@ -738,7 +739,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   // their own chrome — the open-file tabs row is redundant there.
   const showEditorTabsRow = mode !== 'editor-only';
   const suppressFileLoadingIndicator = mode === 'editor-only' && !isMobile;
-  const searchFiles = useFileSearchStore((state) => state.searchFiles);
+  const searchFiles = useScopedFileSearch();
   const gitStatus = useGitStatus(currentDirectory);
 
   const [searchQuery, setSearchQuery] = React.useState('');
@@ -904,6 +905,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const [fileLoading, setFileLoading] = React.useState(false);
   const [fileError, setFileError] = React.useState<string | null>(null);
   const [desktopImageSrc, setDesktopImageSrc] = React.useState<string>('');
+  const [workspaceBinaryAssetDataUrl, setWorkspaceBinaryAssetDataUrl] = React.useState<string>('');
   const desktopImageBlobUrlRef = React.useRef<string>('');
 
   const [loadedFilePath, setLoadedFilePath] = React.useState<string | null>(null);
@@ -1170,13 +1172,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
     const isCurrentRequest = () => activeDirectoryLoadIdsRef.current.get(normalizedDir) === requestId;
 
-    const listPromise = files.listDirectory
-      ? files.listDirectory(normalizedDir).then((result) => result.entries.map((entry) => ({
-        name: entry.name,
-        path: entry.path,
-        isDirectory: entry.isDirectory,
-      })))
-      : opencodeClient.listLocalDirectory(normalizedDir).then((result) => result.map((entry) => ({
+    const listPromise = files.listDirectory(normalizedDir).then((result) => result.entries.map((entry) => ({
         name: entry.name,
         path: entry.path,
         isDirectory: entry.isDirectory,
@@ -3006,15 +3002,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     [lightTheme.metadata.id, darkTheme.metadata.id],
   );
 
-  const imageAssetAuthKey = selectedFile?.path && isSelectedImage && !runtime.isDesktop && !isSelectedSvg
+  const imageAssetAuthKey = !workspaceHandle && selectedFile?.path && isSelectedImage && !runtime.isDesktop && !isSelectedSvg
     ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideWorkspace ? 'outside' : 'workspace'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
     : '';
 
-  const pdfAssetAuthKey = selectedFile?.path && isSelectedPdf
+  const pdfAssetAuthKey = !workspaceHandle && selectedFile?.path && isSelectedPdf
     ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideWorkspace ? 'outside' : 'workspace'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
     : '';
 
-  const htmlAssetAuthKey = selectedFile?.path && isHtml && htmlViewMode === 'preview' && !runtime.isVSCode
+  const htmlAssetAuthKey = !workspaceHandle && selectedFile?.path && isHtml && htmlViewMode === 'preview' && !runtime.isVSCode
     ? selectedFile.path
     : '';
 
@@ -3030,8 +3026,46 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const isHtmlAssetAuthLoading = Boolean(htmlAssetAuthKey && htmlAssetAuthReadyKey !== htmlAssetAuthKey);
   const isPdfAssetAuthLoading = Boolean(pdfAssetAuthKey && pdfAssetAuthReadyKey !== pdfAssetAuthKey);
 
+  React.useEffect(() => {
+    const path = selectedFile?.path;
+    const shouldLoadWorkspaceBinary = Boolean(
+      workspaceHandle
+      && path
+      && ((isSelectedImage && !isSelectedSvg) || isSelectedPdf),
+    );
+    if (!shouldLoadWorkspaceBinary || !path) {
+      setWorkspaceBinaryAssetDataUrl((previous) => (previous ? '' : previous));
+      return;
+    }
+
+    let cancelled = false;
+    setWorkspaceBinaryAssetDataUrl('');
+    if (!files.readFileBinary) {
+      setFileError(t('filesView.error.readFileFailed'));
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    void files.readFileBinary(path, selectedFileReadOptions)
+      .then((result) => {
+        if (!cancelled) setWorkspaceBinaryAssetDataUrl(result.dataUrl);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setFileError(error instanceof Error ? error.message : t('filesView.error.readFileFailed'));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [files, isSelectedImage, isSelectedPdf, isSelectedSvg, selectedFile?.path, selectedFileReadOptions, t, workspaceHandle]);
+
   const imageSrc = selectedFile?.path && isSelectedImage
-    ? (runtime.isDesktop
+    ? (workspaceHandle && !isSelectedSvg
+      ? workspaceBinaryAssetDataUrl
+      : runtime.isDesktop
       ? (isSelectedSvg
         ? `data:${getImageMimeType(selectedFile.path)};utf8,${encodeURIComponent(fileContent)}`
         : desktopImageSrc)
@@ -3046,12 +3080,14 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     : '';
 
   const pdfSrc = selectedFile?.path && isSelectedPdf && pdfAssetAuthReadyKey === pdfAssetAuthKey
-    ? getRuntimeUrlResolver().authenticatedAsset('/api/fs/raw', {
+    ? (workspaceHandle
+      ? workspaceBinaryAssetDataUrl
+      : getRuntimeUrlResolver().authenticatedAsset('/api/fs/raw', {
       path: selectedFile.path,
       allowOutsideWorkspace: selectedFileReadOptions.allowOutsideWorkspace ? 'true' : undefined,
       outsideFileGrant: selectedFileReadOptions.outsideFileGrant,
       directory: root || undefined,
-    })
+    }))
     : '';
 
   const renderPdfPreview = React.useCallback((file: FileNode) => (
@@ -3977,11 +4013,11 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             <div className="h-full overflow-hidden">
               <iframe
                 key={htmlPreviewNonce}
-                src={!runtime.isVSCode && htmlAssetAuthReadyKey === htmlAssetAuthKey ? (() => {
+                src={!workspaceHandle && !runtime.isVSCode && htmlAssetAuthReadyKey === htmlAssetAuthKey ? (() => {
                   const encoded = selectedFile.path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
                   return getRuntimeUrlResolver().authenticatedAsset(`/api/fs/serve${encoded.startsWith('/') ? encoded : `/${encoded}`}`);
                 })() : undefined}
-                srcDoc={runtime.isVSCode ? (() => {
+                srcDoc={runtime.isVSCode || workspaceHandle ? (() => {
                   const basePath = selectedFile.path.substring(0, selectedFile.path.lastIndexOf('/') + 1);
                   if (!basePath) return fileContent;
                   return fileContent.replace(/<head([^>]*)>/i, `<head$1><base href="${basePath}">`);

@@ -1,10 +1,11 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type { Snippet } from '@/types/snippet';
-import { opencodeClient } from '@/lib/opencode/client';
+import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export type SnippetScope = 'global' | 'project';
 
@@ -38,9 +39,16 @@ let loadInFlight: Promise<boolean> | null = null;
 
 const getRequestDirectory = (): string | null => {
   try {
+    const boundService = getSyncOpencodeService();
+    if (isWorkspaceRuntimeActive()) {
+      // Snippet CRUD still uses a legacy config route. Keep its diagnostics
+      // bound to the mounted workspace, but never select an ambient project.
+      return boundService.getDirectory()?.trim() || null;
+    }
+
     const currentDirectory = useDirectoryStore.getState().currentDirectory;
     if (currentDirectory?.trim()) return currentDirectory.trim();
-    const clientDir = opencodeClient.getDirectory();
+    const clientDir = boundService.getDirectory();
     if (clientDir?.trim()) return clientDir.trim();
     const activeProject = useProjectsStore.getState().getActiveProject?.();
     if (activeProject?.path?.trim()) return activeProject.path.trim();

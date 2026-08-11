@@ -1243,9 +1243,10 @@ const nativeNotificationClaims = new Map();
 const NATIVE_NOTIFICATION_DEDUPE_TTL_MS = 5000;
 
 const getNativeNotificationClaimKey = (payload) => {
+  const workspaceId = typeof payload?.workspaceId === 'string' ? payload.workspaceId.trim() : '';
   const tag = typeof payload?.tag === 'string' ? payload.tag.trim() : '';
-  if (tag) return tag;
-  return [payload?.sessionId, payload?.kind, payload?.title, payload?.body]
+  if (tag) return [workspaceId, tag].filter(Boolean).join('|');
+  return [workspaceId, payload?.sessionId, payload?.kind, payload?.title, payload?.body]
     .filter((value) => typeof value === 'string' && value.trim())
     .map((value) => value.trim())
     .join('|');
@@ -1297,6 +1298,9 @@ const maybeShowNativeNotification = (rawInput) => {
   const directory = typeof payload.directory === 'string' && payload.directory.trim()
     ? payload.directory.trim()
     : null;
+  const workspaceId = typeof payload.workspaceId === 'string' && payload.workspaceId.trim()
+    ? payload.workspaceId.trim()
+    : null;
 
   const notification = new Notification({
     title,
@@ -1311,7 +1315,7 @@ const maybeShowNativeNotification = (rawInput) => {
   notification.on('click', () => {
     focusForegroundWindow();
     if (sessionId) {
-      emitToAllWindows('openchamber:open-session', { sessionId, directory });
+      emitToAllWindows('openchamber:open-session', { sessionId, directory, workspaceId });
     }
     release();
   });
@@ -2007,7 +2011,8 @@ const parseDeepLink = (raw) => {
     const value = segments.length > 0
       ? decodeURIComponent(segments.join('/'))
       : '';
-    return { type, value, raw: trimmed };
+    const workspaceId = url.searchParams.get('workspace')?.trim() || '';
+    return { type, value, workspaceId, raw: trimmed };
   } catch {
     return null;
   }
@@ -2264,7 +2269,10 @@ const dispatchDeepLink = (link) => {
   }
 
   if (link.type === 'session' && link.value) {
-    emitToAllWindows('openchamber:open-session', { sessionId: link.value });
+    emitToAllWindows('openchamber:open-session', {
+      sessionId: link.value,
+      ...(link.workspaceId ? { workspaceId: link.workspaceId } : {}),
+    });
     return;
   }
   if (link.type === 'host' && link.value) {
@@ -2775,7 +2783,7 @@ const createAdditionalWindow = async (url, runtimeConfig = {}) => {
   return browserWindow;
 };
 
-const buildMiniChatUrl = ({ mode, sessionId, directory, projectId }) => {
+const buildMiniChatUrl = ({ mode, sessionId, directory, projectId, workspaceId }) => {
   const base = shouldUsePackagedUi()
     ? buildPackagedUiUrl('/mini-chat.html')
     : state.localOrigin || state.sidecarUrl;
@@ -2786,24 +2794,25 @@ const buildMiniChatUrl = ({ mode, sessionId, directory, projectId }) => {
   const url = new URL(shouldUsePackagedUi() ? base : '/mini-chat.html', base);
   url.searchParams.set('mode', mode === 'session' ? 'session' : 'draft');
   if (sessionId) url.searchParams.set('sessionId', sessionId);
+  if (workspaceId) url.searchParams.set('workspace', workspaceId);
   if (directory) url.searchParams.set('directory', directory);
   if (projectId) url.searchParams.set('projectId', projectId);
   return url.toString();
 };
 
-// The dedup key for a session Mini Chat window must be scoped to the runtime
-// the window serves: the same sessionId on different runtimes must never
-// reuse the same window (relay runtimes share the renderer origin with the
-// local runtime, so a URL-only key would collide).
+// The dedup key for a session Mini Chat window must be scoped to both the
+// runtime and the workspace target: the same upstream sessionId can exist in
+// multiple workspaces, and relay runtimes share the renderer origin with the
+// local runtime, so a URL-only key would collide.
 const deriveRuntimeKeyFromConfig = (runtimeConfig) => {
   if (typeof runtimeConfig?.runtimeKey === 'string' && runtimeConfig.runtimeKey) return runtimeConfig.runtimeKey;
   if (runtimeConfig?.apiBaseUrl) return runtimeKeyFromApiBaseUrl(runtimeConfig.apiBaseUrl);
   return 'local';
 };
 
-const miniChatSessionWindowKey = (runtimeConfig, sessionId) => {
+const miniChatSessionWindowKey = (runtimeConfig, sessionId, workspaceId = '') => {
   const runtimeKey = deriveRuntimeKeyFromConfig(runtimeConfig);
-  return `${runtimeKey}\n${sessionId}`;
+  return `${runtimeKey}\n${workspaceId}\n${sessionId}`;
 };
 
 const getWindowRuntimeConfig = (browserWindow) => {
@@ -2823,14 +2832,16 @@ const getWindowRuntimeConfig = (browserWindow) => {
   };
 };
 
-const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', projectId = '', runtimeConfig = {} } = {}) => {
+const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', projectId = '', workspaceId = '', runtimeConfig = {} } = {}) => {
   const effectiveRuntimeConfig = {
     apiBaseUrl: normalizeHostUrl(runtimeConfig.apiBaseUrl || state.apiBaseUrl || state.localOrigin || state.sidecarUrl || ''),
     clientToken: sanitizeClientTokenForStorage(runtimeConfig.clientToken || state.clientToken || ''),
     requestHeaders: sanitizeRuntimeRequestHeaders(runtimeConfig.requestHeaders || state.requestHeaders || {}),
     runtimeKey: deriveRuntimeKeyFromConfig(runtimeConfig),
   };
-  const sessionWindowKey = mode === 'session' && sessionId ? miniChatSessionWindowKey(effectiveRuntimeConfig, sessionId) : '';
+  const sessionWindowKey = mode === 'session' && sessionId
+    ? miniChatSessionWindowKey(effectiveRuntimeConfig, sessionId, workspaceId)
+    : '';
   if (mode === 'session' && sessionId) {
     const existing = state.miniChatWindowsBySession.get(sessionWindowKey);
     if (existing && !existing.isDestroyed()) {
@@ -2950,7 +2961,7 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     }
   });
 
-  await navigateWindow(browserWindow, buildMiniChatUrl({ mode, sessionId, directory, projectId }));
+  await navigateWindow(browserWindow, buildMiniChatUrl({ mode, sessionId, directory, projectId, workspaceId }));
   return browserWindow;
 };
 
@@ -4529,14 +4540,16 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
       if (!sessionId) throw new Error('Session id is required');
       const directory = typeof args.directory === 'string' ? args.directory.trim() : '';
-      await createMiniChatWindow({ mode: 'session', sessionId, directory, runtimeConfig: resolveMiniChatRuntimeConfig(browserWindow, args) });
+      const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId.trim() : '';
+      await createMiniChatWindow({ mode: 'session', sessionId, directory, workspaceId, runtimeConfig: resolveMiniChatRuntimeConfig(browserWindow, args) });
       return null;
     }
 
     case 'desktop_open_draft_mini_chat_window': {
       const directory = typeof args.directory === 'string' ? args.directory.trim() : '';
       const projectId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
-      await createMiniChatWindow({ mode: 'draft', directory, projectId, runtimeConfig: resolveMiniChatRuntimeConfig(browserWindow, args) });
+      const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId.trim() : '';
+      await createMiniChatWindow({ mode: 'draft', directory, projectId, workspaceId, runtimeConfig: resolveMiniChatRuntimeConfig(browserWindow, args) });
       return null;
     }
 
@@ -4576,6 +4589,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
     case 'desktop_focus_main_window': {
       const sessionId = typeof args.sessionId === 'string' ? args.sessionId.trim() : '';
       const directory = typeof args.directory === 'string' ? args.directory.trim() : '';
+      const workspaceId = typeof args.workspaceId === 'string' ? args.workspaceId.trim() : '';
       const mode = typeof args.mode === 'string' ? args.mode.trim() : '';
       const projectId = typeof args.projectId === 'string' ? args.projectId.trim() : '';
       const hasMainWindow = state.mainWindow && !state.mainWindow.isDestroyed();
@@ -4585,7 +4599,7 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       // fresh window can't take an immediate emit, so queue the session as a
       // pending deep-link and let did-finish-load flush it once ready.
       if (!hasMainWindow) {
-        if (sessionId) pendingDeepLinks.push({ type: 'session', value: sessionId });
+        if (sessionId) pendingDeepLinks.push({ type: 'session', value: sessionId, ...(workspaceId ? { workspaceId } : {}) });
         await openMainWindow();
         return { focused: true };
       }
@@ -4594,9 +4608,9 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
       state.mainWindow.show();
       state.mainWindow.focus();
       if (sessionId) {
-        emitToWindow(state.mainWindow, 'openchamber:open-session', { sessionId, directory });
+        emitToWindow(state.mainWindow, 'openchamber:open-session', { sessionId, directory, ...(workspaceId ? { workspaceId } : {}) });
       } else if (mode === 'draft') {
-        emitToWindow(state.mainWindow, 'openchamber:open-draft-session', { directory, projectId });
+        emitToWindow(state.mainWindow, 'openchamber:open-draft-session', { directory, projectId, ...(workspaceId ? { workspaceId } : {}) });
       }
       return { focused: true };
     }
@@ -5361,12 +5375,16 @@ const dispatchTrayAction = async (action) => {
     const runtimeKey = state.lastTrayRuntimeKey || '';
     const surface = resolveTraySurface();
     const surfaceMatches = Boolean(surface && !surface.isDestroyed() && (!runtimeKey || getWindowRuntimeIdentity(surface) === runtimeKey));
-    if (surfaceMatches && surface.__ocMiniChat === true && action.sessionId) {
+    // Mini Chat is still an ambient-runtime compatibility surface and cannot
+    // resolve a composite workspace target. Route workspace-targeted tray
+    // clicks to the full main window instead.
+    if (surfaceMatches && surface.__ocMiniChat === true && action.sessionId && !action.workspaceId) {
       if (surface.isMinimized()) surface.restore();
       surface.show();
       surface.focus();
       emitToWindow(surface, 'openchamber:open-session', {
         sessionId: action.sessionId,
+        workspaceId: action.workspaceId || '',
         directory: action.directory || '',
       });
       return;
@@ -5377,6 +5395,7 @@ const dispatchTrayAction = async (action) => {
       surface.focus();
       emitToWindow(surface, 'openchamber:open-session', {
         sessionId: action.sessionId,
+        workspaceId: action.workspaceId || '',
         directory: action.directory || '',
       });
       return;
@@ -5388,6 +5407,7 @@ const dispatchTrayAction = async (action) => {
       matched.focus();
       emitToWindow(matched, 'openchamber:open-session', {
         sessionId: action.sessionId,
+        workspaceId: action.workspaceId || '',
         directory: action.directory || '',
       });
       return;
@@ -5399,6 +5419,7 @@ const dispatchTrayAction = async (action) => {
       mainWindow.focus();
       emitToWindow(mainWindow, 'openchamber:open-session', {
         sessionId: action.sessionId,
+        workspaceId: action.workspaceId || '',
         directory: action.directory || '',
       });
       return;

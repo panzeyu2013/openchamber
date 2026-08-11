@@ -157,4 +157,25 @@ describe('session lifecycle ordering', () => {
     raiseSessionOrderingBaselines([session('stale', 40)]);
     expect(useSessionOrderingStore.getState().rankById.get('stale')).toBe(40);
   });
+
+  test('keeps lifecycle ranks for equal session ids in separate scopes', () => {
+    const defaultScope = useSessionOrderingStore.getState().scopeKey;
+    const firstScope = 'workspace:ordering-a';
+    const secondScope = 'workspace:ordering-b';
+
+    useSessionOrderingStore.getState().bindScope(firstScope);
+    observeSessionActivityEvent('same-session', 'active', firstScope);
+    const firstRank = useSessionOrderingStore.getState().rankById.get('same-session');
+
+    useSessionOrderingStore.getState().bindScope(secondScope);
+    expect(useSessionOrderingStore.getState().rankById.has('same-session')).toBe(false);
+    observeSessionActivityEvent('same-session', 'active', secondScope);
+    const secondRank = useSessionOrderingStore.getState().rankById.get('same-session');
+    expect(secondRank).toBeDefined();
+    expect(secondRank).not.toBe(firstRank);
+
+    useSessionOrderingStore.getState().bindScope(firstScope);
+    expect(useSessionOrderingStore.getState().rankById.get('same-session')).toBe(firstRank);
+    useSessionOrderingStore.getState().bindScope(defaultScope);
+  });
 });

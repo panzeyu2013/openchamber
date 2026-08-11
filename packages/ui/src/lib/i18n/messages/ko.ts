@@ -1657,6 +1657,8 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.serverHasMoreSessions': '이 서버에 더 많은 세션이 있습니다',
   'workspaces.sidebar.openSessionAria': '{workspace}에서 {title} 열기',
   'workspaces.sidebar.unavailable': '이 런타임에서는 작업 영역을 사용할 수 없습니다.',
+  'workspaces.sidebar.capabilityDisabled.title': '작업 영역 카탈로그가 비활성화되었습니다',
+  'workspaces.sidebar.capabilityDisabled.description': '서버 관리자가 작업 영역 카탈로그를 비활성화했습니다. 작업 영역 데이터는 보존되며 읽기 전용으로 표시됩니다. 작업 영역 추가, 편집, 열기가 불가능합니다.',
   'workspaces.capability.terminalUnavailable': '이 작업 영역의 연결에서는 터미널을 사용할 수 없습니다.',
   'workspaces.dialog.description': '서버와 서버의 경로를 선택하세요. 모든 서버의 작업 영역이 하나의 목록에 표시됩니다.',
   'workspaces.dialog.server.label': '서버',

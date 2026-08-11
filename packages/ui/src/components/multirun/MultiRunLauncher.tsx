@@ -30,6 +30,7 @@ import { PROJECT_ICON_MAP, PROJECT_COLOR_MAP, ProjectIconImage } from '@/lib/pro
 import type { ProjectEntry } from '@/lib/api/types';
 import { startDesktopWindowDrag } from '@/lib/desktopNative';
 import { useI18n } from '@/lib/i18n';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_MODELS_PER_GROUP = 5;
@@ -89,6 +90,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
   onCancel,
   isWindowed = false,
 }) => {
+  const activeWorkspaceId = useActiveWorkspaceId();
   const { t } = useI18n();
   const [name, setName] = React.useState('');
   const [runGroups, setRunGroups] = React.useState<RunGroupState[]>(() => [
@@ -394,7 +396,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
       const result = await createMultiRun(params);
       if (result) {
         if (result.firstSessionId) {
-          useSessionUIStore.getState().setCurrentSession(result.firstSessionId);
+          useSessionUIStore.getState().setCurrentSession(result.firstSessionId, null, activeWorkspaceId);
         }
         onCreated?.();
       }

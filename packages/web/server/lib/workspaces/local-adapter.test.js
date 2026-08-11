@@ -306,6 +306,17 @@ describe('createLocalWorkspaceAdapter', () => {
       expect(forwarded.init.headers.get('x-openchamber-runtime-auth')).toBe('secret');
     });
 
+    it('copies plain request headers while filtering browser credentials', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest({ headers: { accept: 'application/json', cookie: 'browser-secret' } }),
+        '/api/session',
+      );
+      expect(forwarded.init.headers.get('accept')).toBe('application/json');
+      expect(forwarded.init.headers.get('cookie')).toBeNull();
+    });
+
     it('overwrites a client-supplied directory header inside the workspace', async () => {
       const adapter = createForwardingAdapter();
       const forwarded = await adapter.fetch(
@@ -349,6 +360,83 @@ describe('createLocalWorkspaceAdapter', () => {
         'catalog_path_outside_workspace',
         403,
       );
+    });
+
+    it('scopes filesystem directory listing queries to the workspace', async () => {
+      let capturedUrl = '';
+      const adapter = createForwardingAdapter({
+        buildOpenCodeUrl: (restPath) => {
+          capturedUrl = restPath;
+          return `http://opencode.test${restPath}`;
+        },
+      });
+      await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest(),
+        '/api/fs/list',
+      );
+      expect(capturedUrl).toBe(`/api/fs/list?path=${encodeURIComponent(workspaceDir())}`);
+      await expectTypedError(
+        adapter.fetch(
+          { canonicalPath: workspaceDir() },
+          createRequest(),
+          '/api/fs/list?path=%2Fetc',
+        ),
+        'catalog_path_outside_workspace',
+        403,
+      );
+    });
+
+    it('rejects filesystem and terminal path fields outside the workspace', async () => {
+      const adapter = createForwardingAdapter();
+      for (const [restPath, body] of [
+        ['/api/fs/mkdir', { path: '/etc/new-dir' }],
+        ['/api/fs/write', { path: '/etc/file', content: 'x' }],
+        ['/api/fs/delete', { path: '/etc/file' }],
+        ['/api/fs/rename', { oldPath: path.join(workspaceDir(), 'file'), newPath: '/etc/file' }],
+        ['/api/fs/reveal', { path: '/etc' }],
+        ['/api/fs/serve/etc/passwd', {}],
+        ['/api/fs/clone', { destinationPath: '/etc/clone' }],
+        ['/api/fs/exec', { cwd: '/etc' }],
+        ['/api/terminal/create', { cwd: '/etc' }],
+        ['/api/git/stage', { paths: ['/etc/file'] }],
+      ]) {
+        await expectTypedError(
+          adapter.fetch(
+            { canonicalPath: workspaceDir() },
+            createRequest({ method: 'POST', body }),
+            restPath,
+          ),
+          'catalog_path_outside_workspace',
+          403,
+        );
+      }
+    });
+
+    it('resolves workspace-relative file and Git paths against the workspace root', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest({ method: 'POST', body: { path: 'src/file.ts', content: 'x' } }),
+        '/api/fs/write',
+      );
+      expect(forwarded.init.body).toBe(JSON.stringify({ path: 'src/file.ts', content: 'x' }));
+      await expect(adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest({ method: 'POST', body: { paths: ['src/a.ts'] } }),
+        '/api/git/stage',
+      )).resolves.toMatchObject({ status: 200 });
+    });
+
+    it('preserves the server-validated outside-file grant exception for local reads', async () => {
+      const adapter = createForwardingAdapter();
+      const forwarded = await adapter.fetch(
+        { canonicalPath: workspaceDir() },
+        createRequest(),
+        '/api/fs/read?path=%2Ftmp%2Feditor-only.txt&allowOutsideWorkspace=true&outsideFileGrant=grant-1',
+      );
+      expect(forwarded.url).toContain('allowOutsideWorkspace=true');
+      expect(forwarded.url).toContain('outsideFileGrant=grant-1');
     });
 
     it('rejects a directory body field outside the workspace', async () => {

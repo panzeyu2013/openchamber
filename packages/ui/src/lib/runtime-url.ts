@@ -115,8 +115,7 @@ const buildHttpUrl = (baseUrl: string, path: string, query?: RuntimeUrlQuery): s
   return url.toString();
 };
 
-const withUrlAuth = (urlValue: string): string => {
-  const token = getRuntimeUrlAuthTokenSync();
+const withUrlAuth = (urlValue: string, token = getRuntimeUrlAuthTokenSync()): string => {
   if (!token) return urlValue;
 
   const url = ABSOLUTE_URL_PATTERN.test(urlValue)
@@ -126,6 +125,14 @@ const withUrlAuth = (urlValue: string): string => {
   if (ABSOLUTE_URL_PATTERN.test(urlValue)) return url.toString();
   return `${url.pathname}${url.search}${url.hash}`;
 };
+
+/**
+ * Adds an already-minted short-lived URL token to a browser-owned asset or
+ * realtime URL. Scoped runtime consumers use this when their token belongs to
+ * a pinned control plane rather than the ambient runtime token store.
+ */
+export const withRuntimeUrlAuthToken = (urlValue: string, token: string): string =>
+  withUrlAuth(urlValue, token);
 
 const toWebSocketUrl = (candidate: string, config: RuntimeUrlConfig): string => {
   const url = ABSOLUTE_URL_PATTERN.test(candidate)

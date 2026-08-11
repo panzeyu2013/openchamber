@@ -69,9 +69,10 @@ export function useRouter(): void {
         // 1. Apply session first (may trigger async operations)
         if (route.sessionId) {
           const currentSessionId = useSessionUIStore.getState().currentSessionId;
-          if (route.sessionId !== currentSessionId) {
+          const currentWorkspaceId = useSessionUIStore.getState().currentWorkspaceId;
+          if (route.sessionId !== currentSessionId || (route.workspaceId && route.workspaceId !== currentWorkspaceId)) {
             const directoryHint = useSessionUIStore.getState().getDirectoryForSession(route.sessionId);
-            setCurrentSession(route.sessionId, directoryHint);
+            setCurrentSession(route.sessionId, directoryHint, route.workspaceId);
           }
         }
 
@@ -113,6 +114,7 @@ export function useRouter(): void {
 
     return {
       sessionId: sessionState.currentSessionId,
+      workspaceId: sessionState.currentWorkspaceId,
       tab: uiState.activeMainTab,
       isSettingsOpen: uiState.isSettingsDialogOpen,
       settingsPath: uiState.settingsPage,
@@ -162,6 +164,7 @@ export function useRouter(): void {
         updateBrowserURL({
           ...getCurrentAppState(),
           sessionId: route.sessionId ?? useSessionUIStore.getState().currentSessionId,
+          workspaceId: route.workspaceId ?? useSessionUIStore.getState().currentWorkspaceId,
           tab: route.tab ?? useUIStore.getState().activeMainTab,
           settingsPath: route.settingsPath ?? useUIStore.getState().settingsPage,
           diffFile: route.diffFile ?? useUIStore.getState().pendingDiffFile,
@@ -179,16 +182,19 @@ export function useRouter(): void {
     }
 
     let prevSessionId: string | null = useSessionUIStore.getState().currentSessionId;
+    let prevWorkspaceId: string | null = useSessionUIStore.getState().currentWorkspaceId;
 
     const unsubscribe = useSessionUIStore.subscribe((state) => {
       const sessionId = state.currentSessionId;
+      const workspaceId = state.currentWorkspaceId;
 
       // Skip if no change or if we're currently applying a route
-      if (sessionId === prevSessionId || isApplyingRouteRef.current) {
+      if ((sessionId === prevSessionId && workspaceId === prevWorkspaceId) || isApplyingRouteRef.current) {
         return;
       }
 
       prevSessionId = sessionId;
+      prevWorkspaceId = workspaceId;
       syncURLFromState();
     });
 

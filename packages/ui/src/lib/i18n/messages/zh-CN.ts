@@ -1621,6 +1621,8 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.serverHasMoreSessions': '该服务器上还有更多会话',
   'workspaces.sidebar.openSessionAria': '在 {workspace} 中打开 {title}',
   'workspaces.sidebar.unavailable': '此环境中工作区不可用。',
+  'workspaces.sidebar.capabilityDisabled.title': '工作区目录已禁用',
+  'workspaces.sidebar.capabilityDisabled.description': '服务器管理员已禁用工作区目录。您的工作区数据仍会保留，并以只读方式显示——无法添加、编辑或打开工作区。',
   'workspaces.capability.terminalUnavailable': '此工作区的连接不支持终端。',
   'workspaces.dialog.description': '选择服务器及其上的路径。所有服务器的工作区都显示在同一个列表中。',
   'workspaces.dialog.server.label': '服务器',

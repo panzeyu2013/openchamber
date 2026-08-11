@@ -1498,6 +1498,8 @@ export const dict = {
   'workspaces.sidebar.serverHasMoreSessions': 'Weitere Sitzungen auf diesem Server verfügbar',
   'workspaces.sidebar.openSessionAria': '{title} in {workspace} öffnen',
   'workspaces.sidebar.unavailable': 'Arbeitsbereiche sind in dieser Laufzeitumgebung nicht verfügbar.',
+  'workspaces.sidebar.capabilityDisabled.title': 'Arbeitsbereichs-Katalog ist deaktiviert',
+  'workspaces.sidebar.capabilityDisabled.description': 'Der Serveradministrator hat den Arbeitsbereichs-Katalog deaktiviert. Ihre Arbeitsbereiche bleiben gespeichert und werden schreibgeschützt angezeigt – Hinzufügen, Bearbeiten und Öffnen von Arbeitsbereichen ist nicht verfügbar.',
   'workspaces.capability.terminalUnavailable': 'Das Terminal ist für die Verbindung dieses Arbeitsbereichs nicht verfügbar.',
   'workspaces.dialog.description': 'Wähle einen Server und einen Pfad darauf. Arbeitsbereiche aller Server stehen in einer Liste.',
   'workspaces.dialog.server.label': 'Server',

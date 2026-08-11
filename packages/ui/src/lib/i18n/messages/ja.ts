@@ -1651,6 +1651,8 @@ export const dict: Record<I18nKey, string> = {
   'workspaces.sidebar.serverHasMoreSessions': 'このサーバーには他にもセッションがあります',
   'workspaces.sidebar.openSessionAria': '{workspace} で {title} を開く',
   'workspaces.sidebar.unavailable': 'このランタイムではワークスペースを利用できません。',
+  'workspaces.sidebar.capabilityDisabled.title': 'ワークスペースカタログは無効です',
+  'workspaces.sidebar.capabilityDisabled.description': 'サーバー管理者がワークスペースカタログを無効にしました。ワークスペースのデータは保持され、読み取り専用で表示されます。ワークスペースの追加・編集・開始はできません。',
   'workspaces.capability.terminalUnavailable': 'このワークスペースの接続ではターミナルを利用できません。',
   'workspaces.dialog.description': 'サーバーとその上のパスを選択します。すべてのサーバーのワークスペースが1つのリストに表示されます。',
   'workspaces.dialog.server.label': 'サーバー',

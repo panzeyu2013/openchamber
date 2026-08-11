@@ -32,6 +32,7 @@ import {
 import { ScheduledTaskEditorDialog } from './ScheduledTaskEditorDialog';
 import { canonicalizeTimezone } from '@/lib/timezones';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const scheduleTimes = (task: ScheduledTask): string[] => {
   const raw = Array.isArray(task.schedule.times)
@@ -176,6 +177,7 @@ export function ScheduledTasksDialog() {
   const isMobile = useUIStore((state) => state.isMobile);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
   const projects = useProjectsStore((state) => state.projects);
+  const activeWorkspaceId = useActiveWorkspaceId();
   const activeProject = useProjectsStore((state) => state.getActiveProject());
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
   const { currentTheme } = useThemeSystem();
@@ -392,7 +394,7 @@ export function ScheduledTasksDialog() {
         // Jump straight into the started session; selecting it also closes
         // this surface (MainLayout closes surfaces on session selection).
         const project = projects.find((entry) => entry.id === selectedProjectID);
-        useSessionUIStore.getState().setCurrentSession(sessionId, project?.path ?? null);
+        useSessionUIStore.getState().setCurrentSession(sessionId, project?.path ?? null, activeWorkspaceId);
         useUIStore.getState().setActiveMainTab('chat');
       }
     } catch (error) {
@@ -400,7 +402,7 @@ export function ScheduledTasksDialog() {
     } finally {
       setMutatingTaskID(null);
     }
-  }, [selectedProjectID, projects, reloadTasks, t]);
+  }, [activeWorkspaceId, selectedProjectID, projects, reloadTasks, t]);
 
   const projectSelector = (
     <div className="flex flex-col items-start gap-1">

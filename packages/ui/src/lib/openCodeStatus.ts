@@ -1,8 +1,7 @@
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getSyncSessions } from '@/sync/sync-refs';
+import { getSyncOpencodeService, getSyncSessions } from '@/sync/sync-refs';
 import { useUIStore } from '@/stores/useUIStore';
 import { getRuntimeUrlResolver } from './runtime-url';
-import { opencodeClient } from './opencode/client';
 import { runtimeFetch } from './runtime-fetch';
 
 declare const __APP_VERSION__: string | undefined;
@@ -261,7 +260,7 @@ const buildOpenCodeStatusReport = async (): Promise<string> => {
   lines.push(`Time: ${now.toISOString()}`);
   lines.push(`OpenChamber version: ${appVersion}`);
   lines.push(`Runtime: ${origin || '(unknown)'} (api=${apiBase || '(unknown)'})`);
-  lines.push(`OpenCode SDK base: ${opencodeClient.getBaseUrl()}`);
+  lines.push(`OpenCode SDK base: ${getSyncOpencodeService().getBaseUrl()}`);
   lines.push(`Event stream: ${eventStreamStatus}`);
   lines.push(`Directory: ${directory || '(none)'}`);
   lines.push(`Platform: ${platform}`);

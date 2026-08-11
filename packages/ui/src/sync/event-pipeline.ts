@@ -13,7 +13,7 @@
  */
 
 import type { Event, OpencodeClient, SessionStatus } from "@opencode-ai/sdk/v2/client"
-import { opencodeClient } from "@/lib/opencode/client"
+import { getSyncOpencodeService } from "@/sync/sync-refs"
 import { getRuntimeUrlResolver } from "@/lib/runtime-url"
 import { clearRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken } from "@/lib/runtime-auth"
 import { type RelayTunnelWebSocket } from "@/lib/relay/tunnel-client"
@@ -59,10 +59,10 @@ export type EventPipelineInput = {
   transport?: "auto" | "ws" | "sse"
   /** Workspace-bound sync: always use the bound SDK's SSE stream
    * (`sdk.global.event`, which lands on the workspace runtime proxy) and
-   * never open a WebSocket. The workspace proxy pipes `text/event-stream`
-   * but WebSocket upgrades are not wired yet, and the WS URL builder reads
-   * the GLOBAL runtime client, which would connect the wrong stream for a
-   * remote workspace. */
+   * never open a WebSocket. The workspace proxy pipes `text/event-stream`;
+   * keeping this pipeline on SSE also avoids consulting the GLOBAL runtime
+   * URL builder, while workspace terminal/realtime consumers use their own
+   * scoped WebSocket paths. */
   forceSse?: boolean
   heartbeatTimeoutMs?: number
   reconnectDelayMs?: number
@@ -215,7 +215,7 @@ function resolveEventPayload(payload: unknown): Event | null {
 function buildGlobalEventWsUrl(lastEventId?: string): string {
   let baseUrl = "/api"
   try {
-    const client = opencodeClient as { getBaseUrl?: () => string }
+    const client = getSyncOpencodeService() as { getBaseUrl?: () => string }
     if (typeof client.getBaseUrl === "function") {
       baseUrl = client.getBaseUrl()
     }

@@ -244,4 +244,25 @@ describe("GitHub PR status workspace scope", () => {
     expect(useGitHubPrStatusStore.getState().entries[keyB] ?? undefined).toBe(undefined)
     expect(useGitHubPrStatusStore.getState().entries[keyA]?.status?.pr?.number).toBe(7)
   })
+
+  test("scope reset leaves unrelated workspace status intact", () => {
+    const github = { prStatus: async () => ({ connected: true, pr: null }) } as unknown as RuntimeAPIs["github"]
+    setWorkspaceSession("ws-a")
+    const keyA = getGitHubPrStatusKey("/repo", "main", "origin")
+    useGitHubPrStatusStore.getState().ensureEntry(keyA)
+    useGitHubPrStatusStore.getState().setParams(keyA, params(github))
+    useGitHubPrStatusStore.getState().updateStatus(keyA, () => ({
+      connected: true,
+      pr: { number: 11, title: "kept", url: "u", state: "open", draft: false, base: "main", head: "f" },
+    }))
+
+    setWorkspaceSession("ws-b")
+    const keyB = getGitHubPrStatusKey("/repo", "main", "origin")
+    useGitHubPrStatusStore.getState().ensureEntry(keyB)
+    useGitHubPrStatusStore.getState().setParams(keyB, params(github))
+    useGitHubPrStatusStore.getState().resetForRuntimeSwitch("workspace:ws-b")
+
+    expect(useGitHubPrStatusStore.getState().entries[keyA]?.status?.pr?.number).toBe(11)
+    expect(useGitHubPrStatusStore.getState().entries[keyB]?.params).toBe(null)
+  })
 })

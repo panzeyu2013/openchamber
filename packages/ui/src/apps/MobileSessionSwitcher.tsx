@@ -13,6 +13,7 @@ import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useGlobalSessionStatus } from '@/sync/sync-context';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 
 const RECENT_SESSIONS_LIMIT = 10;
 /** Matches the metadata popover's width so both header dropdowns read as a pair. */
@@ -32,7 +33,8 @@ const SwitcherRow: React.FC<{
 }> = ({ session, meta, active, onSelect }) => {
   const { t } = useI18n();
   const status = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id);
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
   const statusType = status?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
@@ -133,6 +135,7 @@ export const MobileSessionSwitcher: React.FC<{
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
+  const activeWorkspaceId = useActiveWorkspaceId();
 
   const items = useSwitcherItems(open || shouldRender, { maxParents: RECENT_SESSIONS_LIMIT });
 
@@ -179,9 +182,9 @@ export const MobileSessionSwitcher: React.FC<{
   }, [anchorRef, onClose, open]);
 
   const handleSelect = React.useCallback((session: Session) => {
-    void setCurrentSession(session.id, resolveGlobalSessionDirectory(session));
+    void setCurrentSession(session.id, resolveGlobalSessionDirectory(session), activeWorkspaceId);
     onClose();
-  }, [onClose, setCurrentSession]);
+  }, [activeWorkspaceId, onClose, setCurrentSession]);
 
   if (!shouldRender) return null;
 

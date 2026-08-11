@@ -36,6 +36,26 @@ const sdk = {
     },
   },
 } as unknown as OpencodeClient
+const workspaceASdk = {
+  experimental: {
+    session: {
+      list: async () => ({
+        data: await listRequest.promise,
+        response: { headers: new Headers() },
+      }),
+    },
+  },
+} as unknown as OpencodeClient
+const workspaceBSdk = {
+  experimental: {
+    session: {
+      list: async () => ({
+        data: [session("workspace-b")],
+        response: { headers: new Headers() },
+      }),
+    },
+  },
+} as unknown as OpencodeClient
 const originalGetSdkClient = opencodeClient.getSdkClient
 
 const session = (id: string, title = id, archived?: number): Session => ({
@@ -152,5 +172,23 @@ describe("global session mutation reconciliation", () => {
 
     expect(useGlobalSessionsStore.getState().activeSessions.map((item) => item.id)).toEqual(["restored"])
     expect(useGlobalSessionsStore.getState().archivedSessions).toEqual([])
+  })
+
+  test("does not publish a stale workspace load into the currently bound workspace", async () => {
+    useGlobalSessionsStore.getState().bindScope("workspace:a", workspaceASdk)
+    const loadingA = useGlobalSessionsStore.getState().loadSessions()
+
+    useGlobalSessionsStore.getState().bindScope("workspace:b", workspaceBSdk)
+    await useGlobalSessionsStore.getState().loadSessions()
+    expect(useGlobalSessionsStore.getState().activeSessions.map((item) => item.id)).toEqual(["workspace-b"])
+
+    listRequest.resolve([session("workspace-a")])
+    await loadingA
+
+    expect(useGlobalSessionsStore.getState().scopeKey).toBe("workspace:b")
+    expect(useGlobalSessionsStore.getState().activeSessions.map((item) => item.id)).toEqual(["workspace-b"])
+
+    useGlobalSessionsStore.getState().bindScope("workspace:a", workspaceASdk)
+    expect(useGlobalSessionsStore.getState().activeSessions.map((item) => item.id)).toEqual(["workspace-a"])
   })
 })

@@ -3,17 +3,21 @@ import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { canUseElectronDesktopIPC, getDesktopRuntimeEndpointArgs, invokeDesktop } from '@/lib/desktop';
 import { eventMatchesShortcut, getEffectiveShortcutCombo } from '@/lib/shortcuts';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useEffectiveDirectory } from './useEffectiveDirectory';
 
 export const useMiniChatKeyboardShortcuts = () => {
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const activeProject = useProjectsStore((state) => state.getActiveProject());
   const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
+  const activeWorkspaceId = useActiveWorkspaceId();
+  const effectiveDirectory = useEffectiveDirectory();
+  const miniChatDirectory = effectiveDirectory || '';
+  const miniChatProject = activeWorkspaceId ? null : activeProject;
 
   React.useEffect(() => {
     const combo = (actionId: string) => getEffectiveShortcutCombo(actionId, shortcutOverrides);
@@ -28,8 +32,9 @@ export const useMiniChatKeyboardShortcuts = () => {
       if (canUseElectronDesktopIPC() && eventMatchesShortcut(event, combo('new_mini_chat'))) {
         event.preventDefault();
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
-          directory: currentDirectory || activeProject?.path || '',
-          projectId: activeProject?.id ?? null,
+          directory: miniChatDirectory,
+          projectId: miniChatProject?.id ?? null,
+          workspaceId: activeWorkspaceId ?? null,
           ...getDesktopRuntimeEndpointArgs(),
         })?.catch((error) => {
           console.warn('[mini-chat-shortcuts] failed to open draft mini chat window', error);
@@ -40,9 +45,9 @@ export const useMiniChatKeyboardShortcuts = () => {
       if (eventMatchesShortcut(event, combo('new_chat'))) {
         event.preventDefault();
         openNewSessionDraft({
-          selectedProjectId: activeProject?.id ?? null,
-          directoryOverride: currentDirectory || activeProject?.path || null,
-          preserveDirectoryOverride: Boolean(currentDirectory || activeProject?.path),
+          selectedProjectId: miniChatProject?.id ?? null,
+          directoryOverride: miniChatDirectory || null,
+          preserveDirectoryOverride: Boolean(miniChatDirectory),
         });
         focusChatInput();
         return;
@@ -99,5 +104,5 @@ export const useMiniChatKeyboardShortcuts = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeProject?.id, activeProject?.path, currentDirectory, openNewSessionDraft, shortcutOverrides]);
+  }, [activeWorkspaceId, miniChatDirectory, miniChatProject?.id, openNewSessionDraft, shortcutOverrides]);
 };

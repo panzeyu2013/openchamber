@@ -339,7 +339,7 @@ export function useSync() {
         touch(sessionID, targetDirectory)
       }
     },
-    [messageLoader, scopeKey, touch],
+    [childStores.scopeKey, messageLoader, scopeKey, touch],
   )
 
   const hasMore = useCallback(

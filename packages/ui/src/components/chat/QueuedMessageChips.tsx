@@ -16,6 +16,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { createMessageQueueTarget, getMessageQueueKey, useMessageQueueStore, type MessageQueueTarget, type QueuedMessage } from '@/stores/messageQueueStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { useInputStore } from '@/sync/input-store';
 import { useI18n } from '@/lib/i18n';
 import { Icon } from "@/components/icon/Icon";
@@ -120,7 +121,14 @@ export const QueuedMessageChips = memo(({ onEditMessage, onSendMessage }: Queued
             [currentSessionId],
         ),
     );
-    const target = currentSessionId ? createMessageQueueTarget(currentSessionId, currentSessionDirectory) : null;
+    const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+    const target = currentSessionId
+        ? createMessageQueueTarget(
+            currentSessionId,
+            currentSessionDirectory,
+            resolveSessionScopeKey(currentSessionId, currentSessionDirectory, currentWorkspaceId),
+          )
+        : null;
     const queueKey = target ? getMessageQueueKey(target) : null;
     const queuedMessages = useMessageQueueStore(
         React.useCallback(

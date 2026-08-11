@@ -7,6 +7,7 @@ import { useWindowControlsOverlayLayout } from '@/hooks/useWindowControlsOverlay
 import { setOptimisticRefs } from '@/sync/session-actions';
 import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
+import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSync } from '@/sync/use-sync';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
@@ -21,6 +22,7 @@ type MiniChatPresenceMessage = {
   type?: string;
   sessionId?: string;
   directory?: string;
+  workspaceId?: string;
   viewed?: boolean;
 };
 
@@ -58,7 +60,7 @@ const MiniChatPresenceBridge: React.FC = () => {
       const viewed = data.viewed !== false;
       setExternallyViewedSession(data.directory, data.sessionId, viewed);
       if (viewed) {
-        markSessionViewed(data.sessionId);
+        markSessionViewed(data.sessionId, data.workspaceId ?? useSessionUIStore.getState().currentWorkspaceId);
       }
     };
 
@@ -138,8 +140,24 @@ const SessionIndexBridge: React.FC = () => {
   return null;
 };
 
-export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
+/**
+ * Bootstraps the control-plane-owned Catalog and Session Index for secondary
+ * Electron surfaces. These stores are independent of the full SyncProvider,
+ * so a workspace-targeted Mini Chat can resolve its handle before mounting
+ * session sync without inheriting the ambient runtime.
+ */
+export const WorkspaceCatalogSessionIndexEffects: React.FC = () => (
+  <>
+    <WorkspaceCatalogBridge />
+    <SessionIndexBridge />
+  </>
+);
+
+export function SyncAppEffects({ embeddedBackgroundWorkEnabled, includeWorkspaceState = true }: {
   embeddedBackgroundWorkEnabled: boolean;
+  /** Set false when the Catalog/Session Index bridges are mounted above a
+   * workspace runtime gate so they can hydrate the handle before Sync mounts. */
+  includeWorkspaceState?: boolean;
 }) {
   usePwaManifestSync();
   useWindowControlsOverlayLayout();
@@ -150,8 +168,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled }: {
       <SyncRuntimeEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
       <MiniChatPresenceBridge />
       <DesktopRuntimeSyncBridge />
-      <WorkspaceCatalogBridge />
-      <SessionIndexBridge />
+      {includeWorkspaceState ? <WorkspaceCatalogSessionIndexEffects /> : null}
     </>
   );
 }

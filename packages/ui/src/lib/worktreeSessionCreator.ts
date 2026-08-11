@@ -10,6 +10,7 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useContextStore } from '@/stores/contextStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { checkIsGitRepository, previewGitWorktree } from '@/lib/gitApi';
 import { generateBranchName } from '@/lib/git/branchNameGenerator';
 import { parseModelIdentifier } from '@/lib/modelIdentifier';
@@ -28,6 +29,8 @@ import {
 import { waitForWorktreeBootstrap } from '@/lib/worktrees/worktreeBootstrap';
 import { normalizePath } from '@/lib/pathNormalization';
 import { resolveProjectForDirectory } from '@/lib/projectResolution';
+import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
+import { workspaceScopeKey } from '@/workspaces/identity';
 
 const waitForWorktreeBootstrapIfEnabled = async (project: ProjectRef, directory: string): Promise<void> => {
   if (await getWorktreeSetupWaitEnabled(project)) {
@@ -36,6 +39,21 @@ const waitForWorktreeBootstrapIfEnabled = async (project: ProjectRef, directory:
 };
 
 export const resolveProjectRef = (directory: string): ProjectRef | null => {
+  const sessionState = useSessionUIStore.getState();
+  const workspaceId = sessionState.currentWorkspaceId
+    ?? (sessionState.newSessionDraft?.open ? sessionState.newSessionDraft.workspaceId : null);
+  if (workspaceId) {
+    if (!isWorkspaceRuntimeActive() || getSyncScopeKey() !== workspaceScopeKey(workspaceId)) return null;
+    const boundDirectory = normalizePath(
+      getSyncOpencodeService().getDirectory()
+      ?? sessionState.currentSessionDirectory
+      ?? sessionState.newSessionDraft?.directoryOverride
+      ?? null,
+    );
+    return boundDirectory ? { id: workspaceId, path: boundDirectory } : null;
+  }
+  if (isWorkspaceRuntimeActive()) return null;
+
   const projects = useProjectsStore.getState().projects;
   const normalizedDirectory = normalizePath(directory);
   if (!normalizedDirectory) return null;
@@ -85,10 +103,34 @@ export const createQuickWorktree = async (
 // Track if a worktree creation flow is already running
 let isCreatingWorktreeSession = false;
 
+const activeWorkspaceTarget = (): boolean => {
+  const state = useSessionUIStore.getState();
+  return Boolean(
+    state.currentWorkspaceId
+    || (state.newSessionDraft?.open && state.newSessionDraft.workspaceId)
+    || isWorkspaceRuntimeActive(),
+  );
+};
+
+const setLegacyDirectoryIfAvailable = (directory: string): void => {
+  // The bound workspace Git API can create the worktree, but the legacy
+  // directory store cannot own its resulting session target. Never let an
+  // async flow write the ambient directory after a workspace switch.
+  if (activeWorkspaceTarget()) {
+    return;
+  }
+  useDirectoryStore.getState().setDirectory(directory, { showOverlay: false });
+};
 
 
-const applyDefaultAgentAndModelSelection = (sessionId: string, configState = useConfigStore.getState()) => {
+
+const applyDefaultAgentAndModelSelection = (
+  sessionId: string,
+  configState = useConfigStore.getState(),
+  workspaceScopedOverride?: boolean,
+) => {
   try {
+    const workspaceScoped = workspaceScopedOverride ?? activeWorkspaceTarget();
     const visibleAgents = configState.getVisibleAgents();
     let agentName: string | undefined;
 
@@ -109,8 +151,12 @@ const applyDefaultAgentAndModelSelection = (sessionId: string, configState = use
       return;
     }
 
-    configState.setAgent(agentName);
-    useContextStore.getState().saveSessionAgentSelection(sessionId, agentName);
+    if (!workspaceScoped) {
+      configState.setAgent(agentName);
+    }
+    if (!workspaceScoped) {
+      useContextStore.getState().saveSessionAgentSelection(sessionId, agentName);
+    }
 
     const settingsDefaultModel = configState.settingsDefaultModel;
     if (!settingsDefaultModel) {
@@ -128,8 +174,10 @@ const applyDefaultAgentAndModelSelection = (sessionId: string, configState = use
       return;
     }
 
-    useContextStore.getState().saveSessionModelSelection(sessionId, providerId, modelId);
-    useContextStore.getState().saveAgentModelForSession(sessionId, agentName, providerId, modelId);
+    if (!workspaceScoped) {
+      useContextStore.getState().saveSessionModelSelection(sessionId, providerId, modelId);
+      useContextStore.getState().saveAgentModelForSession(sessionId, agentName, providerId, modelId);
+    }
 
     const settingsDefaultVariant = configState.settingsDefaultVariant;
     if (!settingsDefaultVariant) {
@@ -144,9 +192,11 @@ const applyDefaultAgentAndModelSelection = (sessionId: string, configState = use
 
     if (variants && Object.prototype.hasOwnProperty.call(variants, settingsDefaultVariant)) {
       configState.setCurrentVariant(settingsDefaultVariant);
-      useContextStore
-        .getState()
-        .saveAgentModelVariantForSession(sessionId, agentName, providerId, modelId, settingsDefaultVariant);
+      if (!workspaceScoped) {
+        useContextStore
+          .getState()
+          .saveAgentModelVariantForSession(sessionId, agentName, providerId, modelId, settingsDefaultVariant);
+      }
     }
   } catch {
     // Ignore errors setting default agent
@@ -161,14 +211,14 @@ const initializeSessionForWorktree = (sessionId: string, metadata: {
   name?: string;
   createdFromBranch?: string;
   kind?: 'pr' | 'standard';
-}) => {
+}, workspaceId?: string | null) => {
   const sessionStore = useSessionUIStore.getState();
   const configState = useConfigStore.getState();
   sessionStore.initializeNewOpenChamberSession(sessionId, configState.agents);
   sessionStore.setSessionDirectory(sessionId, metadata.path);
   sessionStore.setWorktreeMetadata(sessionId, metadata);
-  applyDefaultAgentAndModelSelection(sessionId, configState);
-  useDirectoryStore.getState().setDirectory(metadata.path, { showOverlay: false });
+  applyDefaultAgentAndModelSelection(sessionId, configState, Boolean(workspaceId) || activeWorkspaceTarget());
+  setLegacyDirectoryIfAvailable(metadata.path);
 };
 
 
@@ -180,7 +230,13 @@ const createInstantWorktreeDraft = async (options?: {
     return null;
   }
 
-  const activeProject = useProjectsStore.getState().getActiveProject();
+  const sessionState = useSessionUIStore.getState();
+  const workspaceId = sessionState.currentWorkspaceId
+    ?? (sessionState.newSessionDraft?.open ? sessionState.newSessionDraft.workspaceId : null);
+  const workspaceScoped = Boolean(workspaceId) || isWorkspaceRuntimeActive();
+  const activeProject = workspaceScoped
+    ? (workspaceId ? resolveProjectRef(getSyncOpencodeService().getDirectory() ?? '') : null)
+    : useProjectsStore.getState().getActiveProject();
   if (!activeProject?.path) {
     toast.error('No active project', {
       description: 'Please select a project first.',
@@ -208,6 +264,7 @@ const createInstantWorktreeDraft = async (options?: {
 
   try {
     const projectRef: ProjectRef = { id: activeProject.id, path: projectDirectory };
+    const draftWorkspaceId = workspaceId && isWorkspaceRuntimeActive() ? workspaceId : null;
     const pendingRequestId = createPendingDraftWorktreeRequest();
 
     // Lock the draft immediately so no React effect can reset it to the project
@@ -219,6 +276,7 @@ const createInstantWorktreeDraft = async (options?: {
         directoryOverride: sessionStore.newSessionDraft.directoryOverride ?? projectRef.path,
         pendingWorktreeRequestId: pendingRequestId,
         preserveDirectoryOverride: true,
+        workspaceId: draftWorkspaceId,
         title: options?.title,
         initialPrompt: options?.initialPrompt,
       });
@@ -228,6 +286,7 @@ const createInstantWorktreeDraft = async (options?: {
         directoryOverride: projectRef.path,
         pendingWorktreeRequestId: pendingRequestId,
         preserveDirectoryOverride: true,
+        workspaceId: draftWorkspaceId,
         title: options?.title,
         initialPrompt: options?.initialPrompt,
       });
@@ -252,7 +311,7 @@ const createInstantWorktreeDraft = async (options?: {
         title: options?.title,
         initialPrompt: options?.initialPrompt,
       });
-      useDirectoryStore.getState().setDirectory(preview.path, { showOverlay: false });
+      setLegacyDirectoryIfAvailable(preview.path);
     }
 
     const metadata = await createQuickWorktree(projectRef, { preferredName });
@@ -267,7 +326,7 @@ const createInstantWorktreeDraft = async (options?: {
       title: options?.title,
       initialPrompt: options?.initialPrompt,
     });
-    useDirectoryStore.getState().setDirectory(metadata.path, { showOverlay: false });
+    setLegacyDirectoryIfAvailable(metadata.path);
 
     return metadata.path;
   } catch (error) {
@@ -338,6 +397,10 @@ export async function createWorktreeSessionForNewBranch(
 
     const kind = options?.kind ?? 'standard';
 
+    const workspaceId = useSessionUIStore.getState().currentWorkspaceId
+      ?? (useSessionUIStore.getState().newSessionDraft?.open
+        ? useSessionUIStore.getState().newSessionDraft.workspaceId
+        : null);
     const projectRef = resolveProjectRef(projectDirectory);
     if (!projectRef) {
       throw new Error('Project is not registered in OpenChamber');
@@ -389,7 +452,7 @@ export async function createWorktreeSessionForNewBranch(
         throw new Error('Could not create a session for the worktree.');
       }
 
-      initializeSessionForWorktree(session.id, createdMetadata);
+      initializeSessionForWorktree(session.id, createdMetadata, workspaceId);
 
       return { id: session.id, branch: metadata.branch || base, path: metadata.path };
     } catch (error) {

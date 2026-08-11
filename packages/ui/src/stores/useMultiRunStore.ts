@@ -3,7 +3,6 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import { routeMessage, useSessionUIStore } from '@/sync/session-ui-store';
 import { devtools } from 'zustand/middleware';
 import type { CreateMultiRunParams, CreateMultiRunResult } from '@/types/multirun';
-import { opencodeClient } from '@/lib/opencode/client';
 import { getWorktreeSetupWaitEnabled, saveWorktreeSetupCommands } from '@/lib/openchamberConfig';
 import type { ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { createWorktreeWithDefaults, resolveRootTrackingRemote } from '@/lib/worktrees/worktreeCreate';
@@ -15,7 +14,8 @@ import { useProjectsStore } from './useProjectsStore';
 import { useSnippetsStore } from './useSnippetsStore';
 import { useGlobalSessionsStore } from './useGlobalSessionsStore';
 import { getMultiRunSessionTitle } from '@/lib/multirun/title';
-import { getSyncChildStores, registerSessionDirectory } from '@/sync/sync-refs';
+import { getSyncChildStores, getSyncOpencodeService, getSyncScopeKey, registerSessionDirectory } from '@/sync/sync-refs';
+import { workspaceIdFromScopeKey } from '@/workspaces/identity';
 
 const toGitSafeSlug = (value: string): string => {
   return value
@@ -81,6 +81,13 @@ const registerCreatedSession = (session: Session, directory: string): Session =>
 };
 
 const resolveActiveProject = (): ProjectRef | null => {
+  const scopeKey = getSyncScopeKey();
+  const workspaceId = workspaceIdFromScopeKey(scopeKey);
+  if (workspaceId) {
+    const directory = getSyncOpencodeService().getDirectory()?.trim();
+    return directory ? { id: workspaceId, path: directory } : null;
+  }
+
   const projectsState = useProjectsStore.getState();
   const activeProjectId = projectsState.activeProjectId;
   if (!activeProjectId) return null;
@@ -146,6 +153,14 @@ export const useMultiRunStore = create<MultiRunStore>()(
 
         set({ isLoading: true, error: null });
 
+        const operationScopeKey = getSyncScopeKey();
+        const operationService = getSyncOpencodeService();
+        const assertCurrentScope = (): void => {
+          if (getSyncScopeKey() !== operationScopeKey) {
+            throw new Error('Multi-Run was cancelled because the workspace changed.');
+          }
+        };
+
         try {
           const project = resolveActiveProject();
           if (!project) {
@@ -155,6 +170,7 @@ export const useMultiRunStore = create<MultiRunStore>()(
 
           const directory = project.path;
 
+          assertCurrentScope();
           const isGit = await checkIsGitRepository(directory);
           const shouldIsolateRuns = isGit && params.isolateRuns !== false;
 
@@ -209,11 +225,10 @@ export const useMultiRunStore = create<MultiRunStore>()(
               });
 
               try {
+                assertCurrentScope();
                 if (!shouldIsolateRuns) {
-                  const session = await opencodeClient.withDirectory(
-                    directory,
-                    () => opencodeClient.createSession({ title: sessionTitle }),
-                  );
+                  const session = await operationService.createSession({ title: sessionTitle }, directory);
+                  assertCurrentScope();
                   registerCreatedSession(session, directory);
 
                   createdRuns.push({
@@ -249,10 +264,9 @@ export const useMultiRunStore = create<MultiRunStore>()(
                   await waitForWorktreeBootstrap(worktreeMetadata.path);
                 }
 
-                const session = await opencodeClient.withDirectory(
-                  worktreeMetadata.path,
-                  () => opencodeClient.createSession({ title: sessionTitle }),
-                );
+                assertCurrentScope();
+                const session = await operationService.createSession({ title: sessionTitle }, worktreeMetadata.path);
+                assertCurrentScope();
                 registerCreatedSession(session, worktreeMetadata.path);
 
                 useSessionUIStore.getState().setWorktreeMetadata(session.id, enrichedMetadata);
@@ -272,11 +286,13 @@ export const useMultiRunStore = create<MultiRunStore>()(
           }
 
           const commandsToSave = setupCommands?.filter((cmd) => cmd.trim().length > 0) ?? [];
-          if (commandsToSave.length > 0) {
+          if (commandsToSave.length > 0 && getSyncScopeKey() === operationScopeKey) {
             saveWorktreeSetupCommands(project, commandsToSave).catch(() => {
               console.warn('[MultiRun] Failed to save worktree setup commands');
             });
           }
+
+          assertCurrentScope();
 
           const sessionIds = createdRuns.map((r) => r.sessionId);
           const firstSessionId = createdRuns[0]?.sessionId ?? null;
@@ -303,6 +319,7 @@ export const useMultiRunStore = create<MultiRunStore>()(
                     await routeMessage({
                       sessionId: run.sessionId,
                       directory: run.worktreePath,
+                      runtimeKey: operationScopeKey,
                       content: text,
                       providerID: run.providerID,
                       modelID: run.modelID,
@@ -323,6 +340,10 @@ export const useMultiRunStore = create<MultiRunStore>()(
           set({ isLoading: false });
           return { groupSlug, sessionIds, firstSessionId };
         } catch (error) {
+          if (getSyncScopeKey() !== operationScopeKey) {
+            set({ isLoading: false });
+            return null;
+          }
           set({
             error: error instanceof Error ? error.message : 'Failed to create Multi-Run',
             isLoading: false,
