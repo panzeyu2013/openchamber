@@ -1,5 +1,6 @@
 import { createVSCodeAPIs } from './api';
 import { onCommand, onThemeChange, proxyApiRequest, proxySessionMessageRequest, sendBridgeMessage, startSseProxy, stopSseProxy } from './api/bridge';
+import { buildControlPlaneUnavailableResponse, isControlPlaneApiPath } from './api/controlPlane';
 import { vscodeStreamPerfCount, vscodeStreamPerfMeasure, vscodeStreamPerfObserve } from './api/streamPerf';
 import { extractBodyBase64, extractBodyText, extractJsonBody, hasInitBody } from './requestBodyTransport';
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
@@ -1165,6 +1166,17 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  // Control-plane-owned paths (workspace catalog / session index /
+  // connections). The opencode binary cannot answer them: the current
+  // extension host has no OpenChamber control plane, so answer an explicit
+  // control_plane_unavailable instead of forwarding to the binary (which
+  // would surface a confusing 404). When a future extension host exposes a
+  // control plane, route through the bridge (`api:proxy` with
+  // `controlPlane: true`) instead of short-circuiting.
+  if (targetUrl && isControlPlaneApiPath(normalizedPathname)) {
+    return buildControlPlaneUnavailableResponse();
   }
 
   if (targetUrl && isLocalRuntimePath(normalizedPathname)) {

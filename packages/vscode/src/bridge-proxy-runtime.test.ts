@@ -63,8 +63,73 @@ describe('VS Code API proxy aborts', () => {
   });
 });
 
-describe('VS Code API proxy read coalescing', () => {
-  test('shares one upstream fetch across concurrent identical GET reads', async () => {
+describe('VS Code API proxy control plane', () => {
+  test('controlPlane requests answer capability_unavailable without touching the binary', async () => {
+    const originalFetch = globalThis.fetch;
+    let binaryFetchCount = 0;
+    try {
+      globalThis.fetch = (async () => {
+        binaryFetchCount += 1;
+        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+
+      const response = await handleProxyBridgeMessage(
+        { id: 'cp_1', type: 'api:proxy', payload: { method: 'GET', path: '/api/workspaces', controlPlane: true } },
+        ctx,
+        deps,
+      );
+      assert.equal(response?.success, true);
+      assert.equal((response?.data as { status?: number }).status, 501);
+      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { code?: string; workspaceId?: string };
+      assert.equal(body.code, 'capability_unavailable');
+      assert.equal(binaryFetchCount, 0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('controlPlane requests echo a workspaceId for forward-compat', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () =>
+        new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+      const response = await handleProxyBridgeMessage(
+        {
+          id: 'cp_2',
+          type: 'api:proxy',
+          payload: { method: 'GET', path: '/api/workspaces/ws-1', controlPlane: true, workspaceId: 'ws-1' },
+        },
+        ctx,
+        deps,
+      );
+      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { workspaceId?: string };
+      assert.equal(body.workspaceId, 'ws-1');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test('payload without controlPlane keeps the existing proxy behavior', async () => {
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () =>
+        new Response('{"ok":true}', { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch;
+
+      const response = await handleProxyBridgeMessage(
+        { id: 'plain_1', type: 'api:proxy', payload: { method: 'GET', path: '/session' } },
+        ctx,
+        deps,
+      );
+      assert.equal((response?.data as { status?: number }).status, 200);
+      assert.equal((response?.data as { bodyText?: string }).bodyText, '{"ok":true}');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+describe('VS Code API proxy read coalescing', () => {  test('shares one upstream fetch across concurrent identical GET reads', async () => {
     const originalFetch = globalThis.fetch;
     let fetchCount = 0;
     let release: () => void = () => {};

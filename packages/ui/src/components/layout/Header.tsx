@@ -37,6 +37,7 @@ import { ContextUsageDisplay } from '@/components/ui/ContextUsageDisplay';
 import { WindowsWindowControls } from '@/components/desktop/WindowsWindowControls';
 import { UpdateDialog } from '@/components/ui/UpdateDialog';
 import { useDeviceInfo, useTabletStandalonePwaRuntime } from '@/lib/device';
+import { useActiveWorkspaceCapabilities } from '@/workspaces/useActiveWorkspace';
 import { cn, hasModifier } from '@/lib/utils';
 import { McpDropdownContent } from '@/components/mcp/McpDropdown';
 import { McpIcon } from '@/components/icons/McpIcon';
@@ -554,6 +555,10 @@ export const Header: React.FC<HeaderProps> = ({
   const setQuotaDisplayMode = useQuotaStore((state) => state.setDisplayMode);
 
   const { isMobile } = useDeviceInfo();
+  // Terminal capability of the ACTIVE workspace's connection (null = no
+  // active workspace session or catalog not loaded → keep current behavior).
+  const workspaceCapabilities = useActiveWorkspaceCapabilities();
+  const terminalUnavailable = workspaceCapabilities !== null && workspaceCapabilities.terminal === false;
   const githubAuthStatus = useGitHubAuthStore((state) => state.status);
   const setGitHubAuthStatus = useGitHubAuthStore((state) => state.setStatus);
 
@@ -1703,7 +1708,12 @@ export const Header: React.FC<HeaderProps> = ({
       base.push(
         { id: 'diff', label: t('layout.mainTab.diff'), icon: 'diff' },
         { id: 'files', label: t('layout.mainTab.files'), icon: "folder-6" },
-        { id: 'terminal', label: t('layout.mainTab.terminal'), icon: "terminal-box" },
+        // Hidden when the active workspace's connection cannot host a
+        // terminal (workspace sessions on such connections open through the
+        // unified selection path and must not offer a dead terminal tab).
+        ...(terminalUnavailable
+          ? []
+          : [{ id: 'terminal' as const, label: t('layout.mainTab.terminal'), icon: "terminal-box" as const }]),
         { id: 'context', label: t('layout.mainTab.context'), icon: "file-list-2" },
         { id: 'diagram', label: t('layout.mainTab.diagram'), icon: 'file' },
       );
@@ -1713,7 +1723,7 @@ export const Header: React.FC<HeaderProps> = ({
 
     // Desktop: no tabs in header
     return [];
-  }, [isMobile, showPlanTab, t]);
+  }, [isMobile, showPlanTab, t, terminalUnavailable]);
 
   const shortcutLabel = React.useCallback((actionId: string) => {
     return formatShortcutForDisplay(getEffectiveShortcutCombo(actionId, shortcutOverrides));

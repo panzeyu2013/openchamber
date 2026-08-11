@@ -51,6 +51,7 @@ import {
 } from './contextPanelEmbeddedChat';
 import { getContextSurfaceWidthFraction } from '@/lib/surfaces/registry';
 import { isTerminalEventTarget } from '@/lib/terminalFocus';
+import { useActiveWorkspaceCapabilities } from '@/workspaces/useActiveWorkspace';
 import {
   type PreviewElementMetadata,
   isPreviewElementMetadata,
@@ -2241,6 +2242,12 @@ export const ContextPanel: React.FC = () => {
   const { t } = useI18n();
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const directoryKey = React.useMemo(() => normalizeDirectoryKey(effectiveDirectory), [effectiveDirectory]);
+  // Terminal capability of the ACTIVE workspace's connection (null = no
+  // active workspace session or catalog not loaded → keep current behavior).
+  // A remote workspace whose connection cannot host a terminal must not
+  // mount a dead PTY when its terminal tab is (already) open.
+  const workspaceCapabilities = useActiveWorkspaceCapabilities();
+  const terminalUnavailable = workspaceCapabilities !== null && workspaceCapabilities.terminal === false;
 
   const panelState = useUIStore((state) => (directoryKey ? state.contextPanelByDirectory[directoryKey] : undefined));
   const closeContextPanel = useUIStore((state) => state.closeContextPanel);
@@ -3004,7 +3011,14 @@ export const ContextPanel: React.FC = () => {
         ))}
         {hasTerminalTab ? (
           <div className={cn('absolute inset-0', activeTab?.mode === 'terminal' ? 'block' : 'hidden')}>
-            <TerminalView visible={isOpen && activeTab?.mode === 'terminal'} />
+            {terminalUnavailable ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                <Icon name="terminal-box" className="h-5 w-5 text-muted-foreground" />
+                <p className="text-sm text-muted-foreground">{t('workspaces.capability.terminalUnavailable')}</p>
+              </div>
+            ) : (
+              <TerminalView visible={isOpen && activeTab?.mode === 'terminal'} />
+            )}
           </div>
         ) : null}
         {hasWalkthroughTab ? (

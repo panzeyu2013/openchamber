@@ -16,6 +16,7 @@ import { useMcpStore } from '@/stores/useMcpStore';
 
 import { MobileChangesSurface } from './MobileChangesSurface';
 import { MobileFilesSurface } from './MobileFilesSurface';
+import { useActiveWorkspaceCapabilities } from '@/workspaces/useActiveWorkspace';
 
 const DRAWER_ROOT_ID = 'mobile-surface-root';
 const ENTER_DELAY_MS = 16;
@@ -112,6 +113,14 @@ export const MobileWorkspaceDrawer: React.FC<{
 }> = ({ open, onClose, tab, onTabChange, pendingChangesDiff, onOpenPlan, onOpenMcpSettings, variant = 'drawer' }) => {
   const { t } = useI18n();
   const rootRef = React.useRef<HTMLElement | null>(null);
+  // Terminal capability of the ACTIVE workspace's connection. When the
+  // connection cannot host a terminal (capabilities.terminal === false), the
+  // terminal tab is hidden and its pane explains why. Null (no active
+  // workspace / catalog not loaded) leaves the tab as-is — the legacy
+  // ambient runtime keeps its current behavior until a workspace connection
+  // is authoritative.
+  const workspaceCapabilities = useActiveWorkspaceCapabilities();
+  const terminalUnavailable = workspaceCapabilities !== null && workspaceCapabilities.terminal === false;
   const [entered, setEntered] = React.useState(false);
   // Kept visible through the exit slide; flipped to hidden once it finishes.
   const [visible, setVisible] = React.useState(open);
@@ -179,7 +188,10 @@ export const MobileWorkspaceDrawer: React.FC<{
   const tabItems: SortableTabsStripItem[] = [
     { id: 'changes', label: t('mobile.menu.changes'), icon: <Icon name="git-branch" className="h-3.5 w-3.5" /> },
     { id: 'files', label: t('mobile.menu.files'), icon: <Icon name="file-text" className="h-3.5 w-3.5" /> },
-    { id: 'terminal', label: t('mobile.menu.terminal'), icon: <Icon name="terminal" className="h-3.5 w-3.5" /> },
+    // Hidden when the active workspace's connection cannot host a terminal.
+    ...(terminalUnavailable
+      ? []
+      : [{ id: 'terminal' as const, label: t('mobile.menu.terminal'), icon: <Icon name="terminal" className="h-3.5 w-3.5" /> }]),
     { id: 'notes', label: t('contextRail.surface.notes'), icon: <Icon name="sticky-note" className="h-3.5 w-3.5" /> },
     { id: 'mcp', label: t('mobile.menu.mcp'), icon: <McpIcon className="h-3.5 w-3.5" /> },
   ];
@@ -245,7 +257,14 @@ export const MobileWorkspaceDrawer: React.FC<{
         {visitedTabs.has('terminal') ? (
           <div className={cn('h-full', tab !== 'terminal' && 'hidden')}>
             <ErrorBoundary>
-              <TerminalView visible={open && tab === 'terminal'} />
+              {terminalUnavailable ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                  <Icon name="terminal" className="h-5 w-5 text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">{t('workspaces.capability.terminalUnavailable')}</p>
+                </div>
+              ) : (
+                <TerminalView visible={open && tab === 'terminal'} />
+              )}
             </ErrorBoundary>
           </div>
         ) : null}

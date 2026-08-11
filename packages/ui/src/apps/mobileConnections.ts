@@ -25,6 +25,7 @@ import { adoptRelayTunnel, isRelayModeActive } from '@/lib/relay/runtime-tunnel'
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeApiBaseUrl, getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
 
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
 const MOBILE_SECURE_STORAGE_PREFIX = 'openchamber.mobile.';
@@ -478,6 +479,10 @@ const switchToRelayRuntime = (
   runtimeKey?: string,
   liveTunnel?: ReturnType<typeof createRelayTunnelClient>,
 ): void => {
+  // Relay connections never pin an explicit control-plane origin: the tunnel
+  // carries control-plane paths addressed to the window (virtual) origin, so
+  // a stale direct origin from a previous LAN connection must be dropped.
+  setControlPlaneOrigin(null);
   // Relay mode has no network base URL: runtimeFetch intercepts runtime paths on
   // the current window origin and rides the E2EE tunnel, so the window origin is
   // the correct virtual API base. The runtime key carries the real device
@@ -946,6 +951,64 @@ const probeConnectionCandidates = async (
   });
 };
 
+// ---------------------------------------------------------------------------
+// Control-plane detection
+//
+// The Workspace Catalog / Session Index ALWAYS belong to the control plane —
+// the OpenChamber instance that owns the `/api/workspaces` catalog API. A
+// mobile connection can target either an OpenChamber server (control plane)
+// or a bare OpenCode server (no catalog API at all). After a successful
+// switch we probe the connected server and pin the control-plane origin so
+// the workspace surfaces stay available; a bare OpenCode server leaves the
+// origin null and the workspace sidebar reports control_plane_unavailable
+// instead of dispatching requests to a server that cannot answer them.
+// ---------------------------------------------------------------------------
+
+type ControlPlaneProbeOutcome = 'control-plane' | 'no-control-plane';
+
+// Probe the connected server for the catalog API. The probe is
+// capability detection, not an authoritative data read: any non-ok answer
+// (404 on a bare OpenCode server, or a transient network failure) reports
+// 'no-control-plane' — the next connect/resume re-probes and restores the
+// origin when the control plane comes back.
+const probeControlPlaneOf = async (transport: ChosenTransport, token: string | null): Promise<ControlPlaneProbeOutcome> => {
+  if (transport.kind === 'relay') {
+    // Relay: the E2EE tunnel carries window-origin paths, so a catalog
+    // answer through the live tunnel proves the server behind it is a
+    // control plane. The control-plane fetch rides the tunnel itself (no
+    // explicit origin is pinned — null keeps the virtual-origin resolution).
+    const response = await raceWithTimeout(
+      MOBILE_FAST_PROBE_TIMEOUT_MS,
+      runtimeFetch('/api/workspaces').then((r): Response | null => r).catch(() => null),
+    );
+    const outcome: ControlPlaneProbeOutcome = response?.ok ? 'control-plane' : 'no-control-plane';
+    logConnect('control-plane:probe', { transport: 'relay', outcome });
+    return outcome;
+  }
+  // Direct: probe EXACTLY the way the runtime authenticates (bearer-only when
+  // a token is present — see the probe note about stale session cookies).
+  // Fast budget: the origin must land before the post-connect bootstrap's
+  // catalog refresh, so a slow server never shows a misleading
+  // control-plane-unavailable window.
+  const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
+  const response = await requestWithTimeout(`${transport.url}/api/workspaces`, {
+    method: 'GET',
+    credentials: token ? 'omit' : 'include',
+    headers,
+  }, { totalTimeoutMs: MOBILE_FAST_PROBE_TIMEOUT_MS });
+  const outcome: ControlPlaneProbeOutcome = response?.ok ? 'control-plane' : 'no-control-plane';
+  logConnect('control-plane:probe', { transport: 'direct', url: transport.url, outcome });
+  return outcome;
+};
+
+const applyControlPlaneProbe = (transport: ChosenTransport, token: string | null): void => {
+  void probeControlPlaneOf(transport, token).then((outcome) => {
+    // Only direct connections pin an explicit origin; relay connections are
+    // always addressed through the tunnel's virtual origin.
+    setControlPlaneOrigin(transport.kind === 'direct' && outcome === 'control-plane' ? transport.url : null);
+  });
+};
+
 // Switch the runtime to a chosen transport. `runtimeKey` is the STABLE device
 // identity — passing the same key for a device's LAN and relay transports makes a
 // LAN⇄relay swap a transport-only change (not an instance switch), so the app can
@@ -960,6 +1023,10 @@ const switchToTransport = (
   } else {
     switchRuntimeEndpoint({ apiBaseUrl: transport.url, clientToken: token, runtimeKey: options?.runtimeKey });
   }
+  // Learn whether the connected server is an OpenChamber control plane and
+  // pin the control-plane origin accordingly. Background-only: never blocks
+  // or repaints the connect flow.
+  applyControlPlaneProbe(transport, token);
   // Every live connection is an opportunity to learn the server's CURRENT LAN
   // addresses (pairing-payload candidates go stale when DHCP reassigns the
   // host's IP). Background-only: never blocks or repaints the connect flow.

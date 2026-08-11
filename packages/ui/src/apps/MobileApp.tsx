@@ -25,6 +25,7 @@ import { useHardwareKeyboard } from '@/lib/hardwareKeyboard';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
 import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { clearLastActiveSession, readLastActiveSession } from '@/sync/last-session-cache';
 import { cn } from '@/lib/utils';
@@ -56,6 +57,7 @@ import { MobileWorkspaceDrawer, type MobileWorkspaceTab } from './MobileWorkspac
 import { DedicatedMobileAppProvider, type MobileAppActions } from './mobileAppContext';
 import { autoConnectLastInstance, getAutoConnectTargetLabel, reprobeActiveConnection, type AutoConnectOutcome } from './mobileConnections';
 import { isCapacitorMobileApp, useNativeAndroidBackButton, useNativeMobileChrome, useNativeMobileLifecycle } from './mobileNativeChrome';
+import { refreshWorkspaceStateAfterResume } from './mobileWorkspaceResume';
 import { reconnectAppForTransportSwitch, resetAppForRuntimeEndpointChange } from './runtimeEndpointReset';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useFontsReady } from './useFontsReady';
@@ -670,12 +672,20 @@ export function MobileApp({ apis }: MobileAppProps) {
     // runtime-endpoint-changed subscription (which re-bootstraps the app), so we
     // only refresh in place when the transport is 'unchanged'.
     const refreshInPlace = () => {
-      void initializeApp();
-      void refreshGitHubAuthStatus(apis.github, { force: true });
-      if (providersCount === 0) void loadProviders({ source: 'mobileApp:nativeResume' });
-      if (agentsCount === 0) void loadAgents({ source: 'mobileApp:nativeResume' });
+      // Workspace-aware restore FIRST: refresh the catalog + session index
+      // (authoritative revision) and restore the last session through
+      // `resolveActiveWorkspaceId` when it is bound to a workspace. When the
+      // control plane is unavailable the helper skips itself and the legacy
+      // global-sessions restore below stays the fallback.
+      void refreshWorkspaceStateAfterResume().then(() => {
+        void initializeApp();
+        void refreshGitHubAuthStatus(apis.github, { force: true });
+        if (providersCount === 0) void loadProviders({ source: 'mobileApp:nativeResume' });
+        if (agentsCount === 0) void loadAgents({ source: 'mobileApp:nativeResume' });
+      });
     };
     const disconnect = () => {
+      setControlPlaneOrigin(null);
       switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
       setConnectionEpoch((value) => value + 1);
     };
@@ -834,6 +844,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     let cancelled = false;
     const dropToConnectScreen = (notice: MobileConnectionNotice | null) => {
       if (notice) setAutoConnectNotice(notice);
+      setControlPlaneOrigin(null);
       switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
       setConnectionEpoch((value) => value + 1);
     };
@@ -1126,6 +1137,7 @@ export function MobileApp({ apis }: MobileAppProps) {
                   type="button"
                   variant="outline"
                   onClick={() => {
+                    setControlPlaneOrigin(null);
                     switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
                     setConnectionEpoch((value) => value + 1);
                   }}
@@ -1209,6 +1221,7 @@ export function MobileApp({ apis }: MobileAppProps) {
               <OpenCodeUpdateToast />
               <MobileAppUpdateToast />
               <MobileShell onActiveConnectionDeleted={() => {
+                setControlPlaneOrigin(null);
                 switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
                 setConnectionEpoch((value) => value + 1);
               }} />

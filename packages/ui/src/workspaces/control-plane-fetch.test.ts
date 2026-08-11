@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createControlPlaneFetch, getControlPlaneBaseUrl } from './control-plane-fetch';
+import {
+  CONTROL_PLANE_UNAVAILABLE_CODE,
+  createControlPlaneFetch,
+  getControlPlaneBaseUrl,
+  getControlPlaneOrigin,
+  isControlPlaneAvailable,
+  setControlPlaneOrigin,
+} from './control-plane-fetch';
 import { setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
 import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
 
@@ -34,6 +41,7 @@ describe('control-plane-fetch pinning', () => {
   afterEach(() => {
     runtimeWindow.window = undefined;
     setRuntimeBearerToken(null);
+    setControlPlaneOrigin(null);
   });
 
   test('pins relative paths to the control-plane origin', async () => {
@@ -90,5 +98,59 @@ describe('control-plane-fetch pinning', () => {
     stubWindowOrigin('https://web.example');
     switchRuntimeEndpoint({ apiBaseUrl: 'https://active-remote.example', runtimeKey: 'host:remote' });
     expect(getControlPlaneBaseUrl()).toBe('https://web.example');
+  });
+
+  test('an explicitly injected origin wins over every other source', async () => {
+    stubWindowOrigin('capacitor://localhost', 'http://127.0.0.1:3901');
+    setControlPlaneOrigin('https://mobile-control-plane.example/');
+    expect(getControlPlaneOrigin()).toBe('https://mobile-control-plane.example');
+    expect(getControlPlaneBaseUrl()).toBe('https://mobile-control-plane.example');
+    const fetchPinned = createControlPlaneFetch();
+    await fetchPinned('/api/workspaces');
+    expect(captured[0].url).toBe('https://mobile-control-plane.example/api/workspaces');
+  });
+
+  test('clearing the injected origin restores automatic resolution', () => {
+    stubWindowOrigin('capacitor://localhost');
+    setControlPlaneOrigin('http://192.168.1.5:3901');
+    setControlPlaneOrigin(null);
+    expect(getControlPlaneOrigin()).toBeNull();
+    expect(getControlPlaneBaseUrl()).toBe('capacitor://localhost');
+  });
+
+  test('non-http window origins answer control_plane_unavailable without dispatching', async () => {
+    stubWindowOrigin('capacitor://localhost');
+    expect(isControlPlaneAvailable()).toBe(false);
+    const fetchPinned = createControlPlaneFetch();
+    const response = await fetchPinned('/api/workspaces');
+    expect(captured.length).toBe(0);
+    expect(response.status).toBe(501);
+    const body = await response.json() as { error?: string; code?: string };
+    expect(body.code).toBe(CONTROL_PLANE_UNAVAILABLE_CODE);
+    expect(body.error).toContain('Control plane');
+  });
+
+  test('vscode-webview origins answer control_plane_unavailable without dispatching', async () => {
+    stubWindowOrigin('vscode-webview://main');
+    expect(isControlPlaneAvailable()).toBe(false);
+    const fetchPinned = createControlPlaneFetch();
+    const response = await fetchPinned('/api/workspaces');
+    expect(captured.length).toBe(0);
+    expect(response.status).toBe(501);
+    const body = await response.json() as { code?: string };
+    expect(body.code).toBe(CONTROL_PLANE_UNAVAILABLE_CODE);
+  });
+
+  test('an injected origin makes a non-http webview control plane available', () => {
+    stubWindowOrigin('capacitor://localhost');
+    expect(isControlPlaneAvailable()).toBe(false);
+    setControlPlaneOrigin('http://192.168.1.5:3901');
+    expect(isControlPlaneAvailable()).toBe(true);
+    expect(getControlPlaneBaseUrl()).toBe('http://192.168.1.5:3901');
+  });
+
+  test('desktop injection keeps the control plane available on a virtual origin', () => {
+    stubWindowOrigin('openchamber-ui://localhost', 'http://127.0.0.1:3901');
+    expect(isControlPlaneAvailable()).toBe(true);
   });
 });

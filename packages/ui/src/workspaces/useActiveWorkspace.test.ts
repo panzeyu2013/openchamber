@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { resolveActiveWorkspaceId } from './session-index-store';
-import type { WorkspaceSessionSummary } from './types';
+import { resolveActiveWorkspaceCapabilities } from './useActiveWorkspace';
+import type { ConnectionProfileSummary, WorkspaceCatalogSnapshot, WorkspaceSessionSummary } from './types';
 
 const makeSession = (workspaceId: string, sessionId: string, directory: string): WorkspaceSessionSummary => ({
   key: `${workspaceId}\0${sessionId}`,
@@ -11,6 +12,21 @@ const makeSession = (workspaceId: string, sessionId: string, directory: string):
   title: `Session ${sessionId}`,
   updatedAt: 1000,
   archived: false,
+});
+
+const makeConnection = (id: string, terminal: boolean, overrides: Partial<ConnectionProfileSummary> = {}): ConnectionProfileSummary => ({
+  id,
+  label: `Connection ${id}`,
+  capabilities: { pathBrowse: true, terminal, files: true, git: true, eventStream: true },
+  ...overrides,
+});
+
+const makeSnapshot = (connections: ConnectionProfileSummary[], workspaces: WorkspaceCatalogSnapshot['workspaces']): WorkspaceCatalogSnapshot => ({
+  schemaVersion: 1,
+  revision: 1,
+  connections,
+  workspaces,
+  migration: { legacyProjectsImported: true, pendingConnectionIds: [] },
 });
 
 describe('resolveActiveWorkspaceId', () => {
@@ -44,5 +60,39 @@ describe('resolveActiveWorkspaceId', () => {
       makeSession('ws-2', 'same-id', '/home/b'),
     ];
     expect(resolveActiveWorkspaceId(sessions, 'same-id', '/elsewhere')).toBe('ws-1');
+  });
+});
+
+describe('resolveActiveWorkspaceCapabilities', () => {
+  const snapshot = makeSnapshot(
+    [makeConnection('conn-a', true), makeConnection('conn-b', false)],
+    [
+      { id: 'ws-a', connectionId: 'conn-a', path: '/a', canonicalPath: '/a', label: 'A', orderKey: 'a', createdAt: 1, updatedAt: 1 },
+      { id: 'ws-b', connectionId: 'conn-b', path: '/b', canonicalPath: '/b', label: 'B', orderKey: 'b', createdAt: 1, updatedAt: 1 },
+    ],
+  );
+
+  test('returns the connection capabilities of the workspace', () => {
+    const capabilities = resolveActiveWorkspaceCapabilities('ws-a', snapshot);
+    expect(capabilities).not.toBeNull();
+    expect(capabilities?.terminal).toBe(true);
+    expect(resolveActiveWorkspaceCapabilities('ws-b', snapshot)?.terminal).toBe(false);
+  });
+
+  test('returns null when there is no active workspace', () => {
+    expect(resolveActiveWorkspaceCapabilities(null, snapshot)).toBeNull();
+    expect(resolveActiveWorkspaceCapabilities('ws-missing', snapshot)).toBeNull();
+  });
+
+  test('returns null while the catalog has no authoritative snapshot (do not gate)', () => {
+    expect(resolveActiveWorkspaceCapabilities('ws-a', null)).toBeNull();
+  });
+
+  test('returns null when the workspace connection is missing from the snapshot', () => {
+    const orphaned = makeSnapshot(
+      [makeConnection('conn-a', true)],
+      [{ id: 'ws-x', connectionId: 'conn-gone', path: '/x', canonicalPath: '/x', label: 'X', orderKey: 'x', createdAt: 1, updatedAt: 1 }],
+    );
+    expect(resolveActiveWorkspaceCapabilities('ws-x', orphaned)).toBeNull();
   });
 });
