@@ -248,7 +248,7 @@ const collectLiveData = (): LiveData => {
     return { statusById, branchByDirectory, approvals, titleById };
   }
 
-  for (const [directory, store] of stores.children.entries()) {
+  for (const [directory, store] of stores.entries()) {
     const state = store.getState();
     // Normalize the key so it matches the session directory regardless of
     // trailing slashes / separators.
@@ -498,7 +498,7 @@ export const useTraySync = (): void => {
         return;
       }
       const live = new Set<string>();
-      for (const [directory, store] of stores.children.entries()) {
+      for (const [directory, store] of stores.entries()) {
         live.add(directory);
         if (!storeUnsubs.has(directory)) {
           storeUnsubs.set(directory, store.subscribe(() => scheduleFlush()));

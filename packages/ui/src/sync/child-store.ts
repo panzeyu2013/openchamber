@@ -4,6 +4,7 @@ import { INITIAL_STATE, MAX_DIR_STORES, DIR_IDLE_TTL_MS, EVICTION_GRACE_MS } fro
 import { pickDirectoriesToEvict, canDisposeDirectory, hasPendingBlockingRequests } from "./eviction"
 import { readDirCache, persistVcs, persistProjectMeta, persistIcon, persistSessions } from "./persist-cache"
 import { normalizePath } from "@/lib/pathNormalization"
+import { getRuntimeKey } from "@/lib/runtime-switch"
 import { startSessionLoadPerformanceEvent } from "./session-load-performance"
 import { countSyncPerformance } from "./performance-diagnostics"
 import { isFilesystemError } from "@/lib/api/files-errors"
@@ -249,9 +250,26 @@ type ManualBootstrapDemand = {
   revision: number
 }
 
-function createDirectoryStore(directory: string): StoreApi<DirectoryStore> {
-  // Restore cached metadata from localStorage
-  const cached = readDirCache(directory)
+/**
+ * Composite child-store identity: (scopeKey, normalized directory). Two
+ * workspaces sharing a directory path therefore never collide in the children
+ * map, bootstrap scheduler, pins, or lifecycle state, even if one manager
+ * were ever shared across scopes. In non-workspace mode the scopeKey is the
+ * ambient runtime key, so entries are isolated per runtime exactly as before.
+ */
+const compositeChildKey = (scopeKey: string, directory: string): string => `${scopeKey}\n${directory}`
+
+const directoryFromCompositeChildKey = (key: string): string => {
+  const separator = key.indexOf("\n")
+  return separator >= 0 ? key.slice(separator + 1) : key
+}
+
+function createDirectoryStore(scopeKey: string, directory: string): StoreApi<DirectoryStore> {
+  // Restore cached metadata from localStorage. The storage key includes the
+  // sync scope (workspace scope key, or the ambient runtime key in
+  // non-workspace mode), so two workspaces sharing a directory path never
+  // read each other's persisted state.
+  const cached = readDirCache(directory, scopeKey)
 
   // Stale-while-revalidate: seed the session list from cache so the sidebar
   // paints chats instantly. Bootstrap replaces it with the authoritative list
@@ -273,10 +291,10 @@ function createDirectoryStore(directory: string): StoreApi<DirectoryStore> {
 
   // Subscribe to persist metadata changes back to localStorage
   store.subscribe((state, prev) => {
-    if (state.vcs !== prev.vcs) persistVcs(directory, state.vcs)
-    if (state.projectMeta !== prev.projectMeta) persistProjectMeta(directory, state.projectMeta)
-    if (state.icon !== prev.icon) persistIcon(directory, state.icon)
-    if (state.session !== prev.session) persistSessions(directory, state.session)
+    if (state.vcs !== prev.vcs) persistVcs(directory, state.vcs, scopeKey)
+    if (state.projectMeta !== prev.projectMeta) persistProjectMeta(directory, state.projectMeta, scopeKey)
+    if (state.icon !== prev.icon) persistIcon(directory, state.icon, scopeKey)
+    if (state.session !== prev.session) persistSessions(directory, state.session, scopeKey)
     notifyChangedBlockingRequests(permissionSubscribersByStore, "permissionChangeCallbacks", store, state.permission, prev.permission)
     notifyChangedBlockingRequests(questionSubscribersByStore, "questionChangeCallbacks", store, state.question, prev.question)
     notifyChangedSessionMessages(store, state, prev)
@@ -286,7 +304,17 @@ function createDirectoryStore(directory: string): StoreApi<DirectoryStore> {
 }
 
 export class ChildStoreManager {
+  /** Children keyed by `scopeKey\nnormalizedDirectory` (see
+   * `compositeChildKey`), so equal directory paths across workspaces stay
+   * isolated. One manager instance serves one scope by default; every method
+   * also accepts an explicit `scopeKey` (defaulting to the manager's own
+   * scope, which is the ambient runtime key in non-workspace mode). */
   readonly children = new Map<string, StoreApi<DirectoryStore>>()
+  /** Sync scope this manager belongs to: a workspace scope key, or the
+   * ambient runtime key in non-workspace mode. All persistence and prefetch
+   * work of the child stores is keyed by it, so equal directory paths across
+   * workspaces stay isolated. One manager instance serves one scope. */
+  scopeKey: string
   private readonly lifecycle = new Map<string, DirState>()
   private readonly pins = new Map<string, number>()
   private evictionScheduled = false
@@ -300,6 +328,10 @@ export class ChildStoreManager {
   private readonly bootstrapStates = new Map<string, DirectoryBootstrapState>()
   private readonly bootstrapFailures = new Map<string, DirectoryBootstrapFailureReason>()
 
+  constructor(scopeKey = getRuntimeKey()) {
+    this.scopeKey = scopeKey
+  }
+
   private onBootstrap?: (context: DirectoryBootstrapContext) => Promise<void> | void
   private onDispose?: (directory: string) => void
   private isBooting?: (directory: string) => boolean
@@ -309,6 +341,20 @@ export class ChildStoreManager {
   private bootstrapSequence = 0
   private manualBootstrapDemandRevision = 0
   private disposed = false
+
+  /** Composite children-map key for a directory under this manager's scope
+   * (or an explicit scope override). */
+  private childKey(scopeKey: string | undefined, directory: string): string {
+    const normalized = normalizePath(directory)
+    return compositeChildKey(scopeKey ?? this.scopeKey, normalized ?? directory)
+  }
+
+  /** [directory, store] pairs for every live child store, with the real
+   * (non-composite) directory. Consumers that iterate child stores must use
+   * this accessor rather than reading `children` directly. */
+  entries(): Array<[string, StoreApi<DirectoryStore>]> {
+    return Array.from(this.children.entries(), ([key, store]) => [directoryFromCompositeChildKey(key), store])
+  }
 
   private notifyRegistrySubscribers() {
     for (const subscriber of this.registrySubscribers) {
@@ -321,6 +367,7 @@ export class ChildStoreManager {
   }
 
   configure(callbacks: {
+    scopeKey?: string
     onBootstrap?: (context: DirectoryBootstrapContext) => Promise<void> | void
     onDispose?: (directory: string) => void
     isBooting?: (directory: string) => boolean
@@ -329,6 +376,7 @@ export class ChildStoreManager {
   }): () => void {
     const generation = ++this.bootstrapGeneration
     this.disposed = false
+    if (callbacks.scopeKey) this.scopeKey = callbacks.scopeKey
     this.onBootstrap = callbacks.onBootstrap
     this.onDispose = callbacks.onDispose
     this.isBooting = callbacks.isBooting
@@ -346,9 +394,10 @@ export class ChildStoreManager {
     }
   }
 
-  mark(directory: string) {
+  mark(directory: string, scopeKey?: string) {
     if (!directory) return
-    this.lifecycle.set(directory, { lastAccessAt: Date.now() })
+    const key = this.childKey(scopeKey, directory)
+    this.lifecycle.set(key, { lastAccessAt: Date.now() })
     this.scheduleEviction()
   }
 
@@ -370,30 +419,33 @@ export class ChildStoreManager {
     })
   }
 
-  pin(directory: string) {
+  pin(directory: string, scopeKey?: string) {
     const normalizedDirectory = normalizePath(directory)
     if (!normalizedDirectory) return
-    this.pins.set(normalizedDirectory, (this.pins.get(normalizedDirectory) ?? 0) + 1)
-    this.mark(normalizedDirectory)
+    const key = this.childKey(scopeKey, normalizedDirectory)
+    this.pins.set(key, (this.pins.get(key) ?? 0) + 1)
+    this.mark(normalizedDirectory, scopeKey)
   }
 
-  unpin(directory: string) {
+  unpin(directory: string, scopeKey?: string) {
     const normalizedDirectory = normalizePath(directory)
     if (!normalizedDirectory) return
-    const next = (this.pins.get(normalizedDirectory) ?? 0) - 1
+    const key = this.childKey(scopeKey, normalizedDirectory)
+    const next = (this.pins.get(key) ?? 0) - 1
     if (next > 0) {
-      this.pins.set(normalizedDirectory, next)
+      this.pins.set(key, next)
       return
     }
-    this.pins.delete(normalizedDirectory)
+    this.pins.delete(key)
     // Releasing the final consumer is an explicit lifecycle edge, not a render-
     // path access, so this pass stays synchronous.
     this.runEviction()
   }
 
-  pinned(directory: string) {
+  pinned(directory: string, scopeKey?: string) {
     const normalizedDirectory = normalizePath(directory)
-    return normalizedDirectory ? (this.pins.get(normalizedDirectory) ?? 0) > 0 : false
+    if (!normalizedDirectory) return false
+    return (this.pins.get(this.childKey(scopeKey, normalizedDirectory)) ?? 0) > 0
   }
 
   ensureChild(
@@ -402,19 +454,23 @@ export class ChildStoreManager {
       bootstrap?: boolean
       priority?: DirectoryBootstrapPriority
       reason?: DirectoryBootstrapReason
+      /** Explicit scope override; defaults to the manager's own scope (the
+       * ambient runtime key in non-workspace mode). */
+      scopeKey?: string
     },
   ): StoreApi<DirectoryStore> {
     const normalizedDirectory = normalizePath(directory)
     if (!normalizedDirectory) throw new Error("No directory provided to ensureChild")
+    const key = this.childKey(options?.scopeKey, normalizedDirectory)
 
-    let store = this.children.get(normalizedDirectory)
+    let store = this.children.get(key)
     if (!store) {
-      store = createDirectoryStore(normalizedDirectory)
-      this.children.set(normalizedDirectory, store)
+      store = createDirectoryStore(this.scopeKey, normalizedDirectory)
+      this.children.set(key, store)
       this.notifyRegistrySubscribers()
     }
 
-    this.mark(normalizedDirectory)
+    this.mark(normalizedDirectory, options?.scopeKey)
 
     const shouldBootstrap = options?.bootstrap ?? true
     if (shouldBootstrap && store.getState().status === "loading") {
@@ -422,22 +478,23 @@ export class ChildStoreManager {
         directory: normalizedDirectory,
         priority: options?.priority ?? "selected",
         reason: options?.reason ?? "action-demand",
-      })
+      }, options?.scopeKey)
     }
 
     return store
   }
 
-  getChild(directory: string): StoreApi<DirectoryStore> | undefined {
+  getChild(directory: string, scopeKey?: string): StoreApi<DirectoryStore> | undefined {
     const normalizedDirectory = normalizePath(directory)
-    return normalizedDirectory ? this.children.get(normalizedDirectory) : undefined
+    return normalizedDirectory ? this.children.get(this.childKey(scopeKey, normalizedDirectory)) : undefined
   }
 
-  requestBootstrap(demand: DirectoryBootstrapDemand): void {
+  requestBootstrap(demand: DirectoryBootstrapDemand, scopeKey?: string): void {
     const normalizedDirectory = normalizePath(demand.directory)
     if (!normalizedDirectory || this.disposed) return
+    const key = this.childKey(scopeKey, normalizedDirectory)
     const normalizedDemand = { ...demand, directory: normalizedDirectory }
-    const existingDemand = this.manualBootstrapDemands.get(normalizedDirectory)?.demand
+    const existingDemand = this.manualBootstrapDemands.get(key)?.demand
     const nextDemand = existingDemand
       ? {
           ...existingDemand,
@@ -448,24 +505,25 @@ export class ChildStoreManager {
           force: Boolean(existingDemand.force || normalizedDemand.force),
         }
       : normalizedDemand
-    this.manualBootstrapDemands.set(normalizedDirectory, {
+    this.manualBootstrapDemands.set(key, {
       demand: nextDemand,
       revision: ++this.manualBootstrapDemandRevision,
     })
-    this.ensureChild(normalizedDirectory, { bootstrap: false })
-    this.queueBootstrap(nextDemand)
+    this.ensureChild(normalizedDirectory, { bootstrap: false, scopeKey })
+    this.queueBootstrap(nextDemand, true, scopeKey)
   }
 
-  setBootstrapDemand(owner: string, demands: DirectoryBootstrapDemand[]): void {
+  setBootstrapDemand(owner: string, demands: DirectoryBootstrapDemand[], scopeKey?: string): void {
     if (!owner || this.disposed) return
     const next = new Map<string, DirectoryBootstrapDemand>()
     for (const demand of demands) {
       const directory = normalizePath(demand.directory)
       if (!directory) continue
+      const key = this.childKey(scopeKey, directory)
       const normalized = { ...demand, directory }
-      const existing = next.get(directory)
+      const existing = next.get(key)
       if (!existing || BOOTSTRAP_PRIORITY[normalized.priority] < BOOTSTRAP_PRIORITY[existing.priority]) {
-        next.set(directory, normalized)
+        next.set(key, normalized)
       }
     }
     this.bootstrapDemandsByOwner.set(owner, next)
@@ -477,14 +535,14 @@ export class ChildStoreManager {
     this.reconcileBootstrapQueue()
   }
 
-  getBootstrapState(directory: string): DirectoryBootstrapState | undefined {
+  getBootstrapState(directory: string, scopeKey?: string): DirectoryBootstrapState | undefined {
     const normalizedDirectory = normalizePath(directory)
-    return normalizedDirectory ? this.bootstrapStates.get(normalizedDirectory) : undefined
+    return normalizedDirectory ? this.bootstrapStates.get(this.childKey(scopeKey, normalizedDirectory)) : undefined
   }
 
-  getBootstrapFailure(directory: string): DirectoryBootstrapFailureReason | undefined {
+  getBootstrapFailure(directory: string, scopeKey?: string): DirectoryBootstrapFailureReason | undefined {
     const normalizedDirectory = normalizePath(directory)
-    return normalizedDirectory ? this.bootstrapFailures.get(normalizedDirectory) : undefined
+    return normalizedDirectory ? this.bootstrapFailures.get(this.childKey(scopeKey, normalizedDirectory)) : undefined
   }
 
   subscribeBootstrap(listener: () => void): () => void {
@@ -492,10 +550,11 @@ export class ChildStoreManager {
     return () => this.bootstrapSubscribers.delete(listener)
   }
 
-  private aggregateBootstrapDemand(directory: string): DirectoryBootstrapDemand | undefined {
-    let result = this.manualBootstrapDemands.get(directory)?.demand
+  /** Aggregated demand for a composite children key. */
+  private aggregateBootstrapDemand(key: string): DirectoryBootstrapDemand | undefined {
+    let result = this.manualBootstrapDemands.get(key)?.demand
     for (const demands of this.bootstrapDemandsByOwner.values()) {
-      const demand = demands.get(directory)
+      const demand = demands.get(key)
       if (!demand) continue
       if (!result || BOOTSTRAP_PRIORITY[demand.priority] < BOOTSTRAP_PRIORITY[result.priority]) result = demand
     }
@@ -503,43 +562,44 @@ export class ChildStoreManager {
   }
 
   private reconcileBootstrapQueue(): void {
-    const directories = new Set<string>()
+    const keys = new Set<string>()
     for (const demands of this.bootstrapDemandsByOwner.values()) {
-      for (const directory of demands.keys()) directories.add(directory)
+      for (const key of demands.keys()) keys.add(key)
     }
-    for (const directory of this.manualBootstrapDemands.keys()) directories.add(directory)
+    for (const key of this.manualBootstrapDemands.keys()) keys.add(key)
 
     let changed = false
-    for (const [directory] of this.bootstrapQueue) {
-      if (directories.has(directory)) continue
-      this.bootstrapQueue.delete(directory)
-      if (this.bootstrapStates.get(directory) === "queued") this.bootstrapStates.delete(directory)
+    for (const [key] of this.bootstrapQueue) {
+      if (keys.has(key)) continue
+      this.bootstrapQueue.delete(key)
+      if (this.bootstrapStates.get(key) === "queued") this.bootstrapStates.delete(key)
       changed = true
     }
-    for (const directory of directories) {
-      const demand = this.aggregateBootstrapDemand(directory)
+    for (const key of keys) {
+      const demand = this.aggregateBootstrapDemand(key)
       if (!demand) continue
-      this.ensureChild(directory, { bootstrap: false })
+      this.ensureChild(demand.directory, { bootstrap: false })
       changed = this.queueBootstrap(demand, false) || changed
     }
     if (changed) this.notifyBootstrapSubscribers()
     this.pumpBootstrapQueue()
   }
 
-  private queueBootstrap(demand: DirectoryBootstrapDemand, notify = true): boolean {
+  private queueBootstrap(demand: DirectoryBootstrapDemand, notify = true, scopeKey?: string): boolean {
     const directory = demand.directory
-    const store = this.children.get(directory)
-    const state = this.bootstrapStates.get(directory)
+    const key = this.childKey(scopeKey, directory)
+    const store = this.children.get(key)
+    const state = this.bootstrapStates.get(key)
     if (!demand.force && (state === "complete" || state === "failed" || store?.getState().status === "complete")) {
       return false
     }
-    const running = this.runningBootstraps.get(directory)
+    const running = this.runningBootstraps.get(key)
     if (running) {
       if (demand.force) running.rerunRequested = true
       return false
     }
-    this.bootstrapFailures.delete(directory)
-    const existing = this.bootstrapQueue.get(directory)
+    this.bootstrapFailures.delete(key)
+    const existing = this.bootstrapQueue.get(key)
     const next: QueuedBootstrap = existing
       ? {
           ...existing,
@@ -554,8 +614,8 @@ export class ChildStoreManager {
       || next.priority !== existing.priority
       || next.reason !== existing.reason
       || next.force !== existing.force
-    this.bootstrapQueue.set(directory, next)
-    this.bootstrapStates.set(directory, "queued")
+    this.bootstrapQueue.set(key, next)
+    this.bootstrapStates.set(key, "queued")
     if (changed && notify) this.notifyBootstrapSubscribers()
     this.pumpBootstrapQueue()
     return changed
@@ -579,16 +639,17 @@ export class ChildStoreManager {
     while (this.runningBootstraps.size < this.bootstrapConcurrency) {
       const next = this.nextBootstrap()
       if (!next) return
-      this.bootstrapQueue.delete(next.directory)
+      const key = this.childKey(undefined, next.directory)
+      this.bootstrapQueue.delete(key)
       const token = {}
       const running: RunningBootstrap = {
         ...next,
         generation: this.bootstrapGeneration,
         token,
-        manualDemandRevision: this.manualBootstrapDemands.get(next.directory)?.revision,
+        manualDemandRevision: this.manualBootstrapDemands.get(key)?.revision,
       }
-      this.runningBootstraps.set(next.directory, running)
-      this.bootstrapStates.set(next.directory, "running")
+      this.runningBootstraps.set(key, running)
+      this.bootstrapStates.set(key, "running")
       this.notifyBootstrapSubscribers()
       const finishPerformanceEvent = startSessionLoadPerformanceEvent({
         operation: "bootstrap.directory",
@@ -599,8 +660,8 @@ export class ChildStoreManager {
       const isCurrent = () => (
         !this.disposed
         && this.bootstrapGeneration === running.generation
-        && this.runningBootstraps.get(next.directory)?.token === token
-        && this.children.has(next.directory)
+        && this.runningBootstraps.get(key)?.token === token
+        && this.children.has(key)
       )
       let bootstrapPromise: Promise<void>
       try {
@@ -611,8 +672,8 @@ export class ChildStoreManager {
       void bootstrapPromise
         .then(() => {
           if (isCurrent()) {
-            this.bootstrapStates.set(next.directory, "complete")
-            this.bootstrapFailures.delete(next.directory)
+            this.bootstrapStates.set(key, "complete")
+            this.bootstrapFailures.delete(key)
             finishPerformanceEvent("complete")
           } else {
             finishPerformanceEvent("stale")
@@ -620,9 +681,9 @@ export class ChildStoreManager {
         })
         .catch((error) => {
           if (isCurrent()) {
-            this.bootstrapStates.set(next.directory, "failed")
+            this.bootstrapStates.set(key, "failed")
             this.bootstrapFailures.set(
-              next.directory,
+              key,
               isFilesystemError(error) && error.reason === "os-permission" ? "os-permission" : "generic",
             )
             finishPerformanceEvent("error")
@@ -632,18 +693,18 @@ export class ChildStoreManager {
         })
         .finally(() => {
           const executionBecameStale = this.bootstrapGeneration !== running.generation || this.disposed
-          if (this.runningBootstraps.get(next.directory)?.token === token) {
-            this.runningBootstraps.delete(next.directory)
+          if (this.runningBootstraps.get(key)?.token === token) {
+            this.runningBootstraps.delete(key)
           }
-          const currentManualDemand = this.manualBootstrapDemands.get(next.directory)
+          const currentManualDemand = this.manualBootstrapDemands.get(key)
           const hasNewForcedManualDemand = currentManualDemand !== undefined
             && currentManualDemand.revision !== running.manualDemandRevision
             && currentManualDemand.demand.force === true
           if (!executionBecameStale && !hasNewForcedManualDemand) {
-            this.manualBootstrapDemands.delete(next.directory)
+            this.manualBootstrapDemands.delete(key)
           }
           if ((executionBecameStale || hasNewForcedManualDemand || running.rerunRequested) && !this.disposed) {
-            const demand = this.aggregateBootstrapDemand(next.directory)
+            const demand = this.aggregateBootstrapDemand(key)
             if (demand) this.queueBootstrap({ ...demand, force: true }, false)
           }
           this.notifyBootstrapSubscribers()
@@ -652,14 +713,15 @@ export class ChildStoreManager {
     }
   }
 
-  disposeDirectory(directory: string): boolean {
+  private disposeDirectoryByKey(key: string): boolean {
+    const directory = directoryFromCompositeChildKey(key)
     if (
       !canDisposeDirectory({
         directory,
-        hasStore: this.children.has(directory),
+        hasStore: this.children.has(key),
         pinned: this.pinned(directory),
-        booting: this.bootstrapStates.get(directory) === "queued"
-          || this.bootstrapStates.get(directory) === "running"
+        booting: this.bootstrapStates.get(key) === "queued"
+          || this.bootstrapStates.get(key) === "running"
           || (this.isBooting?.(directory) ?? false),
         loadingSessions: this.isLoadingSessions?.(directory) ?? false,
         hasPendingBlockingRequests: this.hasPendingBlockingRequestsForDirectory(directory),
@@ -668,48 +730,54 @@ export class ChildStoreManager {
       return false
     }
 
-    this.lifecycle.delete(directory)
-    this.bootstrapQueue.delete(directory)
-    this.manualBootstrapDemands.delete(directory)
-    this.bootstrapStates.delete(directory)
-    this.bootstrapFailures.delete(directory)
-    for (const demands of this.bootstrapDemandsByOwner.values()) demands.delete(directory)
-    this.children.delete(directory)
+    this.lifecycle.delete(key)
+    this.bootstrapQueue.delete(key)
+    this.manualBootstrapDemands.delete(key)
+    this.bootstrapStates.delete(key)
+    this.bootstrapFailures.delete(key)
+    for (const demands of this.bootstrapDemandsByOwner.values()) demands.delete(key)
+    this.children.delete(key)
     this.notifyRegistrySubscribers()
-    const dispose = this.disposers.get(directory)
+    const dispose = this.disposers.get(key)
     if (dispose) {
       dispose()
-      this.disposers.delete(directory)
+      this.disposers.delete(key)
     }
     this.onDispose?.(directory)
     return true
   }
 
+  disposeDirectory(directory: string, scopeKey?: string): boolean {
+    const normalizedDirectory = normalizePath(directory)
+    if (!normalizedDirectory) return false
+    return this.disposeDirectoryByKey(this.childKey(scopeKey, normalizedDirectory))
+  }
+
   runEviction(skip?: string) {
-    const stores = [...this.children.keys()]
-    if (stores.length === 0) return
+    const keys = [...this.children.keys()]
+    if (keys.length === 0) return
     const list = pickDirectoriesToEvict({
-      stores,
+      stores: keys,
       state: this.lifecycle,
-      pins: new Set(stores.filter((d) => this.pinned(d))),
+      pins: new Set(keys.filter((key) => this.pinned(directoryFromCompositeChildKey(key)))),
       max: MAX_DIR_STORES,
       ttl: DIR_IDLE_TTL_MS,
       graceMs: EVICTION_GRACE_MS,
       now: Date.now(),
-      hasPendingBlockingRequests: (dir) => this.hasPendingBlockingRequestsForDirectory(dir),
-    }).filter((d) => d !== skip)
-    for (const directory of list) {
-      this.disposeDirectory(directory)
+      hasPendingBlockingRequests: (key) => this.hasPendingBlockingRequestsForDirectory(directoryFromCompositeChildKey(key)),
+    }).filter((key) => key !== (skip ? this.childKey(undefined, skip) : undefined))
+    for (const key of list) {
+      this.disposeDirectoryByKey(key)
     }
   }
 
-  hasPendingBlockingRequestsForDirectory(directory: string): boolean {
-    return hasPendingBlockingRequests(this.children.get(directory)?.getState())
+  hasPendingBlockingRequestsForDirectory(directory: string, scopeKey?: string): boolean {
+    return hasPendingBlockingRequests(this.children.get(this.childKey(scopeKey, directory))?.getState())
   }
 
   /** Apply a state mutation to a directory's store */
-  update(directory: string, fn: (state: State) => Partial<State>) {
-    const store = this.children.get(directory)
+  update(directory: string, fn: (state: State) => Partial<State>, scopeKey?: string) {
+    const store = this.children.get(this.childKey(scopeKey, directory))
     if (!store) return
     const current = store.getState()
     const patch = fn(current)
@@ -717,8 +785,8 @@ export class ChildStoreManager {
   }
 
   /** Get current state of a directory store (snapshot) */
-  getState(directory: string): State | undefined {
-    return this.children.get(directory)?.getState()
+  getState(directory: string, scopeKey?: string): State | undefined {
+    return this.children.get(this.childKey(scopeKey, directory))?.getState()
   }
 
   disposeAll() {
@@ -751,17 +819,17 @@ export class ChildStoreManager {
     const storeUnsubscribers = new Map<string, () => void>()
 
     const syncStoreSubscriptions = () => {
-      const activeDirectories = new Set(this.children.keys())
+      const activeKeys = new Set(this.children.keys())
 
       for (const [directory, unsubscribe] of storeUnsubscribers.entries()) {
-        if (activeDirectories.has(directory)) {
+        if (activeKeys.has(this.childKey(undefined, directory))) {
           continue
         }
         unsubscribe()
         storeUnsubscribers.delete(directory)
       }
 
-      for (const [directory, store] of this.children.entries()) {
+      for (const [directory, store] of this.entries()) {
         if (storeUnsubscribers.has(directory)) {
           continue
         }
@@ -788,15 +856,15 @@ export class ChildStoreManager {
     const storeUnsubscribers = new Map<string, () => void>()
 
     const syncStoreSubscriptions = () => {
-      const activeDirectories = new Set(this.children.keys())
+      const activeKeys = new Set(this.children.keys())
 
       for (const [directory, unsubscribe] of storeUnsubscribers.entries()) {
-        if (activeDirectories.has(directory)) continue
+        if (activeKeys.has(this.childKey(undefined, directory))) continue
         unsubscribe()
         storeUnsubscribers.delete(directory)
       }
 
-      for (const [directory, store] of this.children.entries()) {
+      for (const [directory, store] of this.entries()) {
         if (storeUnsubscribers.has(directory)) continue
         storeUnsubscribers.set(directory, store.subscribe((state, previous) => {
           if (!Object.is(selector(state), selector(previous))) {

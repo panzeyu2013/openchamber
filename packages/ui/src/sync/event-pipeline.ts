@@ -57,6 +57,13 @@ export type EventPipelineInput = {
   /** Called when transport switches (e.g. WS timeout → SSE fallback) without actual disconnection. */
   onTransportSwitch?: () => void
   transport?: "auto" | "ws" | "sse"
+  /** Workspace-bound sync: always use the bound SDK's SSE stream
+   * (`sdk.global.event`, which lands on the workspace runtime proxy) and
+   * never open a WebSocket. The workspace proxy pipes `text/event-stream`
+   * but WebSocket upgrades are not wired yet, and the WS URL builder reads
+   * the GLOBAL runtime client, which would connect the wrong stream for a
+   * remote workspace. */
+  forceSse?: boolean
   heartbeatTimeoutMs?: number
   reconnectDelayMs?: number
   wsReadyTimeoutMs?: number
@@ -256,6 +263,7 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
     onTransportSwitch,
     routeDirectory,
     transport = "auto",
+    forceSse = false,
     heartbeatTimeoutMs = DEFAULT_HEARTBEAT_TIMEOUT_MS,
     reconnectDelayMs = DEFAULT_RECONNECT_DELAY_MS,
     wsReadyTimeoutMs = DEFAULT_WS_READY_TIMEOUT_MS,
@@ -784,6 +792,9 @@ export function createEventPipeline(input: EventPipelineInput): EventPipeline {
   }
 
   const resolveTransport = (): "ws" | "sse" => {
+    if (forceSse) {
+      return "sse"
+    }
     if (typeof WebSocket !== "function") {
       return "sse"
     }

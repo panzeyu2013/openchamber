@@ -259,4 +259,44 @@ describe("createEventPipeline", () => {
       pipeline.cleanup()
     }
   })
+
+  test("workspace-bound sync always targets the bound SDK's SSE stream, even when transport is ws", async () => {
+    // Workspace mode must NEVER open a WebSocket (the WS URL builder reads the
+    // GLOBAL runtime client, which would connect the wrong stream for a remote
+    // workspace; the workspace runtime proxy pipes SSE). forceSse: true with
+    // transport "ws" must still deliver through sdk.global.event.
+    let resolveDelivered!: (events: readonly Event[]) => void
+    const deliveredBatch = new Promise<readonly Event[]>((resolve) => {
+      resolveDelivered = resolve
+    })
+    let sseTargetCalls = 0
+    const pipeline = createEventPipeline({
+      sdk: {
+        global: {
+          event: async () => {
+            sseTargetCalls += 1
+            return {
+              stream: (async function* () {
+                yield { directory: "/repo", payload: partUpdatedEvent("workspace") }
+                await new Promise<void>((resolve) => setTimeout(resolve, 50))
+              })(),
+            }
+          },
+        },
+      } as unknown as OpencodeClient,
+      onEvents: (_directory, events) => resolveDelivered([...events]),
+      transport: "ws",
+      forceSse: true,
+      heartbeatTimeoutMs: 1_000,
+    })
+
+    try {
+      const delivered = await Promise.race([deliveredBatch, failAfter(500)])
+      // The workspace-bound stream target is the bound SDK's SSE endpoint.
+      expect(sseTargetCalls).toBeGreaterThan(0)
+      expect(delivered.map((event) => event.type)).toEqual(["message.part.updated"])
+    } finally {
+      pipeline.cleanup()
+    }
+  })
 })

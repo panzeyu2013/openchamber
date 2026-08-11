@@ -68,7 +68,10 @@ type LoadPerformanceDetails = {
 
 type LoaderConfiguration = {
   sdk: OpencodeClient
-  runtimeKey: string
+  /** Sync scope: workspace scope key in workspace mode, ambient runtime key
+   * otherwise (byte-identical to the legacy runtime key in non-workspace
+   * mode). Equal session IDs in different scopes never share loader state. */
+  scopeKey: string
 }
 
 const isConstrainedRuntime = () => isVSCodeRuntime() || isMobileSurfaceRuntime()
@@ -129,7 +132,7 @@ export const EMPTY_SESSION_MESSAGE_LOAD_STATE = createDefaultState()
 
 export class SessionMessageLoader {
   private sdk: OpencodeClient
-  private runtimeKey: string
+  private scopeKey: string
   private sdkEpoch = 0
   private disposed = false
   private readonly entries = new Map<string, LoaderEntry>()
@@ -139,15 +142,15 @@ export class SessionMessageLoader {
     configuration: LoaderConfiguration,
   ) {
     this.sdk = configuration.sdk
-    this.runtimeKey = configuration.runtimeKey
+    this.scopeKey = configuration.scopeKey
   }
 
   configure(configuration: LoaderConfiguration): void {
-    if (this.sdk === configuration.sdk && this.runtimeKey === configuration.runtimeKey) return
-    const runtimeChanged = this.runtimeKey !== configuration.runtimeKey
-    const previousRuntimeKey = this.runtimeKey
+    if (this.sdk === configuration.sdk && this.scopeKey === configuration.scopeKey) return
+    const scopeChanged = this.scopeKey !== configuration.scopeKey
+    const previousScopeKey = this.scopeKey
     this.sdk = configuration.sdk
-    this.runtimeKey = configuration.runtimeKey
+    this.scopeKey = configuration.scopeKey
     this.sdkEpoch += 1
     for (const entry of this.entries.values()) {
       entry.snapshot = {
@@ -160,9 +163,9 @@ export class SessionMessageLoader {
       entry.inflight = null
       this.notify(entry)
     }
-    if (runtimeChanged) {
+    if (scopeChanged) {
       this.entries.clear()
-      clearRuntimeSessionPrefetch(previousRuntimeKey)
+      clearRuntimeSessionPrefetch(previousScopeKey)
     }
   }
 
@@ -185,7 +188,7 @@ export class SessionMessageLoader {
     const normalized = this.normalizeTarget(target)
     if (!normalized || this.disposed) return Promise.resolve()
     const entry = this.getEntry(normalized)
-    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
+    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false, scopeKey: this.scopeKey })
     const materialization = getSessionMaterializationStatus(store.getState(), normalized.sessionID)
     if (!options?.force && materialization.renderable) {
       if (!entry.snapshot.resolved) {
@@ -221,7 +224,7 @@ export class SessionMessageLoader {
     const entry = this.getEntry(normalized)
     if (entry.inflight) return entry.inflight.then(() => this.loadOlder(normalized))
     if (entry.snapshot.complete || !entry.snapshot.cursor) return Promise.resolve()
-    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
+    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false, scopeKey: this.scopeKey })
     const cursor = entry.snapshot.cursor
     return this.startLoad(normalized, entry, store, "older", async (isCurrent, performance) => {
       const page = await this.fetchPage(normalized, HISTORY_MESSAGE_PAGE_SIZE, cursor, "older", performance)
@@ -296,7 +299,7 @@ export class SessionMessageLoader {
       entry.queuedRefresh = queuedRefresh
       return queuedRefresh
     }
-    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false })
+    const store = this.childStores.ensureChild(normalized.directory, { bootstrap: false, scopeKey: this.scopeKey })
     this.bumpGeneration(entry)
     return this.startLoad(normalized, entry, store, "refresh", async (isCurrent, performance) => {
       const previousCoverage = entry.snapshot.resolved
@@ -342,7 +345,7 @@ export class SessionMessageLoader {
     if (!target) return
     const entry = this.getEntry(target)
     entry.optimistic.set(input.message.id, { message: input.message, parts: sortParts(input.parts) })
-    const store = this.childStores.ensureChild(target.directory, { bootstrap: false })
+    const store = this.childStores.ensureChild(target.directory, { bootstrap: false, scopeKey: this.scopeKey })
     const current = store.getState()
     const messages = current.message[target.sessionID] ? [...current.message[target.sessionID]] : []
     const result = Binary.search(messages, input.message.id, (message) => message.id)
@@ -358,7 +361,7 @@ export class SessionMessageLoader {
     if (!target) return
     const entry = this.getEntry(target)
     entry.optimistic.delete(input.messageID)
-    const store = this.childStores.ensureChild(target.directory, { bootstrap: false })
+    const store = this.childStores.ensureChild(target.directory, { bootstrap: false, scopeKey: this.scopeKey })
     const current = store.getState()
     const existing = current.message[target.sessionID]
     const messages = existing ? existing.filter((message) => message.id !== input.messageID) : undefined
@@ -385,15 +388,15 @@ export class SessionMessageLoader {
     entry.inflight = null
     entry.optimistic.clear()
     entry.snapshot = createDefaultState(entry.snapshot.generation)
-    clearSessionPrefetch(normalized.directory, [normalized.sessionID], this.runtimeKey)
+    clearSessionPrefetch(normalized.directory, [normalized.sessionID], this.scopeKey)
     this.notify(entry)
   }
 
   invalidateDirectory(directory: string): void {
     const normalizedDirectory = normalizePath(directory)
     if (!normalizedDirectory) return
-    const prefix = `${this.runtimeKey}\n${normalizedDirectory}\n`
-    clearDirectorySessionPrefetch(normalizedDirectory, this.runtimeKey)
+    const prefix = `${this.scopeKey}\n${normalizedDirectory}\n`
+    clearDirectorySessionPrefetch(normalizedDirectory, this.scopeKey)
     for (const [key, entry] of this.entries) {
       if (!key.startsWith(prefix)) continue
       this.bumpGeneration(entry)
@@ -414,7 +417,7 @@ export class SessionMessageLoader {
       this.notify(entry)
     }
     this.entries.clear()
-    clearRuntimeSessionPrefetch(this.runtimeKey)
+    clearRuntimeSessionPrefetch(this.scopeKey)
   }
 
   private normalizeTarget(target: SessionMessageTarget): SessionMessageTarget | null {
@@ -424,14 +427,14 @@ export class SessionMessageLoader {
   }
 
   private keyFor(target: SessionMessageTarget): string {
-    return `${this.runtimeKey}\n${target.directory}\n${target.sessionID}`
+    return `${this.scopeKey}\n${target.directory}\n${target.sessionID}`
   }
 
   private getEntry(target: SessionMessageTarget): LoaderEntry {
     const key = this.keyFor(target)
     const existing = this.entries.get(key)
     if (existing) return existing
-    const prefetched = getSessionPrefetch(target.directory, target.sessionID, this.runtimeKey)
+    const prefetched = getSessionPrefetch(target.directory, target.sessionID, this.scopeKey)
     const entry: LoaderEntry = {
       snapshot: prefetched
         ? {
@@ -486,7 +489,7 @@ export class SessionMessageLoader {
       !this.disposed
       && this.sdkEpoch === sdkEpoch
       && entry.snapshot.generation === generation
-      && this.childStores.getChild(target.directory) === store
+      && this.childStores.getChild(target.directory, this.scopeKey) === store
     )
     const performance = { retryCount: 0, recordCount: 0 }
     this.patchEntry(entry, { status: "loading", loadingKind: kind, error: null })
@@ -665,7 +668,7 @@ export class SessionMessageLoader {
       cursor: state.cursor,
       complete: state.complete,
       at: state.updatedAt,
-      runtimeKey: this.runtimeKey,
+      scopeKey: this.scopeKey,
     })
   }
 }

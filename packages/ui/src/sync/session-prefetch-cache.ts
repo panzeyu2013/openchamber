@@ -1,5 +1,10 @@
 /**
- * Runtime-scoped pagination metadata shared with the session message loader.
+ * Scope-scoped pagination metadata shared with the session message loader.
+ *
+ * The scope is the workspace scope key in workspace mode and the ambient
+ * runtime key otherwise (byte-identical keys in non-workspace mode), so
+ * equal session IDs and directories in different workspaces never share
+ * pagination state.
  */
 
 import { getRuntimeKey } from "@/lib/runtime-switch"
@@ -12,13 +17,13 @@ type Meta = {
 }
 
 const MAX_PREFETCH_ENTRIES = 200
-const compositeKey = (runtimeKey: string, directory: string, sessionID: string) =>
-  `${runtimeKey}\n${directory}\n${sessionID}`
+const compositeKey = (scopeKey: string, directory: string, sessionID: string) =>
+  `${scopeKey}\n${directory}\n${sessionID}`
 
 const cache = new Map<string, Meta>()
 
-export function getSessionPrefetch(directory: string, sessionID: string, runtimeKey = getRuntimeKey()): Meta | undefined {
-  const id = compositeKey(runtimeKey, directory, sessionID)
+export function getSessionPrefetch(directory: string, sessionID: string, scopeKey = getRuntimeKey()): Meta | undefined {
+  const id = compositeKey(scopeKey, directory, sessionID)
   const value = cache.get(id)
   if (value) {
     cache.delete(id)
@@ -34,9 +39,9 @@ export function setSessionPrefetch(input: {
   cursor?: string
   complete: boolean
   at?: number
-  runtimeKey?: string
+  scopeKey?: string
 }) {
-  const id = compositeKey(input.runtimeKey ?? getRuntimeKey(), input.directory, input.sessionID)
+  const id = compositeKey(input.scopeKey ?? getRuntimeKey(), input.directory, input.sessionID)
   cache.delete(id)
   cache.set(id, {
     limit: input.limit,
@@ -52,23 +57,24 @@ export function setSessionPrefetch(input: {
 }
 
 /** Invalidate cache for specific sessions (e.g. after eviction). */
-export function clearSessionPrefetch(directory: string, sessionIDs: Iterable<string>, runtimeKey = getRuntimeKey()) {
+export function clearSessionPrefetch(directory: string, sessionIDs: Iterable<string>, scopeKey = getRuntimeKey()) {
   for (const sessionID of sessionIDs) {
     if (!sessionID) continue
-    const id = compositeKey(runtimeKey, directory, sessionID)
+    const id = compositeKey(scopeKey, directory, sessionID)
     cache.delete(id)
   }
 }
 
-export function clearDirectorySessionPrefetch(directory: string, runtimeKey = getRuntimeKey()) {
-  const prefix = `${runtimeKey}\n${directory}\n`
+export function clearDirectorySessionPrefetch(directory: string, scopeKey = getRuntimeKey()) {
+  const prefix = `${scopeKey}\n${directory}\n`
   for (const id of cache.keys()) {
     if (id.startsWith(prefix)) cache.delete(id)
   }
 }
 
-export function clearRuntimeSessionPrefetch(runtimeKey: string) {
-  const prefix = `${runtimeKey}\n`
+/** Clears every entry under a scope (runtime key or workspace scope key). */
+export function clearRuntimeSessionPrefetch(scopeKey: string) {
+  const prefix = `${scopeKey}\n`
   for (const id of cache.keys()) {
     if (id.startsWith(prefix)) cache.delete(id)
   }

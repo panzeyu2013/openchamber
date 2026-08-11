@@ -10,6 +10,14 @@ import type { WorkspaceId } from './types';
 /** Scopes client caches and sync to a single workspace. */
 export const workspaceScopeKey = (workspaceId: WorkspaceId): string => `workspace:${workspaceId}`;
 
+/** Inverse of `workspaceScopeKey`: returns the workspace id when the value is
+ * a workspace scope key, or null for ambient (runtime-keyed) scopes. */
+export const workspaceIdFromScopeKey = (scopeKey: string): WorkspaceId | null => {
+  if (typeof scopeKey !== 'string' || !scopeKey.startsWith('workspace:')) return null;
+  const workspaceId = scopeKey.slice('workspace:'.length);
+  return workspaceId.length > 0 ? workspaceId : null;
+};
+
 /** Global session identity: (workspaceId, upstreamSessionId). The NUL
  * separator keeps composite keys unambiguous when either part contains
  * slashes or unicode. */

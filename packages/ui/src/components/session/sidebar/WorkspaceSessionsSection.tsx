@@ -5,8 +5,10 @@ import { useShallow } from 'zustand/react/shallow';
 import { toast } from '@/components/ui';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import { useWorkspaceSessionIndexStore, selectSessionsForWorkspace } from '@/workspaces/session-index-store';
+import { createWorkspaceSession } from '@/workspaces/session-index-client';
 import type { ConnectionProfileSummary, WorkspaceDescriptor, WorkspaceSessionSummary } from '@/workspaces/types';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { openWorkspaceSession } from './workspaceSessionOpen';
 
 const RENDER_SESSION_LIMIT = 8;
 
@@ -37,17 +39,12 @@ const WorkspaceSessionRow: React.FC<{
 
   const onOpen = () => {
     setSelected(true);
-    if (isLocalConnection) {
-      // Local sessions open through the existing selection path; the full
-      // sync stays on the current workspace until the sync-scope migration.
-      useSessionUIStore.getState().setCurrentSession(session.upstreamSessionId, session.directory || null);
-      return;
-    }
-    // Remote sessions render with full failure/offline semantics but opening
-    // them through a workspace-bound runtime arrives with the sync migration.
-    // The important invariant here: this click NEVER switches the global
-    // runtime endpoint and NEVER clears other workspaces' state.
-    toast.info(t('workspaces.sidebar.remoteNotWired'));
+    // Local AND remote sessions open through the same selection path; the
+    // sync runs against the workspace-bound runtime handle (SSE via the
+    // workspace runtime proxy), never the global runtime endpoint.
+    openWorkspaceSession(session, (sessionId, directory) => {
+      useSessionUIStore.getState().setCurrentSession(sessionId, directory);
+    });
   };
 
   const freshness = sessionIndexStatus === 'error' ? 'stale' : null;
@@ -84,29 +81,59 @@ const WorkspaceGroup: React.FC<{
 }> = React.memo(({ workspace, connection, sessions, truncated, connectionTruncated, isLocalConnection }) => {
   const { t } = useI18n();
   const [collapsed, setCollapsed] = React.useState(false);
+  const [creating, setCreating] = React.useState(false);
   const needsServerDisambiguation = !isLocalConnection && Boolean(connection);
   const shownSessions = sessions.slice(0, RENDER_SESSION_LIMIT);
 
+  // Creates a session on the workspace's server through the session index
+  // (`POST /api/workspaces/:id/sessions`). The new session appears through
+  // the index SSE stream; navigation is deliberately NOT triggered here —
+  // opening before the index maps the session would fall back to the
+  // ambient runtime scope instead of the workspace scope.
+  const onCreateSession = async () => {
+    if (creating) return;
+    setCreating(true);
+    try {
+      await createWorkspaceSession(workspace.id);
+    } catch {
+      toast.error(t('rightSidebar.contextNotesTodo.toast.createSessionFailed'));
+    } finally {
+      setCreating(false);
+    }
+  };
+
   return (
     <div className="group">
-      <button
-        type="button"
-        onClick={() => setCollapsed((value) => !value)}
-        className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-xs hover:bg-interactive-hover"
-        aria-expanded={!collapsed}
-        aria-label={workspace.label}
-      >
-        <Icon name={collapsed ? 'arrow-right' : 'arrow-down'} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        {workspace.color ? (
-          <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: workspace.color }} aria-hidden="true" />
-        ) : (
-          <Icon name="folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
-        {needsServerDisambiguation ? (
-          <span className="shrink-0 text-muted-foreground/70">{connection?.label}</span>
-        ) : null}
-      </button>
+      <div className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-xs hover:bg-interactive-hover">
+        <button
+          type="button"
+          onClick={() => setCollapsed((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left"
+          aria-expanded={!collapsed}
+          aria-label={workspace.label}
+        >
+          <Icon name={collapsed ? 'arrow-right' : 'arrow-down'} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          {workspace.color ? (
+            <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: workspace.color }} aria-hidden="true" />
+          ) : (
+            <Icon name="folder" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate font-medium">{workspace.label}</span>
+          {needsServerDisambiguation ? (
+            <span className="shrink-0 text-muted-foreground/70">{connection?.label}</span>
+          ) : null}
+        </button>
+        <button
+          type="button"
+          onClick={() => void onCreateSession()}
+          disabled={creating}
+          className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          aria-label={t('sessions.sidebar.header.actions.newSession')}
+          title={t('sessions.sidebar.header.actions.newSession')}
+        >
+          <Icon name="add" className="h-3.5 w-3.5" />
+        </button>
+      </div>
       {!collapsed ? (
         <div className="ml-3 border-l border-border/50 pl-1">
           {shownSessions.map((session) => (
@@ -145,6 +172,8 @@ WorkspaceGroup.displayName = 'WorkspaceGroup';
 export const WorkspaceSessionsSection: React.FC = () => {
   const { t } = useI18n();
   const snapshot = useWorkspaceCatalogStore((state) => state.snapshot);
+  const catalogStatus = useWorkspaceCatalogStore((state) => state.status);
+  const catalogError = useWorkspaceCatalogStore((state) => state.lastError);
   const sessionSnapshot = useWorkspaceSessionIndexStore(useShallow((state) => state.snapshot));
   const requestAddWorkspace = () => {
     void import('@/lib/sessionEvents').then(({ sessionEvents }) => sessionEvents.requestAddWorkspaceDialog());
@@ -173,6 +202,25 @@ export const WorkspaceSessionsSection: React.FC = () => {
 
   const hasWorkspaces = Boolean(snapshot && snapshot.workspaces.length > 0);
   if (!hasWorkspaces) {
+    // A failed authoritative load is NOT the same as "no workspaces": the
+    // store keeps its prior snapshot and marks error. With no snapshot at all
+    // (VS Code / Capacitor without a control plane) the sidebar must say the
+    // workspaces are unavailable rather than inviting the user to add one.
+    if (catalogStatus === 'error') {
+      return (
+        <section className="border-b border-border/60 px-2.5 py-2" aria-label={t('workspaces.sidebar.title')}>
+          <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('workspaces.sidebar.title')}</p>
+          <div className="flex flex-col gap-1 px-1">
+            <p className="text-xs text-muted-foreground">{t('workspaces.sidebar.unavailable')}</p>
+            {catalogError ? (
+              <p className="truncate text-[11px] text-muted-foreground/70" title={catalogError}>
+                {catalogError}
+              </p>
+            ) : null}
+          </div>
+        </section>
+      );
+    }
     return (
       <section className="border-b border-border/60 px-2.5 py-2" aria-label={t('workspaces.sidebar.title')}>
         <p className="px-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t('workspaces.sidebar.title')}</p>

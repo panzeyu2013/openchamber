@@ -48,7 +48,6 @@ import {
 } from "./vscode-permission-auto-accept"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
-import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { toast } from "@/components/ui"
 import { appendNotification } from "./notification-store"
 import { applyGlobalSessionStatusEvent, applyGlobalSessionStatusSnapshot, useGlobalSessionStatusStore } from "./global-session-status"
@@ -67,11 +66,13 @@ import { openSessionFromToast } from "./session-navigation"
 import { getPermissionToastKey, showPermissionNeededToast } from "./permission-toast"
 import { getRuntimeLiveStatusSeed, LIVE_STATUS_TTL_MS } from "./runtime-live-memory"
 import { getRuntimeKey } from "@/lib/runtime-switch"
+import { workspaceIdFromScopeKey } from "@/workspaces/identity"
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { isFilesystemError } from "@/lib/api/files-errors"
 import { listGlobalSessionPages } from "@/stores/globalSessions"
 import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests } from "./scoped-blocking-requests"
 import { EMPTY_USER_MESSAGE_HISTORY_SNAPSHOT, buildUserMessageHistorySnapshot, type UserMessageHistorySnapshot } from "./user-message-history"
+import { cleanupPersistedSessionState, resolveSessionDeletionIdentity } from "./session-deletion-cleanup"
 import {
   EMPTY_SESSION_MESSAGE_LOAD_STATE,
   SessionMessageLoader,
@@ -87,7 +88,9 @@ import {
 type SyncSystem = {
   childStores: ChildStoreManager
   messageLoader: SessionMessageLoader
-  runtimeKey: string
+  /** Sync scope: workspace scope key in workspace mode, ambient runtime key
+   * otherwise (byte-identical to `getRuntimeKey()` in non-workspace mode). */
+  scopeKey: string
   sdk: OpencodeClient
   directory: string
 }
@@ -282,11 +285,16 @@ function haveEquivalentSyncSnapshots(left: unknown, right: unknown): boolean {
 // ---------------------------------------------------------------------------
 
 type PendingSessionMaterialization = {
-  runtimeKey: string
+  scopeKey: string
+  isWorkspaceScoped: boolean
   sessionID: string
   directory: string
   enqueuedAt: number
   request: SessionMaterializationRequest
+  /** Loader captured at enqueue time: workspace mode drops the pending work
+   * when a provider remount replaced the imperative loader, so a stale
+   * materialization can never land in a different workspace's store. */
+  loader: SessionMessageLoader
 }
 
 const SESSION_MATERIALIZATION_COOLDOWN_MS = 5_000
@@ -297,10 +305,11 @@ function enqueueSessionMaterialization(
   sessionID: string,
   childStores: ChildStoreManager,
   request: SessionMaterializationRequest,
+  scopeKey = getRuntimeKey(),
 ) {
   if (!directory || directory === "global" || !sessionID) return
-  const runtimeKey = getRuntimeKey()
-  const k = getSessionMaterializationRequestKey(runtimeKey, directory, sessionID)
+  const isWorkspaceScoped = workspaceIdFromScopeKey(scopeKey) !== null
+  const k = getSessionMaterializationRequestKey(scopeKey, directory, sessionID)
   const existing = pendingSessionMaterializations.get(k)
   if (existing && Date.now() - existing.enqueuedAt < SESSION_MATERIALIZATION_COOLDOWN_MS) {
     const settlementMustFollowEarlierRecovery = request.reason === "settled-running-tool"
@@ -308,7 +317,17 @@ function enqueueSessionMaterialization(
     if (!settlementMustFollowEarlierRecovery) return
   }
 
-  const pending = { runtimeKey, sessionID, directory, enqueuedAt: Date.now(), request }
+  const loader = getImperativeSessionMessageLoader()
+  if (!loader) return
+  const pending: PendingSessionMaterialization = {
+    scopeKey,
+    isWorkspaceScoped,
+    sessionID,
+    directory,
+    enqueuedAt: Date.now(),
+    request,
+    loader,
+  }
   pendingSessionMaterializations.set(k, pending)
   countSyncPerformance("materializationEnqueues")
   if (request.reason === "empty-assistant-message") {
@@ -322,7 +341,11 @@ function enqueueSessionMaterialization(
   }
 
   const run = async () => {
-    if (pending.runtimeKey !== getRuntimeKey()) {
+    if (
+      (pending.isWorkspaceScoped
+        ? getImperativeSessionMessageLoader() !== pending.loader
+        : pending.scopeKey !== getRuntimeKey())
+    ) {
       if (pendingSessionMaterializations.get(k) === pending) {
         pendingSessionMaterializations.delete(k)
       }
@@ -341,7 +364,7 @@ function enqueueSessionMaterialization(
         return
       }
       countSyncPerformance("materializationRequests")
-      await materializeSessionFromServer(directory, sessionID, store, request)
+      await materializeSessionFromServer(directory, sessionID, store, request, pending.loader)
     } catch {
       // Transient failure — next SSE event or reconnect will catch up.
     } finally {
@@ -370,6 +393,7 @@ async function materializeSessionFromServer(
   sessionID: string,
   store: StoreApi<DirectoryStore>,
   options?: SessionMaterializationRequest & { isStale?: () => boolean },
+  capturedLoader?: SessionMessageLoader,
 ) {
   const statusBeforeMaterialization = store.getState().session_status?.[sessionID]
   syncDebug.recovery.materializing({
@@ -379,7 +403,7 @@ async function materializeSessionFromServer(
     messageID: options?.messageID,
     partID: options?.partID,
   })
-  const loader = getImperativeSessionMessageLoader()
+  const loader = capturedLoader ?? getImperativeSessionMessageLoader()
   if (!loader || options?.isStale?.()) return
   await loader.refreshTail({ directory, sessionID }, SESSION_MATERIALIZATION_MESSAGE_LIMIT)
   if (loader.getSnapshot({ directory, sessionID }).status === "error") {
@@ -617,13 +641,33 @@ export function applySessionStatusSnapshot(
   return changed
 }
 
+/** Directory session-status snapshot through a specific SDK client. Returns
+ * null when the fetch failed (never conflated with a successful empty map),
+ * mirroring `opencodeClient.getSessionStatusForDirectory` semantics. */
+async function getDirectorySessionStatuses(
+  sdk: OpencodeClient,
+  directory: string,
+): Promise<DirectorySessionStatusSnapshot | null> {
+  try {
+    const trimmedDirectory = typeof directory === "string" ? directory.trim() : ""
+    const result = await sdk.session.status(trimmedDirectory ? { directory: trimmedDirectory } : undefined)
+    if (result.error || !result.data || typeof result.data !== "object") {
+      return null
+    }
+    return result.data as DirectorySessionStatusSnapshot
+  } catch {
+    return null
+  }
+}
+
 async function resyncDirectorySessionStatuses(
   directory: string,
   store: StoreApi<DirectoryStore>,
   candidateSessionIds: string[],
   mode: StatusSnapshotMode,
+  sdk: OpencodeClient = opencodeClient.getSdkClient(),
 ): Promise<DirectorySessionStatusSnapshot | null> {
-  const nextStatuses = await opencodeClient.getSessionStatusForDirectory(directory)
+  const nextStatuses = await getDirectorySessionStatuses(sdk, directory)
   // null = fetch failed; preserve existing state. {} or populated = a snapshot
   // of active sessions — reconciled per `mode` (absence ≠ idle under monotonic).
   if (nextStatuses === null) return null
@@ -958,7 +1002,7 @@ const findSessionInChildStores = (
   routingIndex: EventRoutingIndex,
   batch?: DirectoryEventBatch,
 ): string | null => {
-  for (const [dir, store] of childStores.children) {
+  for (const [dir, store] of childStores.entries()) {
     const state = getDirectoryEventState(store, batch)
     if (
       state.session.some((s) => s.id === sessionID)
@@ -1059,7 +1103,7 @@ const resolveDirectoryFromRoutingIndex = (
     }
 
     // Scan child stores for a store that has parts for this message
-    for (const [dir, store] of childStores.children) {
+    for (const [dir, store] of childStores.entries()) {
       if (Object.prototype.hasOwnProperty.call(getDirectoryEventState(store, batch).part, messageID)) {
         return dir
       }
@@ -1081,7 +1125,7 @@ const resolveDirectoryFromRoutingIndex = (
     && (!normalizedDirectory || normalizedDirectory === "global")
     && childStores.children.size === 1
   ) {
-    const onlyDirectory = childStores.children.keys().next().value
+    const onlyDirectory = childStores.entries()[0]?.[0]
     if (typeof onlyDirectory === "string" && onlyDirectory.length > 0) {
       return onlyDirectory
     }
@@ -1180,10 +1224,60 @@ const updateRoutingIndexFromEvent = (
  * `candidateSessionIds` is omitted, every session known to the directory store
  * is treated as a candidate.
  */
+/** Pending question list through a specific SDK client (workspace-bound
+ * sync), falling back to the ambient runtime wrapper when no SDK is passed.
+ * The unscoped request runs first, then one per requested directory; results
+ * are merged and deduplicated by id — the same contract as
+ * `opencodeClient.listPendingQuestions`. */
+async function listPendingQuestionsFor(sdk: OpencodeClient | undefined, directories: string[]): Promise<QuestionRequest[]> {
+  if (!sdk) return opencodeClient.listPendingQuestions({ directories })
+  const results = await Promise.all([null, ...directories].map(async (directory) => {
+    const result = await sdk.question.list(directory ? { directory } : undefined)
+    if (result.error) throw new Error(`question.list failed: ${formatSdkError(result.error)}`)
+    return (result.data || []) as unknown as QuestionRequest[]
+  }))
+  const merged: QuestionRequest[] = []
+  const seenIds = new Set<string>()
+  for (const list of results) {
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue
+      const id = (item as { id?: unknown }).id
+      if (typeof id !== "string" || id.length === 0 || seenIds.has(id)) continue
+      seenIds.add(id)
+      merged.push(item)
+    }
+  }
+  return merged
+}
+
+/** Pending permission list through a specific SDK client (workspace-bound
+ * sync), falling back to the ambient runtime wrapper when no SDK is passed. */
+async function listPendingPermissionsFor(sdk: OpencodeClient | undefined, directories: string[]): Promise<PermissionRequest[]> {
+  if (!sdk) return opencodeClient.listPendingPermissions({ directories })
+  const results = await Promise.all([null, ...directories].map(async (directory) => {
+    const result = await sdk.permission.list(directory ? { directory } : undefined)
+    if (result.error) throw new Error(`permission.list failed: ${formatSdkError(result.error)}`)
+    return (result.data || []) as unknown as PermissionRequest[]
+  }))
+  const merged: PermissionRequest[] = []
+  const seenIds = new Set<string>()
+  for (const list of results) {
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue
+      const id = (item as { id?: unknown }).id
+      if (typeof id !== "string" || id.length === 0 || seenIds.has(id)) continue
+      seenIds.add(id)
+      merged.push(item)
+    }
+  }
+  return merged
+}
+
 export async function resyncBlockingRequestsForDirectory(
   directory: string,
   store: StoreApi<DirectoryStore>,
   candidateSessionIds?: string[],
+  sdk?: OpencodeClient,
 ) {
   const before = store.getState()
   const knownSessionIds = new Set<string>([
@@ -1202,7 +1296,7 @@ export async function resyncBlockingRequestsForDirectory(
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.question[sessionId])]),
     )
-    const pendingQuestions = await opencodeClient.listPendingQuestions({ directories: [directory] })
+    const pendingQuestions = await listPendingQuestionsFor(sdk, [directory])
     const grouped: Record<string, QuestionRequest[]> = {}
     for (const q of pendingQuestions) {
       if (!q?.id || !q.sessionID) continue
@@ -1261,7 +1355,7 @@ export async function resyncBlockingRequestsForDirectory(
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.permission[sessionId])]),
     )
-    const pendingPermissions = await opencodeClient.listPendingPermissions({ directories: [directory] })
+    const pendingPermissions = await listPendingPermissionsFor(sdk, [directory])
     const grouped: Record<string, PermissionRequest[]> = {}
     for (const permission of pendingPermissions) {
       if (!permission?.id || !permission.sessionID) continue
@@ -1335,20 +1429,20 @@ async function resyncDirectoryAfterReconnect(
   store: StoreApi<DirectoryStore>,
   routingIndex: EventRoutingIndex,
   reason: SessionMaterializationReason,
+  sdk: OpencodeClient = opencodeClient.getSdkClient(),
 ) {
   const current = store.getState()
   const candidateSessionIds = getActiveSessionCandidateIds(directory, current)
   if (candidateSessionIds.length === 0) return
 
-  await resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "authoritative")
+  await resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "authoritative", sdk)
 
-  const scopedClient = opencodeClient.getScopedSdkClient(directory)
   await Promise.all(candidateSessionIds.map(async (sessionId) => {
     syncDebug.recovery.materializing({ reason, directory, sessionID: sessionId })
     const loader = getImperativeSessionMessageLoader()
     const [sessionResponse] = await Promise.all([
       retry(async () => {
-        const response = await scopedClient.session.get({ sessionID: sessionId })
+        const response = await sdk.session.get({ sessionID: sessionId, directory })
         assertSdkSuccess(response, "session.get")
         return response
       }).catch(() => null),
@@ -1392,7 +1486,7 @@ async function resyncDirectoryAfterReconnect(
     setIndexedSessionMessages(routingIndex, sessionId, directory, store.getState().message[sessionId] ?? [])
   }))
 
-  await resyncBlockingRequestsForDirectory(directory, store, candidateSessionIds)
+  await resyncBlockingRequestsForDirectory(directory, store, candidateSessionIds, sdk)
 
   ingestDirectoryStateIntoRoutingIndex(routingIndex, directory, store.getState())
 }
@@ -1402,7 +1496,7 @@ export function handleEvent(
   payload: Event,
   childStores: ChildStoreManager,
   routingIndex: EventRoutingIndex,
-  expectedRuntimeKey: string,
+  expectedScopeKey: string,
   skipVSCodeAutoAccept = false,
   streamingDirectory?: string,
   batch?: DirectoryEventBatch,
@@ -1415,7 +1509,7 @@ export function handleEvent(
         usePermissionStore.getState().applySnapshot({
           sessions: snapshot.sessions as Record<string, boolean>,
           revision: typeof snapshot.revision === "number" ? snapshot.revision : undefined,
-        }, expectedRuntimeKey)
+        }, expectedScopeKey)
       }
     }
     return
@@ -1423,10 +1517,17 @@ export function handleEvent(
 
   const directory = resolveDirectoryFromRoutingIndex(routingIndex, rawDirectory, payload, childStores, batch)
 
-  if (payload.type === "session.deleted" && expectedRuntimeKey === getRuntimeKey()) {
+  if (payload.type === "session.deleted") {
     const sessionID = getSessionIdFromPayload(payload)
     if (sessionID && directory && directory !== "global") {
-      cleanupPersistedSessionState({ runtimeKey: expectedRuntimeKey, directory, sessionId: sessionID })
+      // Scope-aware deletion cleanup: workspace-scoped identities always
+      // commit (their keys are collision-free per workspace); ambient
+      // identities still reject a stale runtime, exactly like the old guard.
+      const identity = resolveSessionDeletionIdentity(sessionID, directory, expectedScopeKey, expectedScopeKey)
+      const currentScope = workspaceIdFromScopeKey(expectedScopeKey) ? expectedScopeKey : getRuntimeKey()
+      if (identity.runtimeKey === currentScope) {
+        cleanupPersistedSessionState(identity)
+      }
     }
   }
 
@@ -1461,7 +1562,7 @@ export function handleEvent(
     // but only if not during recent boot
     if (payload.type === "server.connected" || payload.type === "global.disposed") {
       if (!recent) {
-        for (const dir of childStores.children.keys()) {
+        for (const dir of childStores.entries().map(([directory]) => directory)) {
           const store = childStores.getChild(dir)
           if (store && store.getState().status !== "loading") {
             childStores.requestBootstrap({
@@ -1514,15 +1615,18 @@ export function handleEvent(
   if (payload.type === "permission.asked") {
     const permission = payload.properties as PermissionRequest
     if (isVSCodeRuntime() && !skipVSCodeAutoAccept) {
-      const eventKey = getVSCodePermissionEventKey(expectedRuntimeKey, resolvedDirectory, permission.sessionID, permission.id)
+      const eventKey = getVSCodePermissionEventKey(expectedScopeKey, resolvedDirectory, permission.sessionID, permission.id)
       const eventToken = Symbol(eventKey ?? permission.id)
       if (eventKey) pendingVSCodePermissionEvents.set(eventKey, eventToken)
       updateRoutingIndexFromEvent(routingIndex, resolvedDirectory, payload)
       const completePermissionCheck = (accepted: boolean) => {
         if (eventKey && pendingVSCodePermissionEvents.get(eventKey) !== eventToken) return
         if (eventKey) pendingVSCodePermissionEvents.delete(eventKey)
-        if (expectedRuntimeKey !== getRuntimeKey()) return
-        if (!accepted) handleEvent(rawDirectory, payload, childStores, routingIndex, expectedRuntimeKey, true, streamingDirectory)
+        // Ambient-scoped permission events only complete while their runtime
+        // is still active; workspace-scoped events always complete (the keys
+        // are collision-free per workspace).
+        if (!workspaceIdFromScopeKey(expectedScopeKey) && expectedScopeKey !== getRuntimeKey()) return
+        if (!accepted) handleEvent(rawDirectory, payload, childStores, routingIndex, expectedScopeKey, true, streamingDirectory)
       }
       void processVSCodePermissionAutoAccept(permission, resolvedDirectory).then(
         completePermissionCheck,
@@ -1549,7 +1653,7 @@ export function handleEvent(
   if (payload.type === "permission.replied") {
     const props = payload.properties as { sessionID?: string; requestID?: string }
     const toastKey = getPermissionToastKey(props.sessionID, props.requestID)
-    const eventKey = getVSCodePermissionEventKey(expectedRuntimeKey, resolvedDirectory, props.sessionID, props.requestID)
+    const eventKey = getVSCodePermissionEventKey(expectedScopeKey, resolvedDirectory, props.sessionID, props.requestID)
     if (eventKey) pendingVSCodePermissionEvents.delete(eventKey)
     if (toastKey) {
       pendingPermissionToastIds.delete(toastKey)
@@ -1623,7 +1727,7 @@ export function handleEvent(
         ? (idleSession as Session & { parentID?: string | null }).parentID
         : null
       if (parentID) {
-        enqueueSessionMaterialization(resolvedDirectory, parentID, childStores, { reason: "child-session-idle" })
+        enqueueSessionMaterialization(resolvedDirectory, parentID, childStores, { reason: "child-session-idle" }, expectedScopeKey)
       }
     }
   }
@@ -1753,7 +1857,7 @@ export function handleEvent(
         enqueueSessionMaterialization(resolvedDirectory, sessionID, childStores, {
           reason: "empty-assistant-message",
           messageID,
-        })
+        }, expectedScopeKey)
       }
     }
   } else {
@@ -1777,7 +1881,7 @@ export function handleEvent(
         reason: materializationResult.reason,
         messageID: materializationResult.messageID,
         partID: materializationResult.partID,
-      })
+      }, expectedScopeKey)
     }
   }
 
@@ -1789,7 +1893,7 @@ export function handleEvent(
       enqueueSessionMaterialization(resolvedDirectory, sessionID, childStores, {
         reason: "settled-running-tool",
         messageID,
-      })
+      }, expectedScopeKey)
     }
     // The reducer already wrote the idle/error status into `draft`; mark the
     // orphaned tools using the batched state and publish through the batch.
@@ -1914,20 +2018,23 @@ export function SyncProvider(props: {
   const messageStreamTransport = useConfigStore((state) => state.settingsMessageStreamTransport)
   const boundSdk = props.workspaceHandle?.sdk ?? props.sdk
   const boundDirectory = props.workspaceHandle?.directory ?? props.directory
+  // Sync scope: the workspace scope key when a workspace-bound handle is
+  // active, the ambient runtime key otherwise (byte-identical keys in
+  // non-workspace mode, so existing persisted data stays readable).
+  const scopeKey = props.workspaceHandle?.scopeKey ?? getRuntimeKey()
   const childStoresRef = useRef<ChildStoreManager | null>(null)
-  if (!childStoresRef.current) childStoresRef.current = new ChildStoreManager()
+  if (!childStoresRef.current) childStoresRef.current = new ChildStoreManager(scopeKey)
   const childStores = childStoresRef.current
-  const runtimeKey = getRuntimeKey()
   const messageLoaderRef = useRef<SessionMessageLoader | null>(null)
   if (!messageLoaderRef.current) {
     messageLoaderRef.current = new SessionMessageLoader(childStores, {
       sdk: boundSdk,
-      runtimeKey,
+      scopeKey,
     })
   }
   const messageLoader = messageLoaderRef.current
+  messageLoader.configure({ sdk: boundSdk, scopeKey })
   const messageLoaderDisposalTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  messageLoader.configure({ sdk: boundSdk, runtimeKey })
   const routingIndexRef = useRef<EventRoutingIndex | null>(null)
   if (!routingIndexRef.current) routingIndexRef.current = createEventRoutingIndex()
   const routingIndex = routingIndexRef.current
@@ -1947,29 +2054,29 @@ export function SyncProvider(props: {
     () => ({
       childStores,
       messageLoader,
-      runtimeKey,
+      scopeKey,
       sdk: boundSdk,
       directory: boundDirectory,
     }),
-    [childStores, messageLoader, boundSdk, boundDirectory, runtimeKey],
+    [childStores, messageLoader, boundSdk, boundDirectory, scopeKey],
   )
 
   const triggerDirectoryResync = useCallback((directory: string, reason: SessionMaterializationReason) => {
-    const store = childStores.children.get(directory)
+    const store = childStores.getChild(directory)
     if (!store) return
     const resyncing = resyncingDirectoriesRef.current
     if (resyncing.has(directory)) return
 
     lastFullResyncAtByDirectoryRef.current.set(directory, Date.now())
     resyncing.add(directory)
-    void resyncDirectoryAfterReconnect(directory, store, routingIndex, reason)
+    void resyncDirectoryAfterReconnect(directory, store, routingIndex, reason, boundSdk)
       .catch(() => {
         // Transient failure — the watchdog, next SSE event, or reconnect will catch up.
       })
       .finally(() => {
         resyncing.delete(directory)
       })
-  }, [childStores, routingIndex])
+  }, [childStores, routingIndex, boundSdk])
 
   // Configure child store manager
   useEffect(() => {
@@ -1978,6 +2085,7 @@ export function SyncProvider(props: {
 
   useEffect(() => {
     return childStores.configure({
+      scopeKey,
       bootstrapConcurrency: 2,
       onBootstrap: async (context: DirectoryBootstrapContext) => {
         const { directory } = context
@@ -2113,7 +2221,7 @@ export function SyncProvider(props: {
       },
       isLoadingSessions: () => false,
     })
-  }, [childStores, messageLoader, boundSdk, routingIndex])
+  }, [childStores, messageLoader, boundSdk, routingIndex, scopeKey])
 
   // Bootstrap global state — set bootingRoot/bootedAt to suppress
   // redundant refresh events during startup
@@ -2145,10 +2253,15 @@ export function SyncProvider(props: {
 
   // Event pipeline — created once per mount. No class, no start/stop.
   // Abort controller owned by the pipeline closure. Cleanup aborts + flushes.
+  // Workspace-bound sync runs on the bound SDK's SSE stream: the workspace
+  // runtime proxy pipes `text/event-stream` (WebSocket upgrades are not wired
+  // yet), so the pipeline must never open a WS against the workspace prefix
+  // or the global runtime URL.
   useEffect(() => {
     const pipeline = createEventPipeline({
       sdk: boundSdk,
       transport: messageStreamTransport,
+      forceSse: Boolean(props.workspaceHandle),
       routeDirectory: (directory, payload) => {
         return resolveDirectoryFromRoutingIndex(routingIndex, directory, payload, childStores)
       },
@@ -2172,7 +2285,7 @@ export function SyncProvider(props: {
                 dispatchOpenCodeUpdateAvailable({ version })
               }
             }
-            handleEvent(directory, payload, childStores, routingIndex, runtimeKey, false, currentDirectoryRef.current, batch)
+            handleEvent(directory, payload, childStores, routingIndex, scopeKey, false, currentDirectoryRef.current, batch)
           }
         } finally {
           publishDirectoryEventBatch(batch)
@@ -2192,7 +2305,7 @@ export function SyncProvider(props: {
         if (isRecentBoot()) {
           return
         }
-        for (const dir of childStores.children.keys()) {
+        for (const [dir] of childStores.entries()) {
           triggerDirectoryResync(dir, "stream-reconnect")
         }
       },
@@ -2215,7 +2328,7 @@ export function SyncProvider(props: {
           hasEverConnected: true,
           connectionPhase: "connected",
         })
-        for (const dir of childStores.children.keys()) {
+        for (const [dir] of childStores.entries()) {
           triggerDirectoryResync(dir, "transport-switch")
         }
       },
@@ -2227,7 +2340,7 @@ export function SyncProvider(props: {
       }
       pipeline.cleanup()
     }
-  }, [boundSdk, childStores, routingIndex, messageStreamTransport, runtimeKey, triggerDirectoryResync])
+  }, [boundSdk, childStores, props.workspaceHandle, routingIndex, messageStreamTransport, scopeKey, triggerDirectoryResync])
 
   useEffect(() => {
     let stopped = false
@@ -2240,8 +2353,7 @@ export function SyncProvider(props: {
     ) => {
       if (parentSessionIds.length === 0) return
       try {
-        const scopedClient = opencodeClient.getScopedSdkClient(directory)
-        const result: unknown = await runBackgroundNetworkTask(() => scopedClient.session.list({ directory, limit: 200 }))
+        const result: unknown = await runBackgroundNetworkTask(() => boundSdk.session.list({ directory, limit: 200 }))
         const allSessions = ((result as { data?: unknown }).data ?? []) as Session[]
         const state = store.getState()
         const existingIds = new Set(state.session.map((s) => s.id))
@@ -2273,7 +2385,7 @@ export function SyncProvider(props: {
         // Trigger parent session materialization so the task tool part
         // state (metadata, sessionId, output) is refreshed.
         for (const pid of parentIdsForMaterialization) {
-          enqueueSessionMaterialization(directory, pid, childStores, { reason: "child-session-discovered" })
+          enqueueSessionMaterialization(directory, pid, childStores, { reason: "child-session-discovered" }, scopeKey)
         }
       } catch {
         // Best-effort — next tick will retry.
@@ -2290,7 +2402,7 @@ export function SyncProvider(props: {
       polling.add(directory)
       try {
         const before = store.getState()
-        const statuses = await runBackgroundNetworkTask(() => resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "monotonic"))
+        const statuses = await runBackgroundNetworkTask(() => resyncDirectorySessionStatuses(directory, store, candidateSessionIds, "monotonic", boundSdk))
         if (!statuses) return
         const needsSnapshot = candidateSessionIds.some((sessionId) => (
           needsSnapshotAfterStatusPoll(before, sessionId, statuses[sessionId])
@@ -2310,7 +2422,7 @@ export function SyncProvider(props: {
         .then(() => {
           if (stopped) return
           const now = Date.now()
-          for (const [directory, store] of childStores.children.entries()) {
+          for (const [directory, store] of childStores.entries()) {
             const state = store.getState()
             const candidateSessionIds = getActiveSessionCandidateIds(directory, state)
             if (candidateSessionIds.length === 0) {
@@ -2355,7 +2467,7 @@ export function SyncProvider(props: {
       stopped = true
       clearInterval(interval)
     }
-  }, [childStores, triggerDirectoryResync])
+  }, [childStores, triggerDirectoryResync, boundSdk])
 
   // Ensure current directory's child store exists
   useEffect(() => {
@@ -2365,7 +2477,7 @@ export function SyncProvider(props: {
         priority: "selected",
         reason: "current-directory",
       })
-      const statusSeed = getRuntimeLiveStatusSeed(getRuntimeKey(), boundDirectory)
+      const statusSeed = getRuntimeLiveStatusSeed(scopeKey, boundDirectory)
       if (statusSeed) {
         store.setState((state: DirectoryStore) => ({
           session_status: {
@@ -2408,7 +2520,7 @@ export function SyncProvider(props: {
         enqueueSessionMaterialization(directory, sessionID, childStores, {
           reason: "settled-running-tool",
           messageID,
-        })
+        }, scopeKey)
       },
     )
     return () => {
@@ -2490,21 +2602,29 @@ export function useSessionMessageLoader(): SessionMessageLoader {
 
 export function useSessionMessageLoadState(sessionID: string, directory?: string): SessionMessageLoadState {
   const system = useSyncSystem()
-  const runtimeKey = system.runtimeKey
+  const scopeKey = system.scopeKey
   const target = useMemo(() => ({ directory: directory ?? system.directory, sessionID }), [directory, sessionID, system.directory])
   return React.useSyncExternalStore(
     useCallback((notify) => {
-      void runtimeKey
+      void scopeKey
       return sessionID && target.directory ? system.messageLoader.subscribe(target, notify) : () => undefined
-    }, [sessionID, system.messageLoader, runtimeKey, target]),
+    }, [sessionID, system.messageLoader, scopeKey, target]),
     useCallback(() => {
-      void runtimeKey
+      void scopeKey
       return sessionID && target.directory
         ? system.messageLoader.getSnapshot(target)
         : EMPTY_SESSION_MESSAGE_LOAD_STATE
-    }, [sessionID, system.messageLoader, runtimeKey, target]),
+    }, [sessionID, system.messageLoader, scopeKey, target]),
     useCallback(() => EMPTY_SESSION_MESSAGE_LOAD_STATE, []),
   )
+}
+
+/** The active sync scope (workspace scope key, or the ambient runtime key in
+ * non-workspace mode). Consumers keying caches by sync identity must use this
+ * instead of `getRuntimeKey()` so equal session IDs/directories in different
+ * workspaces never share state. */
+export function useSyncScopeKey(): string {
+  return useSyncSystem().scopeKey
 }
 
 /** Select from the current directory's store */

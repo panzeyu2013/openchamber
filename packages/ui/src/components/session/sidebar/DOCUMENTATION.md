@@ -33,10 +33,16 @@
   Workspace Catalog and the server-side Session Index (Phase 4). One flat
   list of workspaces with their sessions; connection labels appear only as
   secondary disambiguation; per-connection freshness is textual (stale /
-  error / loading — never color-only). Local sessions open through the normal
-  selection path; remote rows render full offline/stale semantics and their
-  click path never switches the global runtime endpoint. The former
-  `FleetSidebarSection` (inactive-server cards) was removed with this module.
+  error / loading — never color-only). Local AND remote sessions open through
+  the same unified selection path (`openWorkspaceSession` →
+  `setCurrentSession`; the sync then runs against the workspace-bound runtime
+  handle keyed by workspaceId), and the click path never switches the global
+  runtime endpoint. Each workspace group header carries a "new session"
+  affordance that creates the session server-side via
+  `session-index-client.createWorkspaceSession` (`POST
+  /api/workspaces/:id/sessions`); the new session surfaces through the index
+  SSE stream. The former `FleetSidebarSection` (inactive-server cards) was
+  removed with this module.
 - `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
 - `SidebarProjectsList.tsx`: Main scrollable renderer for project zones and their flat/archived groups plus empty/search states; owns project drag-to-reorder.
 - `SessionGroupSection.tsx`: Renders one flat (or archived) group: sessions first, then flat folder entries with path labels, show-more batching, and explicit loading/error/retry state for empty groups. Archived buckets (VS Code) virtualize past 50 rows.

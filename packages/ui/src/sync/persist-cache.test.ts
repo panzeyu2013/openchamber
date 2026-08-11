@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import type { Session } from "@opencode-ai/sdk/v2/client"
-import { switchRuntimeEndpoint } from "@/lib/runtime-switch"
+import { switchRuntimeEndpoint, getRuntimeKey } from "@/lib/runtime-switch"
 import { persistSessions, readDirCache } from "./persist-cache"
 import { getSyncPerformanceDiagnostics, setSyncPerformanceDiagnosticsEnabled } from "./performance-diagnostics"
 
@@ -137,6 +137,31 @@ describe("persisted directory sessions", () => {
     switchRuntimeEndpoint({ apiBaseUrl: "https://runtime-a.test", runtimeKey: "runtime-a" })
     expect(readDirCache(directory).sessions?.map((item) => item.title)).toEqual(["runtime A"])
     expect(readDirCache(otherDirectory).sessions?.map((item) => item.title)).toEqual(["other directory"])
+  })
+
+  test("isolates snapshots by workspace scope for equal directory paths", async () => {
+    persistSessions(directory, [session(1, 1, "workspace A")], "workspace:ws-a")
+    persistSessions(directory, [session(2, 2, "workspace B")], "workspace:ws-b")
+    await waitForPersistence()
+
+    expect(readDirCache(directory, "workspace:ws-a").sessions?.map((item) => item.title)).toEqual(["workspace A"])
+    expect(readDirCache(directory, "workspace:ws-b").sessions?.map((item) => item.title)).toEqual(["workspace B"])
+
+    // An ambient write with the current runtime key uses a DIFFERENT key than
+    // the workspace buckets: same directory, three isolated scopes.
+    persistSessions(directory, [session(3, 3, "ambient")])
+    await waitForPersistence()
+    expect(readDirCache(directory, "workspace:ws-a").sessions?.map((item) => item.title)).toEqual(["workspace A"])
+    expect(readDirCache(directory).sessions?.map((item) => item.title)).toEqual(["ambient"])
+  })
+
+  test("non-workspace mode keeps the legacy-compatible key: explicit runtime-scope writes are read by the default scope", async () => {
+    const runtimeKey = getRuntimeKey()
+    persistSessions(directory, [session(1, 1, "legacy-compatible")], runtimeKey)
+    await waitForPersistence()
+
+    expect(readDirCache(directory).sessions?.map((item) => item.title)).toEqual(["legacy-compatible"])
+    expect(storage.getItem(`oc.dir.v2.${directory.slice(0, 12).replace(/[^a-zA-Z0-9]/g, "_")}.${hashCode(`${runtimeKey}\0${directory}`)}.sessions`)).not.toBeNull()
   })
 
   test("coalesces burst updates per runtime and directory while serving the latest pending value", async () => {

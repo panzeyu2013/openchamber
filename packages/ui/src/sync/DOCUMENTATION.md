@@ -81,6 +81,51 @@ Office and OpenDocument packages are metadata-validated before asynchronous extr
 
 The composer compares normalized attachment MIME types with the selected model's declared input modalities. It warns when a newly attached file or an existing attachment after a model change requires an unsupported modality, but does not block sending. Missing modality metadata remains unknown and does not produce a warning.
 
+## Sync scope (workspace full-sync)
+
+`SyncProvider` computes the sync scope once per mount:
+`scopeKey = workspaceHandle?.scopeKey ?? getRuntimeKey()`. In non-workspace
+mode the scope key is byte-identical to the ambient runtime key, so every
+key derived from it (persisted storage, prefetch cache, loader entries,
+child-store identities) is unchanged and existing persisted data stays
+readable. In workspace mode the scope is `workspaceScopeKey(workspaceId)`
+(`@/workspaces/identity`), which isolates every sync cache across servers:
+equal directory paths and equal session IDs on different workspaces never
+share state.
+
+Wiring (all in `sync-context.tsx`):
+
+- `ChildStoreManager` is constructed and configured with the scope key;
+  `child-store.ts` keys its children by `scopeKey\nnormalizedDirectory`
+  composite keys and every manager method accepts an explicit `scopeKey`
+  (defaulting to the manager's own scope — the ambient runtime key in
+  non-workspace mode). Consumers iterating child stores must use
+  `manager.entries()` (real directories), never the raw `children` map.
+- `SessionMessageLoader` is configured with `{ sdk, scopeKey }`; entry keys,
+  `invalidateDirectory` and prefetch keys use it, and its
+  `ensureChild`/`getChild` calls pass the scope explicitly.
+- `handleEvent` receives the scope key (renamed from `expectedRuntimeKey`).
+  `session.deleted` cleanup resolves the identity through
+  `resolveSessionDeletionIdentity` (workspace-scoped identities always
+  commit; ambient identities keep the stale-runtime guard).
+- Materialization requests are enqueued with the scope key.
+- The event pipeline runs with `forceSse` when a workspace handle is active:
+  the stream is the bound SDK's `global.event` SSE endpoint through the
+  workspace runtime proxy, never a WebSocket (the WS URL builder reads the
+  global runtime client; workspace WS upgrades are not wired yet).
+- Directory-scoped polls/resyncs (`resyncDirectorySessionStatuses`,
+  `discoverChildSessions`, `resyncDirectoryAfterReconnect`,
+  `resyncBlockingRequestsForDirectory`) accept the bound SDK so remote
+  workspaces poll the workspace runtime, not the ambient one.
+- `useSyncScopeKey()` exposes the scope to consumers such as `use-sync.ts`
+  (session LRU/inflight caches key by it).
+
+The workspace handle also carries `apis: RuntimeAPIs`
+(`workspace-runtime-registry.ts`): files/git/terminal route through the
+workspace runtime proxy prefix with the `x-opencode-directory` header on the
+control-plane fetch. Terminal streaming (`connect`/`sendInput`) fails
+explicitly until the workspace WebSocket upgrade lands.
+
 ## Session list rules
 
 ### Directory bootstrap scheduling

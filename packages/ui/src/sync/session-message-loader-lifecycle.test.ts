@@ -13,7 +13,7 @@ test('loads messages after a Strict Mode cleanup and effect setup', async () => 
     if (messageRequests === 1) return new Promise((resolve) => { resolveFirstRequest = resolve })
     return { data: [], response: { headers: { get: () => null } } }
   } } }
-  const loader = new SessionMessageLoader(childStores as never, { sdk: sdk as never, runtimeKey: 'runtime' })
+  const loader = new SessionMessageLoader(childStores as never, { sdk: sdk as never, scopeKey: 'runtime' })
   const firstLoad = loader.ensure({ directory: '/project', sessionID: 'session-1' })
   loader.dispose(); loader.activate(); await loader.ensure({ directory: '/project', sessionID: 'session-1' })
   resolveFirstRequest?.({ data: [], response: { headers: { get: () => null } } }); await firstLoad

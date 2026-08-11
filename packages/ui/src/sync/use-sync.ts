@@ -11,6 +11,7 @@ import {
   useSessionMessageLoader,
   useSyncDirectory,
   useSyncSDK,
+  useSyncScopeKey,
 } from "./sync-context"
 import { dropSessionCaches, getProtectedSessionCacheIds } from "./session-cache"
 import { stripSessionDiffSnapshots } from "./sanitize"
@@ -18,7 +19,6 @@ import { isVSCodeRuntime } from "@/lib/desktop"
 import { isMobileSurfaceRuntime } from "@/lib/runtimeSurface"
 import { clearSessionPrefetch } from "./session-prefetch-cache"
 import { getSessionMaterializationStatus } from "./materialization"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 
 const INITIAL_MESSAGE_PAGE_SIZE = 50
 const VSCODE_INITIAL_MESSAGE_PAGE_SIZE = 30
@@ -121,11 +121,14 @@ export function useSync() {
   const store = useDirectoryStore()
   const childStores = useChildStoreManager()
   const messageLoader = useSessionMessageLoader()
-  const runtimeKey = getRuntimeKey()
+  // Sync scope: workspace scope key in workspace mode, the ambient runtime key
+  // otherwise (byte-identical to the old `getRuntimeKey()`-based keys in
+  // non-workspace mode). Caches keyed by it never share state across workspaces.
+  const scopeKey = useSyncScopeKey()
 
   const keyFor = useCallback(
-    (sessionID: string, directoryOverride = directory) => `${runtimeKey}\n${directoryOverride}\n${sessionID}`,
-    [directory, runtimeKey],
+    (sessionID: string, directoryOverride = directory) => `${scopeKey}\n${directoryOverride}\n${sessionID}`,
+    [directory, scopeKey],
   )
 
   // Session cache eviction — two levels of LRU:
@@ -134,7 +137,7 @@ export function useSync() {
   // Evict all cached session data for given IDs from a directory's store
   const evict = useCallback(
     (dir: string, sessionIDs: string[]) => {
-      if (sessionIDs.length === 0 || getRuntimeKey() !== runtimeKey) return
+      if (sessionIDs.length === 0 || childStores.scopeKey !== scopeKey) return
       const dirStore = childStores.getChild(dir)
       if (!dirStore) return
 
@@ -158,14 +161,14 @@ export function useSync() {
       }
       clearSessionPrefetch(dir, sessionIDs)
     },
-    [childStores, messageLoader, runtimeKey],
+    [childStores, messageLoader, scopeKey],
   )
 
   // Get or create the seen-set for a directory. LRU reorder on access.
   // When seen directories exceed MAX_SEEN_DIRS, evict the oldest directory's caches.
   // LRU reorder on access. Evicts oldest directory when exceeding MAX_SEEN_DIRS.
   const seenFor = useCallback((targetDirectory: string) => {
-    const cacheKey = `${runtimeKey}\n${targetDirectory}`
+    const cacheKey = `${scopeKey}\n${targetDirectory}`
     const existing = seenByDirectory.get(cacheKey)
     if (existing) {
       // LRU reorder: delete + re-insert moves to end (most recent)
@@ -173,7 +176,7 @@ export function useSync() {
       seenByDirectory.set(cacheKey, existing)
       return existing.sessions
     }
-    const created: SeenDirectoryEntry = { runtimeKey, directory: targetDirectory, sessions: new Set() }
+    const created: SeenDirectoryEntry = { runtimeKey: scopeKey, directory: targetDirectory, sessions: new Set() }
     seenByDirectory.set(cacheKey, created)
 
     // Evict oldest directories if over limit
@@ -182,16 +185,16 @@ export function useSync() {
       if (!first) break
       const stale = seenByDirectory.get(first)
       seenByDirectory.delete(first)
-      if (stale?.runtimeKey === runtimeKey) evict(stale.directory, [...stale.sessions])
+      if (stale?.runtimeKey === scopeKey) evict(stale.directory, [...stale.sessions])
     }
 
     return created.sessions
-  }, [evict, runtimeKey])
+  }, [evict, scopeKey])
 
   // Touch a session — triggers both directory-level and session-level eviction
   const touch = useCallback(
     (sessionID: string, targetDirectory = directory) => {
-      if (getRuntimeKey() !== runtimeKey) return
+      if (childStores.scopeKey !== scopeKey) return
       const s = seenFor(targetDirectory)
       const targetStore = targetDirectory === directory
         ? store
@@ -226,13 +229,13 @@ export function useSync() {
         }
       }
     },
-    [childStores, directory, seenFor, evict, runtimeKey, store],
+    [childStores, directory, seenFor, evict, scopeKey, store],
   )
 
   // Sync a session (load if not cached)
   const syncSession = useCallback(
     async (sessionID: string, force?: boolean, directoryOverride?: string) => {
-      if (getRuntimeKey() !== runtimeKey) return
+      if (childStores.scopeKey !== scopeKey) return
       const targetDirectory = directoryOverride || directory
       touch(sessionID, targetDirectory)
       const key = keyFor(sessionID, targetDirectory)
@@ -308,7 +311,7 @@ export function useSync() {
       void promise.then(clearInflightRequest, clearInflightRequest)
       return promise
     },
-    [childStores, directory, keyFor, messageLoader, runtimeKey, sdk, store, touch],
+    [childStores, directory, keyFor, messageLoader, scopeKey, sdk, store, touch],
   )
 
   // Load more (pagination)
@@ -330,13 +333,13 @@ export function useSync() {
 
   const prefetchSession = useCallback(
     async (sessionID: string, targetDirectory: string) => {
-      if (getRuntimeKey() !== runtimeKey) return
+      if (childStores.scopeKey !== scopeKey) return
       await messageLoader.prefetch({ directory: targetDirectory, sessionID })
       if (messageLoader.getSnapshot({ directory: targetDirectory, sessionID }).status === "ready") {
         touch(sessionID, targetDirectory)
       }
     },
-    [messageLoader, runtimeKey, touch],
+    [messageLoader, scopeKey, touch],
   )
 
   const hasMore = useCallback(

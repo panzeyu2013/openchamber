@@ -279,6 +279,7 @@ function createStore(
 function createChildStores(entries: Array<[string, StoreApi<DirectoryStore>]>) {
   return {
     children: new Map(entries),
+    entries: () => [...entries],
     ensureChild: (dir: string) => {
       const store = new Map(entries).get(dir)
       if (!store) throw new Error(`No store for ${dir}`)

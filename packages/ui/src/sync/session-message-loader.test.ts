@@ -31,9 +31,9 @@ const createLoader = (messages: (input: {
   limit?: number
   before?: string
 }) => Promise<unknown>) => {
-  const childStores = new ChildStoreManager()
+  const childStores = new ChildStoreManager("runtime-a")
   const sdk = { session: { messages } } as unknown as OpencodeClient
-  const loader = new SessionMessageLoader(childStores, { sdk, runtimeKey: "runtime-a" })
+  const loader = new SessionMessageLoader(childStores, { sdk, scopeKey: "runtime-a" })
   return { childStores, loader }
 }
 
