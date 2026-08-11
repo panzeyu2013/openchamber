@@ -19,6 +19,13 @@ export const MAX_PLAINTEXT_FRAME_BYTES = 64 * 1024;
 
 // Relay-assigned WebSocket close codes (subset the host needs).
 export const RelayCloseCode = {
+  ControlReplaced: 4001,
+  DuplicateClient: 4002,
+  StuckControlReset: 4003,
+  HostUnavailable: 4008,
+  AuthFailed: 4010,
+  LimitExceeded: 4029,
+  HostWentAway: 1012,
   RekeyMismatch: 1008,
   ChannelFailure: 1011,
 };
@@ -228,6 +235,55 @@ export const base64UrlToBytes = (value) => {
     }
   }
   return out;
+};
+
+/**
+ * Client (initiator) handshake. This is the server-side mirror used by the
+ * workspace Relay adapter. The host encryption public key is supplied by the
+ * saved connection credential and is the trust anchor for the channel.
+ *
+ * @param {JsonWebKey} hostEncPubJwk
+ * @param {{ batch?: boolean }} [options]
+ */
+export const createClientHandshake = async (hostEncPubJwk, options = {}) => {
+  const localBatch = options.batch !== false;
+  const hostPublicKey = await importEcdhPublicKey(hostEncPubJwk);
+  const ephemeralKeyPair = await generateEcdhKeyPair();
+  const nonce = generateHandshakeNonce();
+  const hello = {
+    t: 'hello',
+    v: RELAY_PROTOCOL_VERSION,
+    clientPubJwk: await exportPublicKeyJwk(ephemeralKeyPair.publicKey),
+    nonce: bytesToBase64Url(nonce),
+    ...(localBatch ? { batch: true } : {}),
+  };
+  let established = false;
+  return {
+    helloText: JSON.stringify(hello),
+    get established() {
+      return established;
+    },
+    async handleText(raw) {
+      const message = parseHandshakeMessage(raw);
+      if (established) {
+        // A host may answer a retried hello after the client has already
+        // established. Duplicate ready is legal; any other plaintext is not.
+        if (message?.t === 'ready') return { type: 'ignore' };
+        return failClosed('plaintext frame on established channel');
+      }
+      if (message?.t !== 'ready') return { type: 'ignore' };
+      const keys = await deriveSessionKeys(ephemeralKeyPair.privateKey, hostPublicKey, nonce);
+      established = true;
+      return {
+        type: 'established',
+        batch: localBatch && message.batch === true,
+        channel: {
+          encryptor: createFrameEncryptor(keys.clientToHost),
+          decryptor: createFrameDecryptor(keys.hostToClient),
+        },
+      };
+    },
+  };
 };
 
 // ---------------------------------------------------------------------------

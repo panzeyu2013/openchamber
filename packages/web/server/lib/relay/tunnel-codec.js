@@ -371,3 +371,18 @@ export const createOutboundFrameBatcher = (options) => {
     },
   };
 };
+
+/** Allocates client-initiated stream ids: odd, starting at 1. */
+export const createStreamIdAllocator = () => {
+  let next = 1;
+  return {
+    next() {
+      if (next > MAX_STREAM_ID) {
+        throw new TunnelCodecError('stream id space exhausted');
+      }
+      const id = next;
+      next += 2;
+      return id;
+    },
+  };
+};

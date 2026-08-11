@@ -25,7 +25,20 @@ Host side (`packages/web/server/lib/relay/`):
 - `host-client.js` — the long-lived connection manager: one outbound control connection to the relay, a per-client data connection for each connected device, reconnect/backoff, and the E2EE responder handshake per connection.
 - `host-lock.js` — the per-machine host claim. Every local instance sharing the data dir shares the relay identity (same serverId), so concurrent relay hosts evict each other at the relay worker (`4001: Control replaced`) and paired devices land on whichever local process won last. The claim file (`<data-dir>/relay-host.lock`, `{ pid }`) makes this deterministic: `service.js` only starts the host when no LIVE process holds the claim (stale claims from dead pids are ignored), goes to `standby` otherwise, and a 30s watcher both takes over when the claimant dies and stands down when another process claims. Explicit user intent — creating a pairing link or hitting `/relay/enable` — force-claims; the previous holder's watcher sees the takeover and backs off instead of fighting. The claim is cooperative (the relay worker still enforces the single host slot); it only decides which process keeps retrying.
 - `tunnel-host.js` — the per-connection dispatcher: decrypts tunnel frames and forwards HTTP/SSE/WS to the local server over loopback, then streams responses back. Enforces a path allowlist and never injects credentials.
+- `tunnel-client.js` — the plain-JS initiator used by the server-side workspace Relay adapter. It is connection-keyed, multiplexes concurrent HTTP/SSE/WS streams, reconnects with bounded exponential backoff (never zero-delay), and closes all in-flight streams on EOF or disposal. Terminal relay close codes (auth failed, duplicate client, connection limit) are permanent: the client enters an `error` state, does not retry, and pending/new requests fail fast instead of hanging.
 - `e2ee.js`, `tunnel-codec.js` — host-side (JS) mirrors of the shared crypto and framing (see "Two implementations" below).
+
+The workspace adapter (`packages/web/server/lib/workspaces/relay-adapter.js`)
+uses the client role from `tunnel-client.js`. Its private credential provider
+resolves `relayUrl`, `serverId`, `hostEncPubJwk` and the upstream client
+credential from an opaque profile `credentialRef`; the renderer only sees the
+sanitized connection summary. HTTP/SSE credentials travel as server-side
+bearer headers. For WS, the `WsOpen` payload carries only the explicit
+auth/directory header allowlist; the tunnel host overwrites Origin and the
+relay marker before dialing loopback. A credential provider may additionally
+supply a short-lived upstream URL token, which rides the `WsOpen` query for
+servers that refuse bearer auth on WS upgrades — the control-plane
+`oc_url_token` is never forwarded upstream.
 
 Client side (`packages/ui/src/lib/relay/`):
 - `protocol.ts` — the shared contract: constants, frame types, message shapes. The normative source both implementations follow.
@@ -48,7 +61,7 @@ The host dispatcher restricts tunneled traffic to explicit path allowlists (one 
 ## Authentication model
 
 - The tunnel is **transport only**. The OpenChamber server still authenticates every tunneled request exactly as it authenticates a direct remote client. The relay path grants reachability, not authorization.
-- Clients carry their normal credential. HTTP and SSE requests authenticate with the client's bearer token (a header). **WebSocket upgrades cannot send headers**, so they authenticate with a short-lived URL-scoped token minted beforehand and passed as a query parameter. This asymmetry is important when adding new WebSocket features (see the skill).
+- Clients carry their normal credential. HTTP and SSE requests authenticate with the client's bearer token (a header). Browser WebSocket upgrades cannot send headers, so browser clients authenticate with a short-lived URL-scoped token minted beforehand and passed as a query parameter. The server-side workspace adapter may instead carry its explicit bearer/directory header allowlist in the encrypted `WsOpen` payload; this asymmetry is important when adding new WebSocket features (see the skill).
 - The host authenticates itself to the relay with a signed handshake using its long-lived signing key.
 - Enabling the relay is explicit opt-in and disabled by default; disabling it severs all relay reachability immediately.
 
@@ -91,7 +104,8 @@ Relay mode plugs into the existing client transport layer rather than a parallel
 
 - The relay never sees plaintext application traffic; it sees only routing metadata (routing id, connection identifiers, timestamps, coarse counts).
 - Pairing secrets travel in URL fragments only, never in query strings, never logged.
-- The host dispatcher never injects credentials; the server authenticates each tunneled request.
+- The host dispatcher never invents credentials; it forwards only the explicit
+  tunnel credential allowlist and the server authenticates each tunneled request.
 - The tunnel is transparent to the app: adding relay support to a feature should not require the feature to know the relay exists — it goes through the shared runtime transport helpers.
 - The two implementations stay byte-compatible and the wire format is versioned/negotiated so mixed client/host app versions degrade gracefully rather than break.
 

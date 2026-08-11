@@ -35,6 +35,17 @@ const ALLOWED_WS_PATHS = new Set([
   '/api/dictation/ws',
 ]);
 
+// WsOpen is an application payload, not a raw HTTP upgrade. Only the headers
+// required by workspace adapters are allowed through; Origin and the relay
+// connection marker are always overwritten below. In particular, clients
+// cannot smuggle Cookie, Host, or arbitrary hop-by-hop headers into loopback.
+const ALLOWED_WS_TUNNEL_HEADERS = new Set([
+  'authorization',
+  'x-opencode-directory',
+  'x-openchamber-directory',
+  'x-openchamber-directory-encoding',
+]);
+
 // Workspace-prefixed runtime sockets forwarded by the central workspace
 // upgrade dispatcher. The same exact paths as above under
 // `/api/workspaces/:workspaceId/runtime`; the loopback server authenticates
@@ -83,7 +94,11 @@ const isWsOpenPayload = (parsed) =>
   Boolean(parsed && typeof parsed === 'object'
     && typeof parsed.path === 'string'
     && typeof parsed.query === 'string'
-    && (parsed.protocols === undefined || Array.isArray(parsed.protocols)));
+    && (parsed.protocols === undefined || Array.isArray(parsed.protocols))
+    && (parsed.headers === undefined || (
+      parsed.headers && typeof parsed.headers === 'object' && !Array.isArray(parsed.headers)
+      && Object.values(parsed.headers).every((entry) => typeof entry === 'string')
+    )));
 
 const isWsClosePayload = (parsed) => Boolean(parsed && typeof parsed === 'object');
 
@@ -326,6 +341,12 @@ export const createTunnelHost = ({ connectionId, getLocalPort, sendFrame, getBuf
       'x-openchamber-relay-connection': connectionId,
       origin: `http://127.0.0.1:${getLocalPort()}`,
     };
+    for (const [name, value] of Object.entries(open.headers ?? {})) {
+      const lower = name.toLowerCase();
+      if (!ALLOWED_WS_TUNNEL_HEADERS.has(lower)) continue;
+      if (/\r|\n/.test(name) || /\r|\n/.test(value)) continue;
+      dialHeaders[lower] = value;
+    }
     let socket;
     try {
       socket = new WebSocket(url, open.protocols, {

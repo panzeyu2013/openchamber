@@ -76,6 +76,11 @@ export interface TunnelWsOpenPayload {
   path: string;
   query: string;
   protocols?: string[];
+  // Optional server-side adapter headers. Browser clients normally authenticate
+  // WS through `oc_url_token` in query; the workspace Relay adapter may carry a
+  // saved bearer credential instead. The tunnel host applies an explicit
+  // allowlist before dialing its loopback server.
+  headers?: Record<string, string>;
 }
 
 export interface TunnelWsOpenedPayload {
@@ -125,4 +130,3 @@ export const RelayCloseCode = {
   RekeyMismatch: 1008,
   ChannelFailure: 1011,
 } as const;
-

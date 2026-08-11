@@ -4,8 +4,16 @@
 
 import { describe, expect, it } from 'bun:test';
 
-import { createHostHandshake, exportPublicKeyJwk, generateEcdhKeyPair } from './e2ee.js';
-import { createClientHandshake } from '../../../../ui/src/lib/relay/handshake.ts';
+import {
+  createClientHandshake as createJsClientHandshake,
+  createHostHandshake,
+  exportPublicKeyJwk,
+  generateEcdhKeyPair,
+} from './e2ee.js';
+import {
+  createClientHandshake,
+  createHostHandshake as createTsHostHandshake,
+} from '../../../../ui/src/lib/relay/handshake.ts';
 import {
   TunnelFrameType as JsFrameType,
   decodeFrameBatch as jsDecodeBatch,
@@ -22,6 +30,24 @@ import {
 import { TunnelFrameType as TsFrameType } from '../../../../ui/src/lib/relay/protocol.ts';
 
 describe('relay JS-host <-> TS-client cross compatibility', () => {
+  it('completes the reverse handshake with a JS initiator and TS responder', async () => {
+    const hostKeys = await generateEcdhKeyPair();
+    const hostPubJwk = await exportPublicKeyJwk(hostKeys.publicKey);
+    const jsClient = await createJsClientHandshake(hostPubJwk);
+    const tsHost = createTsHostHandshake(hostKeys.privateKey);
+
+    const hostAction = await tsHost.handleText(jsClient.helloText);
+    expect(hostAction.type).toBe('established');
+    const clientAction = await jsClient.handleText(hostAction.replyText);
+    expect(clientAction.type).toBe('established');
+
+    const payload = new TextEncoder().encode('reverse handshake');
+    const decoded = await hostAction.channel.decryptor.decrypt(
+      await clientAction.channel.encryptor.encrypt(payload),
+    );
+    expect(new TextDecoder().decode(decoded)).toBe('reverse handshake');
+  });
+
   it('completes a handshake and exchanges frames both ways', async () => {
     const hostKeys = await generateEcdhKeyPair();
     const hostPubJwk = await exportPublicKeyJwk(hostKeys.publicKey);
