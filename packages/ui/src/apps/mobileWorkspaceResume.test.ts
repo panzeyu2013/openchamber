@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { setControlPlane } from '@/lib/control-plane';
 import { clearLastActiveSession, persistLastActiveSession } from '@/sync/last-session-cache';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -9,17 +9,21 @@ import { workspaceSessionKey } from '@/workspaces/identity';
 import type { WorkspaceCatalogSnapshot, WorkspaceSessionSnapshot, WorkspaceSessionSummary } from '@/workspaces/types';
 import { refreshWorkspaceStateAfterResume } from './mobileWorkspaceResume';
 
-let catalogSnapshotImpl: () => Promise<WorkspaceCatalogSnapshot> = async () => ({ schemaVersion: 1, revision: 1, connections: [], workspaces: [], migration: { legacyProjectsImported: true, pendingConnectionIds: [] } });
-let indexSnapshotImpl: () => Promise<WorkspaceSessionSnapshot> = async () => ({ revision: 1, sessions: [], freshnessByConnection: {} });
+// The clients fetch through the control-plane-pinned fetch calling the
+// global fetch at request time; stub that and route by path (never
+// mock.module, which is process-global and leaks into other suites).
+const originalFetch = globalThis.fetch;
 
-// Mock the clients at the module boundary so this file is self-contained:
-// other suites mocking the same client modules must not leak into it.
-mock.module('@/workspaces/catalog-client', () => ({
-  fetchCatalogSnapshot: async () => catalogSnapshotImpl(),
-}));
-mock.module('@/workspaces/session-index-client', () => ({
-  fetchWorkspaceSessionSnapshot: async () => indexSnapshotImpl(),
-}));
+const stubControlPlaneFetch = async (input: string | URL | Request): Promise<Response> => {
+  const raw = input instanceof Request ? input.url : String(input);
+  const path = raw.startsWith('http') ? new URL(raw).pathname : raw;
+  if (path === '/api/workspaces') return catalogBody();
+  if (path === '/api/workspace-sessions/snapshot') return indexBody();
+  return new Response(JSON.stringify({ error: 'Not found', code: 'catalog_http_error' }), {
+    status: 404,
+    headers: { 'content-type': 'application/json' },
+  });
+};
 
 const stubWindowOrigin = (origin: string): void => {
   const eventTarget = new EventTarget();
@@ -71,6 +75,7 @@ describe('refreshWorkspaceStateAfterResume', () => {
   beforeEach(() => {
     stubWindowOrigin('capacitor://localhost');
     setControlPlaneOrigin(null);
+    globalThis.fetch = stubControlPlaneFetch;
     // Establish the active runtime key so the persisted last-session entry is
     // read under the same scope the app would use.
     setControlPlane({ apiBaseUrl: 'http://192.168.1.5:3901', clientToken: null, runtimeKey: 'rt-1' });
@@ -89,16 +94,6 @@ describe('refreshWorkspaceStateAfterResume', () => {
     useSessionUIStore.getState().setCurrentSession(null);
     catalogBody = () => new Response(JSON.stringify(makeCatalogSnapshot()), { status: 200, headers: { 'content-type': 'application/json' } });
     indexBody = () => new Response(JSON.stringify(makeIndexSnapshot([])), { status: 200, headers: { 'content-type': 'application/json' } });
-    catalogSnapshotImpl = async () => {
-      const response = catalogBody();
-      if (!response.ok) throw new Error('catalog fetch failed');
-      return response.json() as Promise<WorkspaceCatalogSnapshot>;
-    };
-    indexSnapshotImpl = async () => {
-      const response = indexBody();
-      if (!response.ok) throw new Error('index fetch failed');
-      return response.json() as Promise<WorkspaceSessionSnapshot>;
-    };
   });
 
   afterEach(() => {
@@ -108,6 +103,10 @@ describe('refreshWorkspaceStateAfterResume', () => {
       value: undefined,
     });
     setControlPlaneOrigin(null);
+  });
+
+  afterAll(() => {
+    globalThis.fetch = originalFetch;
   });
 
   test('skips the workspace refresh when the control plane is unavailable', async () => {

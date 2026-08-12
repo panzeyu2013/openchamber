@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import {
   createWorkspace,
   deleteWorkspace,
@@ -33,7 +33,12 @@ const stubGlobalFetch = async (url: string | URL | Request, init?: RequestInit):
   return runtimeFetchImpl(raw, init);
 };
 
+const originalFetch = globalThis.fetch;
 globalThis.fetch = stubGlobalFetch;
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
 
 const jsonResponse = (body: unknown, status = 200): Response => (
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })

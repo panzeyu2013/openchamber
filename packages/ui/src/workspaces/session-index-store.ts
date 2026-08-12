@@ -113,7 +113,18 @@ const indexSessions = (sessions: WorkspaceSessionSummary[]) => {
   return { sessionKeys, sessionIndex };
 };
 
-export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, get) => ({
+export interface SessionIndexStoreDependencies {
+  /** Snapshot fetch seam for tests; defaults to the control-plane client. */
+  fetchSnapshot?: typeof fetchWorkspaceSessionSnapshot;
+}
+
+/** Creates an isolated session-index store. Tests create their own instance
+ * (never the shared module singleton) so suites stay hermetic; the shared
+ * singleton below keeps every production consumer unchanged. */
+export const createSessionIndexStore = (dependencies: SessionIndexStoreDependencies = {}) => {
+  const fetchSnapshot = dependencies.fetchSnapshot ?? fetchWorkspaceSessionSnapshot;
+
+  return create<SessionIndexState>()((set, get) => ({
   snapshot: null,
   status: 'idle',
   lastError: null,
@@ -128,7 +139,7 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
   refresh: async () => {
     set({ status: 'loading' });
     try {
-      const snapshot = await fetchWorkspaceSessionSnapshot();
+      const snapshot = await fetchSnapshot();
       set((state) => {
         const base = {
           status: 'ready' as const,
@@ -294,7 +305,11 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
       }));
     }
   },
-}));
+  }));
+};
+
+/** Shared singleton used by every production consumer. */
+export const useWorkspaceSessionIndexStore = createSessionIndexStore();
 
 export const selectSessionsForWorkspace = (
   snapshot: WorkspaceSessionSnapshot | null,

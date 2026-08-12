@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test';
+import { describe, expect, test } from 'bun:test';
 import type { RelayTunnelWebSocket } from '@/lib/relay/tunnel-client';
 import { createChatDraftIdentity, readChatDraft, writeChatDraft, type ChatDraftIdentity } from '@/lib/chatDraftPersistence';
 import { usePermissionStore } from '@/stores/permissionStore';
@@ -58,14 +58,14 @@ class FakeSocket implements RelayTunnelWebSocket {
 const sockets: FakeSocket[] = [];
 const openedUrls: string[] = [];
 
-mock.module('@/lib/relay/runtime-socket', () => ({
-  openRuntimeWebSocket: (url: string) => {
-    openedUrls.push(url);
-    const socket = new FakeSocket();
-    sockets.push(socket);
-    return socket;
-  },
-}));
+// Injected through the registry's openSocket seam (never mock.module, which
+// is process-global and leaks into other workspaces/sync test files).
+const testOpenSocket = (url: string): RelayTunnelWebSocket => {
+  openedUrls.push(url);
+  const socket = new FakeSocket();
+  sockets.push(socket);
+  return socket;
+};
 
 const { createWorkspaceRuntimeRegistry } = await import('./workspace-runtime-registry');
 
@@ -96,6 +96,7 @@ describe('workspace runtime terminal transport', () => {
           headers: { 'content-type': 'application/json' },
         });
       },
+      openSocket: testOpenSocket,
     });
 
     const first = registry.get(descriptor('ws-1'));
@@ -153,6 +154,7 @@ describe('workspace runtime terminal transport', () => {
           headers: { 'content-type': 'application/json' },
         });
       },
+      openSocket: testOpenSocket,
     });
     const childStores = new ChildStoreManager('ambient-runtime');
     const draftIdentities: ChatDraftIdentity[] = [];

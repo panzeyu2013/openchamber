@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, test } from 'bun:test';
+import { afterAll, beforeEach, describe, expect, test } from 'bun:test';
 import { useWorkspaceCatalogStore } from './catalog-store';
 import {
   CatalogClientError,
@@ -61,7 +61,12 @@ const stubControlPlaneFetch = async (input: string | URL | Request, init?: Reque
   return jsonResponse({ error: 'Not found', code: 'catalog_http_error' }, 404);
 };
 
+const originalFetch = globalThis.fetch;
 globalThis.fetch = stubControlPlaneFetch;
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
 
 const makeDescriptor = (id: string, overrides: Partial<WorkspaceDescriptor> = {}): WorkspaceDescriptor => ({
   id,

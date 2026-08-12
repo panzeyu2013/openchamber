@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createEventPipeline } from '../event-pipeline';
+import { clearRuntimeUrlAuthToken, setRuntimeUrlAuthToken } from '@/lib/runtime-auth';
 
 const originalDocument = globalThis.document;
 const originalWindow = globalThis.window;
@@ -54,11 +55,18 @@ class FakeWebSocket {
   }
 }
 
+beforeEach(() => {
+  // The ws transport mints a URL auth token before connecting; a pre-seeded
+  // valid token skips the network mint so FakeWebSocket is reached.
+  setRuntimeUrlAuthToken('test-token', Date.now() + 60_000);
+});
+
 afterEach(() => {
   globalThis.document = originalDocument;
   globalThis.window = originalWindow;
   globalThis.WebSocket = originalWebSocket;
   FakeWebSocket.instances = [];
+  clearRuntimeUrlAuthToken();
 });
 
 function createSdkWithSingleEvent(event, hold) {

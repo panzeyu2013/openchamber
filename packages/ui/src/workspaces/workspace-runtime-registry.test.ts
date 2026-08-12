@@ -184,4 +184,15 @@ describe('workspace runtime registry', () => {
     expect(registry.get(descriptor('ws-3'))).toBe(third);
     expect(sdkCalls).toHaveLength(4);
   });
+
+  test('the default MAX_RETAINED_HANDLES of 8 bounds retained handles', async () => {
+    registry = createWorkspaceRuntimeRegistry({ createSdkClient: fakeCreateSdkClient });
+    const handles = Array.from({ length: 9 }, (_, index) => registry!.get(descriptor(`ws-${index + 1}`)));
+    await sleep(10);
+    expect(registry.get(descriptor('ws-1'))).not.toBe(handles[0]);
+    for (let index = 1; index < handles.length; index += 1) {
+      expect(registry.get(descriptor(`ws-${index + 1}`))).toBe(handles[index]);
+    }
+    expect(sdkCalls).toHaveLength(10);
+  });
 });

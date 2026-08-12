@@ -1,5 +1,5 @@
 import { createOpencodeServiceForSdk, createWorkspaceOpencodeClient } from '@/lib/opencode/client';
-import { openRuntimeWebSocket } from '@/lib/relay/runtime-socket';
+import { openRuntimeWebSocket, type RelayTunnelWebSocket } from '@/lib/relay/runtime-socket';
 import { TerminalTransport } from '@/lib/terminalApi';
 import { withRuntimeUrlAuthToken } from '@/lib/runtime-url';
 import { createControlPlaneFetch, getPinnedControlPlaneBaseUrl } from './control-plane-fetch';
@@ -382,6 +382,7 @@ const createWorkspaceTerminalSocketUrl = (workspaceId: WorkspaceId, token: strin
 const createWorkspaceTerminalTransport = (
   workspaceId: WorkspaceId,
   controlPlaneFetch: typeof fetch,
+  openSocket: (url: string, protocols?: string[]) => RelayTunnelWebSocket,
 ): TerminalTransport => {
   let token = '';
   let expiresAt = 0;
@@ -425,7 +426,7 @@ const createWorkspaceTerminalTransport = (
 
   return new TerminalTransport({
     refreshAuth,
-    openSocket: () => openRuntimeWebSocket(createWorkspaceTerminalSocketUrl(workspaceId, token)),
+    openSocket: () => openSocket(createWorkspaceTerminalSocketUrl(workspaceId, token)),
     clearUrlAuthToken: clearToken,
   });
 };
@@ -434,8 +435,9 @@ const createWorkspaceTerminalApi = (
   workspaceId: WorkspaceId,
   apiFetch: WorkspaceApiFetch,
   controlPlaneFetch: typeof fetch,
+  openSocket: (url: string, protocols?: string[]) => RelayTunnelWebSocket,
 ): WorkspaceTerminalApiBundle => {
-  const transport = createWorkspaceTerminalTransport(workspaceId, controlPlaneFetch);
+  const transport = createWorkspaceTerminalTransport(workspaceId, controlPlaneFetch, openSocket);
   const command = async (path: string, method: string, body?: unknown): Promise<Response> => {
     const init: RequestInit = { method };
     if (body !== undefined) {
@@ -709,9 +711,10 @@ const createWorkspaceRuntimeApis = (
   workspaceId: WorkspaceId,
   directory: string,
   controlPlaneFetch: typeof fetch,
+  openSocket: (url: string, protocols?: string[]) => RelayTunnelWebSocket,
 ): { apis: RuntimeAPIs; dispose: () => void } => {
   const apiFetch = createWorkspaceApiFetch(workspaceId, directory, controlPlaneFetch);
-  const terminal = createWorkspaceTerminalApi(workspaceId, apiFetch, controlPlaneFetch);
+  const terminal = createWorkspaceTerminalApi(workspaceId, apiFetch, controlPlaneFetch, openSocket);
   return {
     apis: {
       runtime: { platform: 'web', isDesktop: false, isVSCode: false, label: `workspace:${workspaceId}` },
@@ -743,12 +746,16 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
   disposeGraceMs?: number;
   /** Pinned fetch seam for focused workspace transport tests. */
   controlPlaneFetch?: typeof fetch;
+  /** Socket-open seam for terminal transport tests; defaults to the runtime
+   * socket (relay tunnel or browser WebSocket). */
+  openSocket?: (url: string, protocols?: string[]) => RelayTunnelWebSocket;
   /** SDK factory seam for tests; defaults to the workspace-bound SDK
    * factory on the control-plane pinned fetch. */
   createSdkClient?: (config: { baseUrl: string; directory: string; fetch?: typeof fetch }) => unknown;
 } = {}): WorkspaceRuntimeRegistry => {
   const maxRetained = dependencies.maxRetained ?? MAX_RETAINED_HANDLES;
   const disposeGraceMs = dependencies.disposeGraceMs ?? DISPOSE_GRACE_MS;
+  const openSocket = dependencies.openSocket ?? openRuntimeWebSocket;
   const createSdkClient = dependencies.createSdkClient ?? ((config: { baseUrl: string; directory: string; fetch?: typeof fetch }) => (
     createWorkspaceOpencodeClient(config as { baseUrl: string; directory: string })
   ));
@@ -808,7 +815,7 @@ export const createWorkspaceRuntimeRegistry = (dependencies: {
         fetch: controlPlaneFetch,
       }),
     });
-    const workspaceApis = createWorkspaceRuntimeApis(workspace.id, workspace.canonicalPath, controlPlaneFetch);
+    const workspaceApis = createWorkspaceRuntimeApis(workspace.id, workspace.canonicalPath, controlPlaneFetch, openSocket);
     const handle: WorkspaceRuntimeHandle = {
       workspaceId: workspace.id,
       scopeKey: workspaceScopeKey(workspace.id),

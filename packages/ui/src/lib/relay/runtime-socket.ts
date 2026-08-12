@@ -9,7 +9,10 @@
 
 import { getActiveRelayTunnel } from './runtime-tunnel';
 import { wsUrlToTunnelPath } from './tunnel-payloads';
-import { wrapBrowserWebSocket, type RelayTunnelWebSocket } from './tunnel-client';
+import { wrapBrowserWebSocket } from './tunnel-client';
+import type { RelayTunnelWebSocket } from './tunnel-client';
+
+export type { RelayTunnelWebSocket } from './tunnel-client';
 
 export const openRuntimeWebSocket = (url: string, protocols?: string[]): RelayTunnelWebSocket => {
   const relay = getActiveRelayTunnel();

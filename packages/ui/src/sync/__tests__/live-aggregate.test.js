@@ -124,7 +124,9 @@ describe('live aggregate', () => {
 
     const recent = deriveRecentSessions(sessions, new Set(), now)
 
-    // ses-3 archived, ses-4 subtask, ses-5 older than 48h -> excluded; rest newest-first
-    expect(recent.map((item) => item.id)).toEqual(['ses-2', 'ses-1'])
+    // ses-3 archived, ses-4 subtask, ses-5 older than 48h -> excluded;
+    // filtering preserves input order; the caller applies newest-first
+    // lifecycle ordering after this membership filter.
+    expect(recent.map((item) => item.id)).toEqual(['ses-1', 'ses-2'])
   })
 })

@@ -1,14 +1,17 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { getRuntimeUrlResolver, setRuntimeUrlResolver, type RuntimeUrlResolver } from './runtime-url';
 
-mock.module('./runtime-url', () => ({
-  getRuntimeUrlResolver: () => ({ sse: (path: string) => `http://runtime.test${path}` }),
-}));
+const originalResolver = getRuntimeUrlResolver();
 
-const realControlPlane = await import('./control-plane');
-mock.module('./control-plane', () => ({
-  ...realControlPlane,
-  subscribeControlPlaneChanged: () => () => undefined,
-}));
+const testResolver: RuntimeUrlResolver = {
+  api: (path: string) => path,
+  authenticatedAsset: (path: string) => path,
+  auth: (path: string) => path,
+  health: () => '/api/health',
+  rawFile: (path: string) => path,
+  sse: (path: string) => `http://runtime.test${path}`,
+  websocket: (path: string) => path,
+};
 
 class MockEventSource {
   static CLOSED = 2;
@@ -31,13 +34,20 @@ class MockEventSource {
 describe('openchamber events', () => {
   beforeEach(() => {
     MockEventSource.instances = [];
-    globalThis.window = {} as Window & typeof globalThis;
+    const eventTarget = new EventTarget();
+    globalThis.window = {
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.addEventListener(type, listener),
+      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => eventTarget.removeEventListener(type, listener),
+      dispatchEvent: (event: Event) => eventTarget.dispatchEvent(event),
+    } as Window & typeof globalThis;
     globalThis.EventSource = MockEventSource as unknown as typeof EventSource;
+    setRuntimeUrlResolver(testResolver);
   });
 
   afterEach(() => {
     delete (globalThis as { window?: unknown }).window;
     delete (globalThis as { EventSource?: unknown }).EventSource;
+    setRuntimeUrlResolver(originalResolver);
   });
 
   test('dispatches externally created session events', async () => {

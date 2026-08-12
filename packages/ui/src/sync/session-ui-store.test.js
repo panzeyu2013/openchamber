@@ -10,6 +10,7 @@ import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { getSyncScopeKey } from './sync-refs';
+import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 
 /**
  * Unit tests for session worktree routing through the authoritative store.
@@ -466,6 +467,38 @@ describe('openNewSessionDraft project binding', () => {
 
     expect(useSessionUIStore.getState().newSessionDraft.directoryOverride).toBe('/workspace-draft/final');
     expect(useDirectoryStore.getState().currentDirectory).toBe(before);
+  });
+
+  test('promotes the unscoped legacy draft target into the current scope on first read', () => {
+    // The fallback project is projectB, so a non-promoted legacy read would
+    // resolve to projectB: projectA below proves the promoted value won.
+    useProjectsStore.setState({ activeProjectId: projectB.id });
+    const storage = getDeferredSafeStorage();
+    // Clear draft-target keys written by earlier tests in this describe block.
+    storage.clear();
+    const legacyKey = 'oc.chatInput.lastDraftTarget';
+    try {
+      storage.setItem(legacyKey, JSON.stringify({ projectId: projectA.id, directory: projectA.path }));
+      useDirectoryStore.setState({ currentDirectory: null });
+
+      useSessionUIStore.getState().openNewSessionDraft();
+      let draft = useSessionUIStore.getState().newSessionDraft;
+      expect(draft.selectedProjectId).toBe(projectA.id);
+      expect(draft.directoryOverride).toBe(projectA.path);
+
+      // The value was promoted into the scope key on read: dropping the
+      // legacy key must not change the next read, and the legacy key itself
+      // is kept for downgrade compatibility.
+      storage.removeItem(legacyKey);
+      expect(storage.getItem(legacyKey)).toBeNull();
+      useSessionUIStore.setState({ newSessionDraft: { open: false, directoryOverride: null, parentID: null } });
+      useSessionUIStore.getState().openNewSessionDraft();
+      draft = useSessionUIStore.getState().newSessionDraft;
+      expect(draft.selectedProjectId).toBe(projectA.id);
+      expect(draft.directoryOverride).toBe(projectA.path);
+    } finally {
+      storage.removeItem(legacyKey);
+    }
   });
 });
 
