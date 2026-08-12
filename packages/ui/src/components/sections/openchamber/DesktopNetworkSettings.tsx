@@ -17,7 +17,7 @@ import {
 } from '@/lib/desktop';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import {
   SettingsSection,
   SettingsCheckboxRow,
@@ -204,7 +204,7 @@ export const DesktopNetworkSettings: React.FC = () => {
       return null;
     }
 
-    const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+    const runtimeApiBaseUrl = getControlPlaneBaseUrl();
     const portSource = runtimeApiBaseUrl || window.location.href;
     let parsed = 0;
     try {

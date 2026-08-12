@@ -35,7 +35,7 @@ import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { opencodeClient } from '@/lib/opencode/client';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { getControlPlaneKey, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { resumeAutoReviewRun } from '@/lib/reviewFlow';
 import { SyncProvider, useSyncDirectory } from '@/sync/sync-context';
@@ -43,6 +43,7 @@ import { useSync } from '@/sync/use-sync';
 import { WorkspaceRuntimeGate, WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
 import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
 import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { WorkspaceSessionsSection } from '@/components/session/sidebar/WorkspaceSessionsSection';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { AboutDialog } from '@/components/ui/AboutDialog';
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
@@ -59,7 +60,8 @@ import { useI18n } from '@/lib/i18n';
 import { applyMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
 import { SyncAppEffects, WorkspaceCatalogSessionIndexEffects } from '@/apps/AppEffects';
-import { resetAppForRuntimeEndpointChange } from '@/apps/runtimeEndpointReset';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
 import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
 import { markStartupTrace, startupTraceEnabled } from '@/lib/startupTrace';
@@ -181,7 +183,7 @@ const EmbeddedSessionChatContent: React.FC<{
     // active — allows in-place navigation (e.g. "Open subtask") to change
     // currentSessionId without this effect forcing it back. Only re-bootstrap
     // when currentSessionId was cleared (store init, draft, delete/archive,
-    // runtime-switch remount).
+    // control-plane-change remount).
     if (bootstrapKeyRef.current === bootstrapKey && currentSessionId) {
       return;
     }
@@ -226,22 +228,20 @@ const EmbeddedSessionChatRuntime: React.FC<{
   apis: RuntimeAPIs;
 }> = ({ embeddedSessionChat, isVSCodeRuntime, embeddedBackgroundWorkEnabled, runtimeEndpointEpoch, apis }) => {
   const { handle } = useWorkspaceRuntime();
-  const ambientDirectory = useDirectoryStore((state) => state.currentDirectory);
   const workspaceId = embeddedSessionChat.workspaceId;
 
   if (workspaceId && !handle) {
     return <WorkspaceRuntimeGate />;
   }
-
-  const directory = workspaceId
-    ? embeddedSessionChat.directory || handle?.directory || ''
-    : ambientDirectory || '';
+  if (!handle) {
+    // No workspace identity for this embedded frame: there is no ambient
+    // sync to fall back to, so render the explicit unavailable state.
+    return <WorkspaceRuntimeGate />;
+  }
 
   return (
     <SyncProvider
       key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
-      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
-      directory={directory}
       workspaceHandle={handle}
     >
       <RuntimeAPIProvider apis={apis}>
@@ -264,22 +264,39 @@ const EmbeddedSessionChatRuntime: React.FC<{
 // the control-plane workspace prefix + workspace directory) and the tree is
 // keyed by workspaceId, so switching workspaces remounts the sync WITHOUT a
 // global runtime switch and without touching other workspaces' state. With no
-// workspace selected the legacy ambient-runtime path is preserved exactly.
+// workspace selected the sync surface shows the workspace selection gate: the
+// unified sidebar is index-driven and needs no ambient sync.
+const WorkspaceSyncGate: React.FC = () => {
+  const { t } = useI18n();
+  const catalogStatus = useWorkspaceCatalogStore((state) => state.status);
+  const catalogSnapshot = useWorkspaceCatalogStore((state) => state.snapshot);
+  if (catalogStatus === 'idle' || catalogStatus === 'loading' || !catalogSnapshot) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background px-4 text-center text-sm text-muted-foreground">
+        {t('common.loading')}
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full items-start justify-center overflow-y-auto bg-background px-4 pt-16">
+      <div className="w-full max-w-md">
+        <WorkspaceSessionsSection />
+      </div>
+    </div>
+  );
+};
+
 const WorkspaceSyncMount: React.FC<{
   runtimeEndpointEpoch: number;
-  directory: string;
   children: React.ReactNode;
-}> = ({ runtimeEndpointEpoch, directory, children }) => {
+}> = ({ runtimeEndpointEpoch, children }) => {
   const { handle } = useWorkspaceRuntime();
-  const workspaceId = useActiveWorkspaceId();
-  if (workspaceId && !handle) {
-    return <WorkspaceRuntimeGate />;
+  if (!handle) {
+    return <WorkspaceSyncGate />;
   }
   return (
     <SyncProvider
-      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
-      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
-      directory={directory}
+      key={`${runtimeEndpointEpoch}:${handle.workspaceId}`}
       workspaceHandle={handle}
     >
       {children}
@@ -350,7 +367,7 @@ function App({ apis }: AppProps) {
   }, [apis.runtime.isVSCode]);
 
   React.useEffect(() => {
-    return subscribeRuntimeEndpointChanged((detail) => {
+    return subscribeControlPlaneChanged(() => {
       // Workspace sessions are bound to the pinned control plane and their
       // handle does not follow the legacy active-runtime endpoint. A Host
       // Switcher event must therefore not reset/remount the workspace sync
@@ -359,7 +376,12 @@ function App({ apis }: AppProps) {
       if (activeWorkspaceId || embeddedSessionChat?.workspaceId) {
         return;
       }
-      resetAppForRuntimeEndpointChange(detail);
+      // Narrow control-plane bootstrap: re-fetch the control-plane-owned
+      // catalog + session index through the existing store refresh paths.
+      // Workspace-scoped session stores are NEVER cleared — a failed refresh
+      // keeps the prior snapshot (the stores signal failure, not empty success).
+      void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
+      void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
       setRuntimeEndpointEpoch((epoch) => epoch + 1);
       setInitRetryExhausted(false);
       setInitRetryEpoch((epoch) => epoch + 1);
@@ -367,7 +389,7 @@ function App({ apis }: AppProps) {
   }, [activeWorkspaceId, embeddedSessionChat?.workspaceId]);
 
   const autoReviewResumeSignature = useAutoReviewStore((state) => {
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getControlPlaneKey();
     return Object.values(state.runsByOriginalSessionID)
       .filter((run) => run.status === 'running' && run.runtimeKey === runtimeKey)
       .map((run) => `${run.originalSessionID}:${run.phase}:${run.lastForwardedMessageID ?? ''}:${run.expectedAssistantParentID ?? ''}`)
@@ -380,7 +402,7 @@ function App({ apis }: AppProps) {
       return;
     }
 
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getControlPlaneKey();
     const runs = Object.values(useAutoReviewStore.getState().runsByOriginalSessionID)
       .filter((run) => run.status === 'running' && run.runtimeKey === runtimeKey);
     for (const run of runs) {
@@ -1028,7 +1050,7 @@ function App({ apis }: AppProps) {
     <ErrorBoundary>
       <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
         <WorkspaceCatalogSessionIndexEffects />
-        <WorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch} directory={currentDirectory || ''}>
+        <WorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch}>
           <RuntimeAPIProvider apis={apis}>
             <FireworksProvider>
                 <TooltipProvider delayDuration={300} skipDelayDuration={150}>

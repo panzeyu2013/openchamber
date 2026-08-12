@@ -1,6 +1,6 @@
 import { useUIStore } from '@/stores/useUIStore';
 import { updateDesktopSettings } from '@/lib/persistence';
-import { getRuntimeKey, subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
+import { getControlPlaneKey, subscribeControlPlaneWillChange } from '@/lib/control-plane';
 
 type ModelRef = { providerID: string; modelID: string };
 type ModelPrefsPayload = {
@@ -82,7 +82,7 @@ export const startModelPrefsAutoSave = () => {
     timer = null;
     const runtimeKey = scheduledRuntimeKey;
     scheduledRuntimeKey = null;
-    if (!runtimeKey || runtimeKey !== getRuntimeKey()) return;
+    if (!runtimeKey || runtimeKey !== getControlPlaneKey()) return;
     const payload = snapshotModelPrefs();
 
     if (lastSent && modelPrefsEqual(lastSent, payload)) {
@@ -102,11 +102,11 @@ export const startModelPrefsAutoSave = () => {
     if (timer !== null) {
       window.clearTimeout(timer);
     }
-    scheduledRuntimeKey = getRuntimeKey();
+    scheduledRuntimeKey = getControlPlaneKey();
     timer = window.setTimeout(flush, 1200);
   };
 
-  const unsubscribeRuntime = subscribeRuntimeEndpointWillChange(() => {
+  const unsubscribeRuntime = subscribeControlPlaneWillChange(() => {
     if (timer !== null) window.clearTimeout(timer);
     timer = null;
     scheduledRuntimeKey = null;

@@ -1,6 +1,5 @@
 import type { DesktopSettings } from '@/lib/desktop';
 import { sanitizeWorkStatusHiddenSections } from '@/components/chat/work-status/sections';
-import { createProjectIdFromPath } from '@/lib/projectId';
 import { useUIStore } from '@/stores/useUIStore';
 import { isMonoFontOption, isUiFontOption } from '@/lib/fontOptions';
 import {
@@ -18,7 +17,7 @@ import { sanitizeStarterRefs } from '@/lib/draftStarters';
 import { normalizeMobileKeyboardMode, setStoredMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { isTerminalShell } from '@/lib/terminalShell';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged, subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
+import { getControlPlaneKey, subscribeControlPlaneChanged, subscribeControlPlaneWillChange } from '@/lib/control-plane';
 import { DEFAULT_DARK_THEME_ID, DEFAULT_LIGHT_THEME_ID } from '@/lib/theme/themes';
 import { DEFAULT_OPEN_IN_APP_ID } from '@/lib/openInApps';
 
@@ -99,7 +98,7 @@ const persistToLocalStorage = (settings: DesktopSettings) => {
     return;
   }
 
-  persistRuntimeSettingsMirror(settings, getRuntimeKey());
+  persistRuntimeSettingsMirror(settings, getControlPlaneKey());
   setOrRemoveLocalStorage('selectedThemeId', settings.themeId || null);
   setOrRemoveLocalStorage('selectedThemeVariant', settings.themeVariant || null);
   setOrRemoveLocalStorage('lightThemeId', settings.lightThemeId || null);
@@ -374,7 +373,11 @@ const sanitizeProjects = (value: unknown): DesktopSettings['projects'] | undefin
     const normalizedPath = rawPath === '/' ? rawPath : rawPath.replace(/\\/g, '/').replace(/\/+$/, '');
     if (!normalizedPath) continue;
 
-    const id = createProjectIdFromPath(normalizedPath);
+    // The project id arrives from the Catalog projection (workspace id) or
+    // the legacy settings surface; it is never re-derived from the path here.
+    const id = typeof candidate.id === 'string' && candidate.id.trim().length > 0
+      ? candidate.id.trim()
+      : normalizedPath;
     if (!id) continue;
 
     if (seenIds.has(id) || seenPaths.has(normalizedPath)) continue;
@@ -1634,7 +1637,7 @@ const SETTINGS_CACHE_TTL = 2_000; // 2 seconds — covers the startup burst
 const SETTINGS_DEBOUNCE_MS = 200;
 
 const captureSettingsRuntimeContext = (): SettingsRuntimeContext => ({
-  runtimeKey: getRuntimeKey(),
+  runtimeKey: getControlPlaneKey(),
   generation: _settingsRuntimeGeneration,
 });
 
@@ -1643,19 +1646,19 @@ const isSameSettingsRuntimeContext = (left: SettingsRuntimeContext, right: Setti
 );
 
 const isSettingsRuntimeContextCurrent = (context: SettingsRuntimeContext): boolean => (
-  context.generation === _settingsRuntimeGeneration && context.runtimeKey === getRuntimeKey()
+  context.generation === _settingsRuntimeGeneration && context.runtimeKey === getControlPlaneKey()
 );
 
 const ensureSettingsRuntimeLifecycle = (): void => {
   if (_settingsLifecycleInitialized || typeof window === 'undefined') return;
   _settingsLifecycleInitialized = true;
 
-  subscribeRuntimeEndpointWillChange((detail) => {
+  subscribeControlPlaneWillChange((detail) => {
     if (detail.runtimeKey === detail.previousRuntimeKey) return;
     if (_settingsFlushTimer) clearTimeout(_settingsFlushTimer);
     if (_pendingSettingsChanges) void _flushSettingsUpdate();
   });
-  subscribeRuntimeEndpointChanged((detail) => {
+  subscribeControlPlaneChanged((detail) => {
     if (detail.runtimeKey === detail.previousRuntimeKey) return;
     _settingsRuntimeGeneration += 1;
     _settingsCache = null;

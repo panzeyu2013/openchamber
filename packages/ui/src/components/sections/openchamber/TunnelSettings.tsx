@@ -13,7 +13,7 @@ import { updateDesktopSettings } from '@/lib/persistence';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { openExternalUrl } from '@/lib/url';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import { formatTimeForPreference } from '@/lib/timeFormat';
 import { useUIStore, type TimeFormatPreference } from '@/stores/useUIStore';
 import { SettingsSection, SettingsGroupTitle, SETTINGS_SELECT_SIZE, SETTINGS_FIELD_LABEL_CLASS, SETTINGS_CALLOUT_TITLE_CLASS } from '@/components/sections/shared/SettingsSection';
@@ -450,7 +450,7 @@ export const TunnelSettings: React.FC = () => {
     if (typeof window === 'undefined') {
       return null;
     }
-    const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+    const runtimeApiBaseUrl = getControlPlaneBaseUrl();
     const portSource = runtimeApiBaseUrl || window.location.href;
     let parsed = 0;
     try {

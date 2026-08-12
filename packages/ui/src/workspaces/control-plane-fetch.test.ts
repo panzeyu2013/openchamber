@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
   CONTROL_PLANE_UNAVAILABLE_CODE,
   createControlPlaneFetch,
-  getControlPlaneBaseUrl,
   getControlPlaneOrigin,
+  getPinnedControlPlaneBaseUrl,
   isControlPlaneAvailable,
   setControlPlaneOrigin,
 } from './control-plane-fetch';
 import { setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
-import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { setControlPlane } from '@/lib/control-plane';
 
 type TestWindow = {
   location: { origin: string };
@@ -69,7 +69,7 @@ describe('control-plane-fetch pinning', () => {
 
   test('does not follow the active remote runtime', async () => {
     // Active runtime is a REMOTE server; the catalog must stay local.
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://active-remote.example', clientToken: 'remote-token', runtimeKey: 'host:remote' });
+    setControlPlane({ apiBaseUrl: 'https://active-remote.example', clientToken: 'remote-token', runtimeKey: 'host:remote' });
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('https://cp.example/api/workspaces');
@@ -80,7 +80,7 @@ describe('control-plane-fetch pinning', () => {
   });
 
   test('attaches the bearer when the active runtime IS the control plane', async () => {
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://cp.example', clientToken: 'cp-token', runtimeKey: 'local' });
+    setControlPlane({ apiBaseUrl: 'https://cp.example', clientToken: 'cp-token', runtimeKey: 'local' });
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('https://cp.example/api/workspaces');
@@ -110,7 +110,7 @@ describe('control-plane-fetch pinning', () => {
 
   test('prefers the injected local origin on desktop', async () => {
     stubWindowOrigin('openchamber-ui://localhost', 'http://127.0.0.1:3901');
-    switchRuntimeEndpoint({ apiBaseUrl: 'http://127.0.0.1:3901', clientToken: 'local-token', runtimeKey: 'local' });
+    setControlPlane({ apiBaseUrl: 'http://127.0.0.1:3901', clientToken: 'local-token', runtimeKey: 'local' });
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('http://127.0.0.1:3901/api/workspaces');
@@ -118,7 +118,7 @@ describe('control-plane-fetch pinning', () => {
 
   test('keeps a deployment path prefix on the control plane', async () => {
     stubWindowOrigin('https://host.example');
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://host.example/chamber', clientToken: 'tok', runtimeKey: 'local' });
+    setControlPlane({ apiBaseUrl: 'https://host.example/chamber', clientToken: 'tok', runtimeKey: 'local' });
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('https://host.example/chamber/api/workspaces');
@@ -126,15 +126,15 @@ describe('control-plane-fetch pinning', () => {
 
   test('base resolution falls back to the window origin', () => {
     stubWindowOrigin('https://web.example');
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://active-remote.example', runtimeKey: 'host:remote' });
-    expect(getControlPlaneBaseUrl()).toBe('https://web.example');
+    setControlPlane({ apiBaseUrl: 'https://active-remote.example', runtimeKey: 'host:remote' });
+    expect(getPinnedControlPlaneBaseUrl()).toBe('https://web.example');
   });
 
   test('an explicitly injected origin wins over every other source', async () => {
     stubWindowOrigin('capacitor://localhost', 'http://127.0.0.1:3901');
     setControlPlaneOrigin('https://mobile-control-plane.example/');
     expect(getControlPlaneOrigin()).toBe('https://mobile-control-plane.example');
-    expect(getControlPlaneBaseUrl()).toBe('https://mobile-control-plane.example');
+    expect(getPinnedControlPlaneBaseUrl()).toBe('https://mobile-control-plane.example');
     const fetchPinned = createControlPlaneFetch();
     await fetchPinned('/api/workspaces');
     expect(captured[0].url).toBe('https://mobile-control-plane.example/api/workspaces');
@@ -145,7 +145,7 @@ describe('control-plane-fetch pinning', () => {
     setControlPlaneOrigin('http://192.168.1.5:3901');
     setControlPlaneOrigin(null);
     expect(getControlPlaneOrigin()).toBeNull();
-    expect(getControlPlaneBaseUrl()).toBe('capacitor://localhost');
+    expect(getPinnedControlPlaneBaseUrl()).toBe('capacitor://localhost');
   });
 
   test('non-http window origins answer control_plane_unavailable without dispatching', async () => {
@@ -176,7 +176,7 @@ describe('control-plane-fetch pinning', () => {
     expect(isControlPlaneAvailable()).toBe(false);
     setControlPlaneOrigin('http://192.168.1.5:3901');
     expect(isControlPlaneAvailable()).toBe(true);
-    expect(getControlPlaneBaseUrl()).toBe('http://192.168.1.5:3901');
+    expect(getPinnedControlPlaneBaseUrl()).toBe('http://192.168.1.5:3901');
   });
 
   test('desktop injection keeps the control plane available on a virtual origin', () => {

@@ -63,7 +63,7 @@ import { SettingsInfoHint } from '@/components/sections/shared/SettingsInfoHint'
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import type { TerminalShellOption } from '@/lib/api/types';
 import { isTerminalShell } from '@/lib/terminalShell';
-import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { subscribeControlPlaneChanged } from '@/lib/control-plane';
 
 interface Option<T extends string> {
     id: T;
@@ -702,7 +702,7 @@ export const OpenChamberVisualSettings: React.FC<OpenChamberVisualSettingsProps>
     const showTerminalShellSetting = (shouldShow('terminalShell') || shouldShow('terminalLoginShell')) && !isVSCode;
     const [availableTerminalShells, setAvailableTerminalShells] = React.useState<TerminalShellOption[]>([]);
     const [terminalShellRuntimeEpoch, setTerminalShellRuntimeEpoch] = React.useState(0);
-    React.useEffect(() => subscribeRuntimeEndpointChanged(() => {
+    React.useEffect(() => subscribeControlPlaneChanged(() => {
         setAvailableTerminalShells([]);
         setTerminalShellRuntimeEpoch((epoch) => epoch + 1);
     }), []);

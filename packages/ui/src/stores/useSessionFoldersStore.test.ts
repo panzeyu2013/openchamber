@@ -40,11 +40,13 @@ mock.module('@/lib/desktop', () => ({
 mock.module('@/lib/runtime-fetch', () => ({
   runtimeFetch: mock(async () => new Response(JSON.stringify(diskResponseBody), { headers: { 'Content-Type': 'application/json' } })),
 }));
-mock.module('@/lib/runtime-switch', () => ({
-  getRuntimeKey: () => runtimeKey,
-  getRuntimeApiBaseUrl: () => '',
-  getRuntimeBearerTokenSync: () => '',
-  getRuntimeExtraHeadersSync: () => undefined,
+const realControlPlane = await import('@/lib/control-plane');
+mock.module('@/lib/control-plane', () => ({
+  ...realControlPlane,
+  getControlPlaneKey: () => runtimeKey,
+  getControlPlaneBaseUrl: () => '',
+  getControlPlaneBearerTokenSync: () => '',
+  getControlPlaneExtraHeadersSync: () => undefined,
 }));
 
 const { useSessionFoldersStore } = await import('./useSessionFoldersStore');
@@ -57,7 +59,7 @@ describe('useSessionFoldersStore folder assignments', () => {
     storageSetCount = 0;
     runtimeKey = 'runtime-a';
     diskResponseBody = { version: 1, exists: false };
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     useSessionFoldersStore.setState({
       foldersMap: {},
       collapsedFolderIds: new Set<string>(),
@@ -99,13 +101,13 @@ describe('useSessionFoldersStore folder assignments', () => {
     await waitForPersist();
 
     runtimeKey = 'runtime-b';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     expect(useSessionFoldersStore.getState().getFoldersForScope('/workspace/project')).toEqual([]);
     useSessionFoldersStore.getState().createFolder('/workspace/project', 'Runtime B');
     await waitForPersist();
 
     runtimeKey = 'runtime-a';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     expect(useSessionFoldersStore.getState().getFoldersForScope('/workspace/project').map((folder) => folder.name)).toEqual(['Runtime A']);
   });
 
@@ -113,9 +115,9 @@ describe('useSessionFoldersStore folder assignments', () => {
     useSessionFoldersStore.getState().createFolder('/workspace/project', 'Runtime A pending');
 
     runtimeKey = 'runtime-b';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     runtimeKey = 'runtime-a';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
 
     expect(useSessionFoldersStore.getState().getFoldersForScope('/workspace/project').map((folder) => folder.name)).toEqual(['Runtime A pending']);
   });
@@ -123,9 +125,9 @@ describe('useSessionFoldersStore folder assignments', () => {
   test('does not replace browser folders when the server has no disk snapshot', async () => {
     useSessionFoldersStore.getState().createFolder('/workspace/project', 'Browser folder');
     runtimeKey = 'runtime-b';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     runtimeKey = 'runtime-a';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
 
     await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -135,12 +137,12 @@ describe('useSessionFoldersStore folder assignments', () => {
   test('does not silently evict folder state from older runtimes', () => {
     for (let index = 0; index < 10; index += 1) {
       runtimeKey = `runtime-${index}`;
-      useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+      useSessionFoldersStore.getState().activateScope(runtimeKey);
       useSessionFoldersStore.getState().createFolder('/workspace/project', `Folder ${index}`);
     }
 
     runtimeKey = 'runtime-0';
-    useSessionFoldersStore.getState().resetForRuntimeSwitch(runtimeKey);
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     expect(useSessionFoldersStore.getState().getFoldersForScope('/workspace/project').map((folder) => folder.name)).toEqual(['Folder 0']);
   });
 });

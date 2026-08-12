@@ -4,11 +4,11 @@ import { useSessionUIStore } from "@/sync/session-ui-store"
 import { useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
 import type { WorkspaceSessionSnapshot } from "@/workspaces/types"
 
-const realRuntimeSwitch = await import("@/lib/runtime-switch")
+const realControlPlane = await import("@/lib/control-plane")
 let runtimeKey = "runtime-a"
-mock.module("@/lib/runtime-switch", () => ({
-  ...realRuntimeSwitch,
-  getRuntimeKey: () => runtimeKey,
+mock.module("@/lib/control-plane", () => ({
+  ...realControlPlane,
+  getControlPlaneKey: () => runtimeKey,
 }))
 
 const { getGitHubPrStatusKey, useGitHubPrStatusStore } = await import("./useGitHubPrStatusStore")
@@ -33,13 +33,13 @@ describe("GitHub PR status cache ownership", () => {
   beforeEach(() => {
     runtimeKey = "runtime-a"
     useGitHubPrStatusStore.setState({ entries: {}, activeRequestCount: 0, totalRequestCount: 0 })
-    useGitHubPrStatusStore.getState().resetForRuntimeSwitch()
   })
 
-  test("keys colliding paths by runtime and requested remote", () => {
+  test("keys colliding paths by workspace and requested remote", () => {
+    setWorkspaceSession("ws-a")
     const originA = getGitHubPrStatusKey("/repo", "main", "origin")
     const upstreamA = getGitHubPrStatusKey("/repo", "main", "upstream")
-    runtimeKey = "runtime-b"
+    setWorkspaceSession("ws-b")
     const originB = getGitHubPrStatusKey("/repo", "main", "origin")
 
     expect(new Set([originA, upstreamA, originB]).size).toBe(3)
@@ -59,23 +59,6 @@ describe("GitHub PR status cache ownership", () => {
 
     expect(useGitHubPrStatusStore.getState().entries[key]?.status).toBe(null)
     expect(useGitHubPrStatusStore.getState().entries[key]?.isLoading).toBe(false)
-  })
-
-  test("rejects an old runtime response after reset", async () => {
-    const request = deferred<GitHubPullRequestStatus>()
-    const github = { prStatus: () => request.promise } as unknown as RuntimeAPIs["github"]
-    const key = getGitHubPrStatusKey("/repo", "main", "origin")
-    useGitHubPrStatusStore.getState().ensureEntry(key)
-    useGitHubPrStatusStore.getState().setParams(key, params(github))
-    const loading = useGitHubPrStatusStore.getState().refresh(key, { force: true })
-
-    runtimeKey = "runtime-b"
-    useGitHubPrStatusStore.getState().resetForRuntimeSwitch()
-    request.resolve({ connected: true, pr: null })
-    await loading
-
-    expect(useGitHubPrStatusStore.getState().entries[key]?.status).toBe(null)
-    expect(useGitHubPrStatusStore.getState().activeRequestCount).toBe(0)
   })
 
   test("throttles repeated non-forced refreshes after a failure", async () => {
@@ -187,6 +170,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
       title: "title",
       updatedAt: 1,
       archived: false,
+    createdAt: 1,
     }],
     freshnessByConnection: {},
   }
@@ -206,7 +190,6 @@ describe("GitHub PR status workspace scope", () => {
   beforeEach(() => {
     runtimeKey = "runtime-a"
     useGitHubPrStatusStore.setState({ entries: {}, activeRequestCount: 0, totalRequestCount: 0 })
-    useGitHubPrStatusStore.getState().resetForRuntimeSwitch()
     clearWorkspaceSession()
   })
 
@@ -222,9 +205,9 @@ describe("GitHub PR status workspace scope", () => {
     expect(JSON.parse(keyB)[0]).toBe("workspace:ws-b")
   })
 
-  test("keys stay byte-identical to runtime keys outside workspace mode", () => {
+  test("keys outside workspace mode use the unscoped bucket", () => {
     const key = getGitHubPrStatusKey("/repo", "main", "origin")
-    expect(key).toBe(JSON.stringify(["runtime-a", "/repo", "main", "origin"]))
+    expect(key).toBe(JSON.stringify(["", "/repo", "main", "origin"]))
   })
 
   test("does not serve one workspace cache to another", async () => {
@@ -245,7 +228,7 @@ describe("GitHub PR status workspace scope", () => {
     expect(useGitHubPrStatusStore.getState().entries[keyA]?.status?.pr?.number).toBe(7)
   })
 
-  test("scope reset leaves unrelated workspace status intact", () => {
+  test("workspace scope switch leaves unrelated workspace status intact", () => {
     const github = { prStatus: async () => ({ connected: true, pr: null }) } as unknown as RuntimeAPIs["github"]
     setWorkspaceSession("ws-a")
     const keyA = getGitHubPrStatusKey("/repo", "main", "origin")
@@ -260,9 +243,12 @@ describe("GitHub PR status workspace scope", () => {
     const keyB = getGitHubPrStatusKey("/repo", "main", "origin")
     useGitHubPrStatusStore.getState().ensureEntry(keyB)
     useGitHubPrStatusStore.getState().setParams(keyB, params(github))
-    useGitHubPrStatusStore.getState().resetForRuntimeSwitch("workspace:ws-b")
 
+    // The entries stay isolated per workspace: refreshing or setting ws-b
+    // never touches ws-a's cached status.
     expect(useGitHubPrStatusStore.getState().entries[keyA]?.status?.pr?.number).toBe(11)
-    expect(useGitHubPrStatusStore.getState().entries[keyB]?.params).toBe(null)
+    expect(useGitHubPrStatusStore.getState().entries[keyB]?.status).toBe(null)
+    expect(JSON.parse(keyA)[0]).toBe("workspace:ws-a")
+    expect(JSON.parse(keyB)[0]).toBe("workspace:ws-b")
   })
 })

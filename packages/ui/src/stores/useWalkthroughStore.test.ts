@@ -63,7 +63,8 @@ mock.module('@/lib/walkthrough/api', () => ({
   // makes the whole module fail to load, which reads as an unrelated crash.
   fetchWalkthroughStage: async () => null,
 }));
-mock.module('@/lib/runtime-switch', () => ({ getRuntimeKey: () => 'local' }));
+const realControlPlane = await import('@/lib/control-plane');
+mock.module('@/lib/control-plane', () => ({ ...realControlPlane, getControlPlaneKey: () => 'local' }));
 
 const { useWalkthroughStore } = await import('./useWalkthroughStore');
 

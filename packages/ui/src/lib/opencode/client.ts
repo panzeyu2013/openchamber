@@ -29,7 +29,7 @@ export type FetchPermissionResult =
   | { state: "unknown" };
 import { getRuntimeUrlResolver } from "@/lib/runtime-url";
 import { runtimeFetch } from "@/lib/runtime-fetch";
-import { getRuntimeKey } from "@/lib/runtime-switch";
+import { getControlPlaneKey } from "@/lib/control-plane";
 import { createControlPlaneFetch } from "@/workspaces/control-plane-fetch";
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry";
 import { markStartupTrace } from "@/lib/startupTrace";
@@ -310,7 +310,7 @@ export class OpencodeService {
   }
 
   private assertRuntimeUnchanged(runtimeKey?: string): void {
-    const activeScopeKey = this.scopeKey ?? getRuntimeKey();
+    const activeScopeKey = this.scopeKey ?? getControlPlaneKey();
     if (runtimeKey && runtimeKey !== activeScopeKey) {
       throw new Error('Message was not sent because the runtime changed.');
     }
@@ -1936,7 +1936,7 @@ export class OpencodeService {
     // valid answer while the active runtime is the local one — after an
     // in-place switch to a remote host the home must come from that host's
     // /api/fs/home, not from the local Electron global.
-    const runtimeKey = this.scopeKey ?? getRuntimeKey();
+    const runtimeKey = this.scopeKey ?? getControlPlaneKey();
     if (!runtimeKey || runtimeKey === 'local') {
       const desktopHome = await getDesktopHomeDirectory();
       if (desktopHome) {

@@ -8,7 +8,7 @@
  * Inspired by HiveMind (arXiv:2604.17111) OS-inspired scheduling primitives.
  */
 
-import { getRuntimeKey } from '@/lib/runtime-switch'
+import { getControlPlaneKey } from '@/lib/control-plane'
 
 const DEFAULT_CIRCUIT_BREAK_THRESHOLD = 3
 const DEFAULT_CIRCUIT_COOLDOWN_MS = 30_000
@@ -30,7 +30,7 @@ type ProviderState = {
 }
 
 const providers = new Map<string, ProviderState>()
-const providerKey = (providerID: string): string => JSON.stringify([getRuntimeKey(), providerID])
+const providerKey = (providerID: string): string => JSON.stringify([getControlPlaneKey(), providerID])
 
 function evictStaleProviders(): void {
   const now = Date.now()

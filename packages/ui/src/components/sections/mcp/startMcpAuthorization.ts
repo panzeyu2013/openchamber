@@ -1,5 +1,5 @@
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import { openExternalUrl } from '@/lib/url';
 import { focusDesktopWindow, isDesktopShell } from '@/lib/desktop';
 import { useMcpConfigStore } from '@/stores/useMcpConfigStore';
@@ -67,7 +67,7 @@ export const buildMcpAuthorizationRedirectUri = (name: string): string => {
   if (typeof window === 'undefined') {
     throw new McpAuthorizationError('No browser context to build a callback URL from');
   }
-  const url = new URL(MCP_OAUTH_CALLBACK_PATH, getRuntimeApiBaseUrl() || window.location.origin);
+  const url = new URL(MCP_OAUTH_CALLBACK_PATH, getControlPlaneBaseUrl() || window.location.origin);
   url.searchParams.set('server', name);
   return url.toString();
 };

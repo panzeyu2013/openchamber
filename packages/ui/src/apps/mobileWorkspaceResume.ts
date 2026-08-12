@@ -1,4 +1,4 @@
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 import { readLastActiveSession } from '@/sync/last-session-cache';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { isControlPlaneAvailable } from '@/workspaces/control-plane-fetch';
@@ -29,7 +29,7 @@ export const refreshWorkspaceStateAfterResume = async (): Promise<WorkspaceResum
   if (!isControlPlaneAvailable()) {
     return { restored: false, reason: 'no-control-plane' };
   }
-  const persisted = readLastActiveSession(getRuntimeKey());
+  const persisted = readLastActiveSession(getControlPlaneKey());
   if (!persisted) {
     return { restored: false, reason: 'no-last-session' };
   }

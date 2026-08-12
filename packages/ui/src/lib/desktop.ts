@@ -2,7 +2,7 @@ import type { ProjectEntry, RuntimeAPIs, TerminalShell } from '@/lib/api/types';
 import { getInjectedBootOutcome } from '@/lib/desktopBoot';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import type { MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
-import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey } from '@/lib/control-plane';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 
@@ -333,10 +333,10 @@ export const getDesktopRuntimeEndpointArgs = (): {
   requestHeaders: Record<string, string>;
   runtimeKey: string;
 } => ({
-  apiBaseUrl: getRuntimeApiBaseUrl(),
+  apiBaseUrl: getControlPlaneBaseUrl(),
   clientToken: getRuntimeBearerTokenSync(),
   requestHeaders: getRuntimeExtraHeadersSync(),
-  runtimeKey: getRuntimeKey(),
+  runtimeKey: getControlPlaneKey(),
 });
 
 type LaunchAtLoginStatus = {
@@ -496,13 +496,13 @@ export const isDesktopLocalOriginActive = (): boolean => {
   if (typeof window === 'undefined') return false;
   if (!isDesktopShell()) return false;
 
-  if (getRuntimeKey() === 'local') {
+  if (getControlPlaneKey() === 'local') {
     return true;
   }
 
   const local = typeof window.__OPENCHAMBER_LOCAL_ORIGIN__ === 'string' ? window.__OPENCHAMBER_LOCAL_ORIGIN__ : '';
   const localUrl = parseUrl(local);
-  const runtimeApiUrl = parseUrl(getRuntimeApiBaseUrl());
+  const runtimeApiUrl = parseUrl(getControlPlaneBaseUrl());
 
   if (!runtimeApiUrl && localUrl && getInjectedBootOutcome()?.target === 'local') {
     return true;

@@ -4,8 +4,10 @@ mock.module('./runtime-url', () => ({
   getRuntimeUrlResolver: () => ({ sse: (path: string) => `http://runtime.test${path}` }),
 }));
 
-mock.module('./runtime-switch', () => ({
-  subscribeRuntimeEndpointChanged: () => () => undefined,
+const realControlPlane = await import('./control-plane');
+mock.module('./control-plane', () => ({
+  ...realControlPlane,
+  subscribeControlPlaneChanged: () => () => undefined,
 }));
 
 class MockEventSource {

@@ -48,7 +48,7 @@ import { getLanguageFromExtension, getImageMimeType, isBinaryFile, isDrawioFile,
 import { shouldAllowFileDraftSave, shouldScheduleFileAutosave } from '@/lib/fileEditorAutosave';
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
 import { acquireRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, subscribeRuntimeUrlAuthToken } from '@/lib/runtime-auth';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import { getOutsideFileGrant } from '@/lib/outsideFileGrants';
 import { DiagramEditor } from '@/components/diagram';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
@@ -689,7 +689,7 @@ const useAssetAuthRefresh = (
 
     let cancelled = false;
     setReadyKey('');
-    const apiBaseUrl = getRuntimeApiBaseUrl();
+    const apiBaseUrl = getControlPlaneBaseUrl();
     const release = acquireRuntimeUrlAuthToken(apiBaseUrl);
 
     void refreshRuntimeUrlAuthToken(apiBaseUrl)

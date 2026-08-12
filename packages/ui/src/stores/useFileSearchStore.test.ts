@@ -42,15 +42,15 @@ const boundSearchFilesMock = mock((
   return request.promise;
 });
 
-const realRuntimeSwitch = await import('@/lib/runtime-switch');
+const realControlPlane = await import('@/lib/control-plane');
 mock.module('@/lib/opencode/client', () => ({
   opencodeClient: {
     searchFiles: searchFilesMock,
   },
 }));
-mock.module('@/lib/runtime-switch', () => ({
-  ...realRuntimeSwitch,
-  getRuntimeKey: () => runtimeKey,
+mock.module('@/lib/control-plane', () => ({
+  ...realControlPlane,
+  getControlPlaneKey: () => runtimeKey,
 }));
 
 const { useFileSearchStore } = await import('./useFileSearchStore');
@@ -127,19 +127,20 @@ describe('useFileSearchStore', () => {
     expect(await secondPromise).toEqual([{ path: 'second.ts' }]);
   });
 
-  test('isolates cache and in-flight ownership by runtime', async () => {
+  test('isolates cache and in-flight ownership by workspace scope', async () => {
+    setWorkspaceSession('ws-a');
     const firstPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
-    runtimeKey = 'runtime-b';
+    setWorkspaceSession('ws-b');
     const secondPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
     expect(searchRequests).toHaveLength(2);
 
-    searchRequests[1].resolve([{ path: 'runtime-b.ts' }]);
-    expect(await secondPromise).toEqual([{ path: 'runtime-b.ts' }]);
-    searchRequests[0].resolve([{ path: 'runtime-a.ts' }]);
+    searchRequests[1].resolve([{ path: 'ws-b.ts' }]);
+    expect(await secondPromise).toEqual([{ path: 'ws-b.ts' }]);
+    searchRequests[0].resolve([{ path: 'ws-a.ts' }]);
     await firstPromise;
 
-    runtimeKey = 'runtime-b';
-    expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'runtime-b.ts' }]);
+    setWorkspaceSession('ws-b');
+    expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'ws-b.ts' }]);
     expect(searchRequests).toHaveLength(2);
   });
 });
@@ -157,6 +158,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
       title: 'title',
       updatedAt: 1,
       archived: false,
+    createdAt: 1,
     }],
     freshnessByConnection: {},
   };

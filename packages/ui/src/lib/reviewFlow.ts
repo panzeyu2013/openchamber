@@ -11,14 +11,14 @@ import {
 } from '@/lib/sessionReviewMetadata';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useAutoReviewStore, type AutoReviewRun } from '@/stores/useAutoReviewStore';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+
 import { useUIStore } from '@/stores/useUIStore';
 import { optimisticSend, patchSessionMetadata, waitForConnectionOrThrow } from '@/sync/session-actions';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getSyncMessages, getSyncOpencodeService, getSyncParts, getSyncSessionStatus, registerSessionDirectory } from '@/sync/sync-refs';
 import { markPendingUserSendAnimation } from '@/lib/userSendAnimation';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 
 const HANDOFF_TIMEOUT_MS = 180_000;
 const HANDOFF_POLL_MS = 400;
@@ -120,7 +120,7 @@ const isSessionIdle = (sessionID: string, directory: string): boolean => {
   return status?.type === 'idle';
 };
 
-export const isAutoReviewRuntimeCurrent = (runtimeKey: string): boolean => runtimeKey === getRuntimeKey();
+export const isAutoReviewRuntimeCurrent = (runtimeKey: string): boolean => runtimeKey === getControlPlaneKey();
 
 const stopRunForRuntimeMismatch = (run: AutoReviewRun): void => {
   useAutoReviewStore.getState().updateRun(run.originalSessionID, (current) => ({
@@ -470,13 +470,14 @@ const createOrReuseReviewSession = async (originalSessionID: string, directory: 
     });
     throw error;
   }
-  useGlobalSessionsStore.getState().upsertSession(review);
+  // The Session Index event stream reconciles the linked review session; the
+  // review metadata patch itself is authoritative via the SDK update above.
   return review;
 };
 
 export const startReviewFlow = async (input: StartReviewFlowInput): Promise<void> => {
   await waitForConnectionOrThrow();
-  const expectedAutoReviewRuntimeKey = input.autoReview ? getRuntimeKey() : undefined;
+  const expectedAutoReviewRuntimeKey = input.autoReview ? getControlPlaneKey() : undefined;
   let reviewPrompt: string;
 
   if (input.generateHandoff ?? true) {
@@ -492,7 +493,7 @@ export const startReviewFlow = async (input: StartReviewFlowInput): Promise<void
       assertAutoReviewRuntimeStillCurrent(expectedAutoReviewRuntimeKey);
       const handoffReviewPrompt = await renderMagicPrompt('session.reviewSession.visible', { handoff });
       const reviewSession = await createOrReuseReviewSession(input.originalSessionID, input.directory, expectedAutoReviewRuntimeKey);
-      const runtimeKey = expectedAutoReviewRuntimeKey ?? getRuntimeKey();
+      const runtimeKey = expectedAutoReviewRuntimeKey ?? getControlPlaneKey();
       const waitAfterCreatedAt = Date.now();
       const sentMessageID = await sendPlainMessage(reviewSession.id, input.directory, handoffReviewPrompt, {
         providerID: input.providerID,
@@ -533,7 +534,7 @@ export const startReviewFlow = async (input: StartReviewFlowInput): Promise<void
   }
 
   const reviewSession = await createOrReuseReviewSession(input.originalSessionID, input.directory, expectedAutoReviewRuntimeKey);
-  const runtimeKey = expectedAutoReviewRuntimeKey ?? getRuntimeKey();
+  const runtimeKey = expectedAutoReviewRuntimeKey ?? getControlPlaneKey();
   const waitAfterCreatedAt = Date.now();
   const sentMessageID = await sendPlainMessage(reviewSession.id, input.directory, reviewPrompt, {
     providerID: input.providerID,

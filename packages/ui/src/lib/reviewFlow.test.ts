@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import type { Message } from '@opencode-ai/sdk/v2/client';
-import { switchRuntimeEndpoint } from './runtime-switch';
+import { setControlPlane } from './control-plane';
 
 import {
   assertAutoReviewRuntimeStillCurrent,
@@ -15,7 +15,7 @@ import type { AutoReviewRun } from '@/stores/useAutoReviewStore';
 
 describe('reviewFlow auto-review helpers', () => {
   beforeEach(() => {
-    switchRuntimeEndpoint({ apiBaseUrl: 'http://runtime-a.test', runtimeKey: 'runtime-a' });
+    setControlPlane({ apiBaseUrl: 'http://runtime-a.test', runtimeKey: 'runtime-a' });
   });
 
   test('detects and strips final review marker only from the final line', () => {
@@ -50,7 +50,7 @@ describe('reviewFlow auto-review helpers', () => {
 
   test('runtime guard rejects runs from a stale runtime', () => {
     expect(isAutoReviewRuntimeCurrent('runtime-a')).toBe(true);
-    switchRuntimeEndpoint({ apiBaseUrl: 'http://runtime-b.test', runtimeKey: 'runtime-b' });
+    setControlPlane({ apiBaseUrl: 'http://runtime-b.test', runtimeKey: 'runtime-b' });
     expect(isAutoReviewRuntimeCurrent('runtime-a')).toBe(false);
     expect(() => assertAutoReviewRuntimeStillCurrent('runtime-a')).toThrow('runtime changed');
   });

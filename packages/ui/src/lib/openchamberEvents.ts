@@ -1,5 +1,5 @@
 import { getRuntimeUrlResolver } from './runtime-url';
-import { subscribeRuntimeEndpointChanged } from './runtime-switch';
+import { subscribeControlPlaneChanged } from './control-plane';
 
 type ScheduledTaskRanEvent = {
   type: 'scheduled-task-ran';
@@ -198,7 +198,7 @@ const connect = () => {
 
 const ensureRuntimeChangeSubscription = () => {
   if (runtimeChangeUnsubscribe || typeof window === 'undefined') return;
-  runtimeChangeUnsubscribe = subscribeRuntimeEndpointChanged(() => {
+  runtimeChangeUnsubscribe = subscribeControlPlaneChanged(() => {
     cleanupSource();
     reconnectAttempt = 0;
     connect();

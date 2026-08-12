@@ -3,13 +3,12 @@ import type { PermissionRequest } from "@/types/permission"
 import type { QuestionRequest } from "@/types/question"
 import type { OpencodeService } from "@/lib/opencode/client"
 import { useConfigStore } from "@/stores/useConfigStore"
-import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useTodosPersistStore } from "@/stores/useTodosPersistStore"
 import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
 import { clearSyncRefs, setSyncRefs } from "./sync-refs"
 import { setActionRefs } from "./session-actions"
-import { getRuntimeApiBaseUrl, switchRuntimeEndpoint } from "@/lib/runtime-switch"
+import { getControlPlaneBaseUrl, setControlPlane } from "@/lib/control-plane"
 
 // Mock SDK client that records permission.reply / question.reply calls
 const replyCalls: Array<{ method: string; params: Record<string, unknown> }> = []
@@ -25,8 +24,6 @@ let sessionMessagesResult: { data?: unknown; error?: unknown; response?: { statu
 let sessionDeleteError: unknown | null = null
 let beforeSessionUpdateResolve: ((sessionId: string) => void) | null = null
 let beforeSessionDeleteResolve: ((sessionId: string) => void) | null = null
-const globalUpsertedSessions: unknown[] = []
-const globalRemovedSessionIds: string[] = []
 const deletedCleanupIdentities: Array<{ runtimeKey: string; directory: string; sessionId: string }> = []
 const movedSessionDirectories: Array<{ sessionID: string; directory: string }> = []
 
@@ -168,10 +165,9 @@ const mockService = {
 // Real store members captured once so recorders installed per-test can be
 // restored afterwards — state/action overrides never leak across test files.
 const realSessionUIState = useSessionUIStore.getState()
-const realGlobalState = useGlobalSessionsStore.getState()
 const realTodosPersistState = useTodosPersistStore.getState()
 const initialConfigState = useConfigStore.getState()
-const initialRuntimeApiBaseUrl = getRuntimeApiBaseUrl()
+const initialRuntimeApiBaseUrl = getControlPlaneBaseUrl()
 
 beforeEach(() => {
   useConfigStore.setState({ isConnected: true, hasEverConnected: true })
@@ -186,16 +182,6 @@ beforeEach(() => {
     setWorktreeMetadata: () => {},
     setSessionDirectory: (sessionID: string, directory: string | null) => {
       movedSessionDirectories.push({ sessionID, directory: directory ?? "" })
-    },
-  })
-  useGlobalSessionsStore.setState({
-    activeSessions: [],
-    archivedSessions: [],
-    upsertSession: (session: unknown) => {
-      globalUpsertedSessions.push(session)
-    },
-    removeSessions: (ids: Iterable<string>) => {
-      globalRemovedSessionIds.push(...ids)
     },
   })
   useTodosPersistStore.setState({
@@ -227,15 +213,9 @@ afterAll(() => {
     setWorktreeMetadata: realSessionUIState.setWorktreeMetadata,
     setSessionDirectory: realSessionUIState.setSessionDirectory,
   })
-  useGlobalSessionsStore.setState({
-    activeSessions: realGlobalState.activeSessions,
-    archivedSessions: realGlobalState.archivedSessions,
-    upsertSession: realGlobalState.upsertSession,
-    removeSessions: realGlobalState.removeSessions,
-  })
   useTodosPersistStore.setState({ clearSessionTodos: realTodosPersistState.clearSessionTodos })
   clearSyncRefs()
-  switchRuntimeEndpoint({ apiBaseUrl: initialRuntimeApiBaseUrl })
+  setControlPlane({ apiBaseUrl: initialRuntimeApiBaseUrl })
 })
 
 import { create, type StoreApi } from "zustand"
@@ -280,6 +260,7 @@ function setRefs(
   childStores: ReturnType<typeof createChildStores>,
   getDirectory: () => string,
   enqueueSessionMaterialization?: (directory: string, sessionID: string, messageID: string) => void,
+  scopeKey = "workspace:ws-a",
 ): void {
   setActionRefs(
     mockSdk as unknown as OpencodeClient,
@@ -287,6 +268,20 @@ function setRefs(
     getDirectory,
     enqueueSessionMaterialization,
     mockService as unknown as OpencodeService,
+    scopeKey,
+  )
+}
+
+/** Switches the mounted action scope (the workspace-scoped equivalent of the
+ * retired runtime-endpoint switch). */
+const switchActionScope = (scopeKey: string): void => {
+  setActionRefs(
+    mockSdk as unknown as OpencodeClient,
+    createChildStores([]),
+    () => "/current/project",
+    undefined,
+    mockService as unknown as OpencodeService,
+    scopeKey,
   )
 }
 
@@ -295,7 +290,6 @@ describe("moveSessionToDirectory", () => {
     replyCalls.length = 0
     registeredSessionDirectories.length = 0
     movedSessionDirectories.length = 0
-    globalUpsertedSessions.length = 0
   })
 
   test("moves through the control plane and reconciles directory stores", async () => {
@@ -357,7 +351,6 @@ describe("moveSessionToDirectory", () => {
     expect(destination.getState().part["message-a"]?.[0]?.id).toBe("part-a")
     expect(registeredSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/destination" }])
     expect(movedSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/destination" }])
-    expect((globalUpsertedSessions[0] as SessionWithDirectory).directory).toBe("/destination")
 
     await moveSessionToDirectory(destination.getState().session[0], "/destination", "/source", true)
 
@@ -415,8 +408,6 @@ describe("moveSessionToDirectory", () => {
 describe("confirmed session removal", () => {
   beforeEach(() => {
     replyCalls.length = 0
-    globalUpsertedSessions.length = 0
-    globalRemovedSessionIds.length = 0
     deletedCleanupIdentities.length = 0
     sessionDeleteError = null
     sessionUpdateResult = {}
@@ -434,7 +425,6 @@ describe("confirmed session removal", () => {
 
     expect(await deleteSession("session-a")).toBe(false)
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
-    expect(globalRemovedSessionIds).toEqual([])
     expect(deletedCleanupIdentities).toEqual([])
   })
 
@@ -447,7 +437,6 @@ describe("confirmed session removal", () => {
 
     expect(await deleteSession("session-a")).toBe(true)
     expect(source.getState().session).toEqual([])
-    expect(globalRemovedSessionIds).toEqual(["session-a"])
     expect(deletedCleanupIdentities).toHaveLength(1)
     expect({
       directory: deletedCleanupIdentities[0]?.directory,
@@ -455,40 +444,34 @@ describe("confirmed session removal", () => {
     }).toEqual({ directory: "/test/project", sessionId: "session-a" })
   })
 
-  test("scopes persisted cleanup to the runtime captured when the delete started", async () => {
+  test("scopes persisted cleanup to the workspace scope captured when the delete started", async () => {
     const source = createStore({}, {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
-    const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://delete-scope.test", runtimeKey: "delete-scope" })
     const { deleteSession} = await import("./session-actions")
-    setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
+    setRefs(createChildStores([["/test/project", source]]), () => "/test/project", undefined, "workspace:ws-a")
 
     expect(await deleteSession("session-a")).toBe(true)
-    // The cleanup identity must carry the captured runtime, which is what lets
-    // cleanupPersistedSessionState reject a stale identity instead of comparing
-    // the live runtime key with itself.
-    expect(deletedCleanupIdentities[0]?.runtimeKey).toBe("delete-scope")
-    expect(deletedCleanupIdentities[0]?.runtimeKey).toBe(getRuntimeKey())
+    // The cleanup identity must carry the captured workspace scope, which is
+    // what lets cleanupPersistedSessionState reject a stale identity instead
+    // of comparing the live scope key with itself.
+    expect(deletedCleanupIdentities[0]?.runtimeKey).toBe("workspace:ws-a")
   })
 
   test("rejects a delete response that arrives after a runtime switch", async () => {
     const source = createStore({}, {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
-    const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://delete-runtime-a.test", runtimeKey: "delete-runtime-a" })
     beforeSessionDeleteResolve = () => {
-      switchRuntimeEndpoint({ apiBaseUrl: "http://delete-runtime-b.test", runtimeKey: "delete-runtime-b" })
+      switchActionScope("workspace:ws-b")
     }
     const { deleteSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await deleteSession("session-a")).toBe(false)
-    // Session IDs are not unique across runtimes: committing here could evict an
-    // unrelated session and erase its queue, todos, drafts, folders, and pins.
+    // Session IDs are not unique across workspaces: committing here could evict
+    // an unrelated session and erase its queue, todos, drafts, folders, and pins.
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
-    expect(globalRemovedSessionIds).toEqual([])
     expect(deletedCleanupIdentities).toEqual([])
   })
 
@@ -497,19 +480,16 @@ describe("confirmed session removal", () => {
     const source = createStore({}, {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
-    const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://delete-404-a.test", runtimeKey: "delete-404-a" })
     beforeSessionDeleteResolve = () => {
-      switchRuntimeEndpoint({ apiBaseUrl: "http://delete-404-b.test", runtimeKey: "delete-404-b" })
+      switchActionScope("workspace:ws-b")
     }
     const { deleteSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
-    // A 404 only proves "already deleted" for the captured runtime. After a
-    // switch it describes the wrong runtime, so it must not commit cleanup.
+    // A 404 only proves "already deleted" for the captured scope. After a
+    // switch it describes the wrong workspace, so it must not commit cleanup.
     expect(await deleteSession("session-a")).toBe(false)
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
-    expect(globalRemovedSessionIds).toEqual([])
     expect(deletedCleanupIdentities).toEqual([])
   })
 
@@ -523,7 +503,6 @@ describe("confirmed session removal", () => {
 
     expect(await deleteSession("session-a")).toBe(true)
     expect(source.getState().session).toEqual([])
-    expect(globalRemovedSessionIds).toEqual(["session-a"])
     expect(deletedCleanupIdentities).toHaveLength(1)
   })
 
@@ -535,11 +514,9 @@ describe("confirmed session removal", () => {
         { id: "session-c", directory: "/test/project", time: { created: 1 } } as Session,
       ],
     })
-    const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://delete-batch-a.test", runtimeKey: "delete-batch-a" })
     beforeSessionDeleteResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchRuntimeEndpoint({ apiBaseUrl: "http://delete-batch-b.test", runtimeKey: "delete-batch-b" })
+        switchActionScope("workspace:ws-b")
       }
     }
     const { deleteSessions} = await import("./session-actions")
@@ -551,7 +528,6 @@ describe("confirmed session removal", () => {
     // and session-c is never attempted, so both are reported as failures.
     expect(result).toEqual({ deletedIds: ["session-a"], failedIds: ["session-b", "session-c"] })
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-b", "session-c"])
-    expect(globalRemovedSessionIds).toEqual(["session-a"])
     expect(replyCalls.filter((call) => call.method === "session.delete").map((call) => call.params.sessionID))
       .toEqual(["session-a", "session-b"])
   })
@@ -565,7 +541,6 @@ describe("confirmed session removal", () => {
 
     expect(await archiveSession("session-a")).toBe(false)
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
-    expect(globalUpsertedSessions).toEqual([])
   })
 
   test("moves the session to archived state after server confirmation", async () => {
@@ -580,29 +555,24 @@ describe("confirmed session removal", () => {
 
     expect(await archiveSession("session-a")).toBe(true)
     expect(source.getState().session).toEqual([])
-    expect((globalUpsertedSessions[0] as Session)?.time?.archived).toBe(2)
   })
 
-  test("rejects an archive response that arrives after a runtime switch", async () => {
+  test("rejects an archive response that arrives after a workspace scope switch", async () => {
     sessionUpdateResult = {
       data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 2 } } as Session,
     }
     const source = createStore({}, {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
-    const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://archive-runtime-a.test", runtimeKey: "archive-runtime-a" })
     beforeSessionUpdateResolve = () => {
-      switchRuntimeEndpoint({ apiBaseUrl: "http://archive-runtime-b.test", runtimeKey: "archive-runtime-b" })
+      switchActionScope("workspace:ws-b")
     }
     const { archiveSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await archiveSession("session-a")).toBe(false)
-    expect(getRuntimeKey()).toBe("archive-runtime-b")
-    // The stale response must not reconcile the runtime the user switched to.
+    // The stale response must not reconcile the workspace the user switched to.
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
-    expect(globalUpsertedSessions).toEqual([])
   })
 
   test("keeps confirmed sessions and fails the rest when the runtime changes mid-batch", async () => {
@@ -616,11 +586,9 @@ describe("confirmed session removal", () => {
         { id: "session-c", directory: "/test/project", time: { created: 1 } } as Session,
       ],
     })
-    const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://archive-batch-a.test", runtimeKey: "archive-batch-a" })
     beforeSessionUpdateResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchRuntimeEndpoint({ apiBaseUrl: "http://archive-batch-b.test", runtimeKey: "archive-batch-b" })
+        switchActionScope("workspace:ws-b")
       }
     }
     const { archiveSessions} = await import("./session-actions")
@@ -633,7 +601,6 @@ describe("confirmed session removal", () => {
     // as failures instead of being silently dropped.
     expect(result).toEqual({ archivedIds: ["session-a"], failedIds: ["session-b", "session-c"] })
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-b", "session-c"])
-    expect(globalUpsertedSessions).toHaveLength(1)
     // session-c must not reach the SDK after the runtime changed.
     expect(replyCalls.filter((call) => call.method === "session.update").map((call) => call.params.sessionID))
       .toEqual(["session-a", "session-b"])
@@ -649,12 +616,11 @@ describe("confirmed session removal", () => {
         { id: "session-b", directory: "/test/project", time: { created: 1 } } as Session,
       ],
     })
-    const { getRuntimeKey } = await import("../lib/runtime-switch")
     const { archiveSessions} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     const result = await archiveSessions(["session-a", "session-b"], {
-      expectedRuntimeKey: getRuntimeKey(),
+      expectedRuntimeKey: "workspace:ws-a",
     })
 
     expect(result).toEqual({ archivedIds: ["session-a", "session-b"], failedIds: [] })
@@ -666,7 +632,6 @@ describe("session restore (unarchive)", () => {
   beforeEach(() => {
     replyCalls.length = 0
     registeredSessionDirectories.length = 0
-    globalUpsertedSessions.length = 0
     sessionUpdateResult = {}
     beforeSessionUpdateResolve = null
   })
@@ -679,7 +644,6 @@ describe("session restore (unarchive)", () => {
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await unarchiveSession("session-a")).toBe(false)
-    expect(globalUpsertedSessions).toEqual([])
     expect(registeredSessionDirectories).toEqual([])
   })
 
@@ -700,7 +664,6 @@ describe("session restore (unarchive)", () => {
       method: "session.update",
       params: { sessionID: "session-a", time: { archived: 0 }, directory: "/test/project" },
     }])
-    expect((globalUpsertedSessions[0] as Session)?.time?.archived).toBe(0)
     expect(registeredSessionDirectories).toEqual([{ sessionID: "session-a", directory: "/test/project" }])
   })
 
@@ -716,29 +679,24 @@ describe("session restore (unarchive)", () => {
 
     // A silent server-side no-op must surface as a failure, not a success toast.
     expect(await unarchiveSession("session-a")).toBe(false)
-    expect(globalUpsertedSessions).toEqual([])
     expect(registeredSessionDirectories).toEqual([])
   })
 
-  test("rejects a restore response that arrives after a runtime switch", async () => {
+  test("rejects a restore response that arrives after a workspace scope switch", async () => {
     sessionUpdateResult = {
       data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 0 } } as Session,
     }
     const source = createStore({}, {
       session: [],
     })
-    const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://restore-runtime-a.test", runtimeKey: "restore-runtime-a" })
     beforeSessionUpdateResolve = () => {
-      switchRuntimeEndpoint({ apiBaseUrl: "http://restore-runtime-b.test", runtimeKey: "restore-runtime-b" })
+      switchActionScope("workspace:ws-b")
     }
     const { unarchiveSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await unarchiveSession("session-a")).toBe(false)
-    expect(getRuntimeKey()).toBe("restore-runtime-b")
-    // The stale response must not reconcile the runtime the user switched to.
-    expect(globalUpsertedSessions).toEqual([])
+    // The stale response must not reconcile the workspace the user switched to.
     expect(registeredSessionDirectories).toEqual([])
   })
 
@@ -749,11 +707,9 @@ describe("session restore (unarchive)", () => {
     const source = createStore({}, {
       session: [],
     })
-    const { switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://restore-batch-a.test", runtimeKey: "restore-batch-a" })
     beforeSessionUpdateResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchRuntimeEndpoint({ apiBaseUrl: "http://restore-batch-b.test", runtimeKey: "restore-batch-b" })
+        switchActionScope("workspace:ws-b")
       }
     }
     const { unarchiveSessions} = await import("./session-actions")
@@ -765,7 +721,6 @@ describe("session restore (unarchive)", () => {
     // response is stale and session-c is never attempted, so both are reported
     // as failures instead of being silently dropped.
     expect(result).toEqual({ restoredIds: ["session-a"], failedIds: ["session-b", "session-c"] })
-    expect(globalUpsertedSessions).toHaveLength(1)
     // session-c must not reach the SDK after the runtime changed.
     expect(replyCalls.filter((call) => call.method === "session.update").map((call) => call.params.sessionID))
       .toEqual(["session-a", "session-b"])
@@ -790,7 +745,6 @@ describe("fetchMessagesForSession startup race", () => {
 describe("shareSession live state", () => {
   beforeEach(() => {
     replyCalls.length = 0
-    globalUpsertedSessions.length = 0
     sessionShareResult = {}
   })
 
@@ -814,7 +768,6 @@ describe("shareSession live state", () => {
     expect(replyCalls.find((call) => call.method === "session.unshare")?.params.directory).toBe("/test/project")
     expect(sessionStore.getState().session[0].share).toBe(undefined)
     expect(otherStore.getState().session[0].id).toBe("other")
-    expect(globalUpsertedSessions).toEqual([{ ...unsharedSession, share: undefined }])
   })
 
   test("clears a stale share URL echoed by a successful unshare response", async () => {
@@ -831,7 +784,6 @@ describe("shareSession live state", () => {
 
     expect(result?.share).toBe(undefined)
     expect(sessionStore.getState().session[0].share).toBe(undefined)
-    expect((globalUpsertedSessions[0] as Session).share).toBe(undefined)
   })
 
   test("updates the directory live store after sharing", async () => {
@@ -849,7 +801,6 @@ describe("shareSession live state", () => {
     expect(result).toBe(sharedSession)
     expect(replyCalls.find((call) => call.method === "session.share")?.params.directory).toBe("/test/project")
     expect(sessionStore.getState().session[0].share?.url).toBe("https://share.example/a")
-    expect(globalUpsertedSessions).toEqual([sharedSession])
   })
 
   test("preserves live directory metadata while normalizing a null share response", async () => {
@@ -899,11 +850,9 @@ describe("shareSession live state", () => {
     const result = await shareSession("session-a")
 
     const storedDiff = ((sessionStore.getState().session[0] as { summary?: { diffs?: Array<Record<string, unknown>> } }).summary?.diffs ?? [])[0]
-    const globalDiff = (((globalUpsertedSessions[0] as { summary?: { diffs?: Array<Record<string, unknown>> } }).summary?.diffs ?? [])[0])
     const resultDiff = ((result as { summary?: { diffs?: Array<Record<string, unknown>> } }).summary?.diffs ?? [])[0]
     expect(storedDiff.before).toBe(undefined)
     expect(storedDiff.after).toBe(undefined)
-    expect(globalDiff.before).toBe(undefined)
     expect(resultDiff.after).toBe(undefined)
   })
 })
@@ -911,7 +860,6 @@ describe("shareSession live state", () => {
 describe("updateSessionTitle live state", () => {
   beforeEach(() => {
     replyCalls.length = 0
-    globalUpsertedSessions.length = 0
     sessionUpdateResult = {}
   })
 
@@ -931,7 +879,6 @@ describe("updateSessionTitle live state", () => {
     expect(updateCall?.params.sessionID).toBe("session-a")
     expect(updateCall?.params.title).toBe("New Title")
     expect(updateCall?.params.directory).toBe("/test/project")
-    expect(globalUpsertedSessions).toEqual([updatedSession])
     expect(sessionStore.getState().session[0].title).toBe("New Title")
   })
 })
@@ -1070,14 +1017,12 @@ describe("optimisticSend target directory", () => {
     expect(targetStore.getState().part.msg_2).toEqual([revertedPart])
   })
 
-  test("rolls back a captured send when the runtime changes after optimistic insert", async () => {
+  test("rolls back a captured send when the workspace scope changes after optimistic insert", async () => {
     const targetStore = createStore({})
     const childStores = createChildStores([["/target/project", targetStore]])
     let optimisticAdd: OptimisticAddCall | null = null
     let optimisticRemove: OptimisticRemoveCall | null = null
     let finalSendCalled = false
-    const { getRuntimeKey, switchRuntimeEndpoint } = await import("../lib/runtime-switch")
-    switchRuntimeEndpoint({ apiBaseUrl: "http://runtime-a.test", runtimeKey: "runtime-a" })
 
     const { optimisticSend, setOptimisticRefs } = await import("./session-actions")
     setRefs(childStores, () => "/target/project")
@@ -1095,13 +1040,12 @@ describe("optimisticSend target directory", () => {
       await optimisticSend({
         sessionId: "session-race",
         directory: "/target/project",
-        runtimeKey: "runtime-a",
+        runtimeKey: "workspace:ws-a",
         content: "hello",
         providerID: "provider",
         modelID: "model",
         onOptimisticInsert: () => {
-          expect(getRuntimeKey()).toBe("runtime-a")
-          switchRuntimeEndpoint({ apiBaseUrl: "http://runtime-b.test", runtimeKey: "runtime-b" })
+          switchActionScope("workspace:ws-b")
         },
         send: async () => {
           finalSendCalled = true

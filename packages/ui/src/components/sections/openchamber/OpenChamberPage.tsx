@@ -17,14 +17,14 @@ import { useDeviceInfo } from '@/lib/device';
 import { isDesktopLocalOriginActive, isDesktopShell, isVSCodeRuntime, isWebRuntime } from '@/lib/desktop';
 import { isCapacitorApp } from '@/lib/platform';
 import { useI18n } from '@/lib/i18n';
-import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { subscribeControlPlaneChanged } from '@/lib/control-plane';
 import type { OpenChamberSection } from './types';
 
 const useRuntimeEndpointEpoch = (): number => {
     const [epoch, setEpoch] = React.useState(0);
 
     React.useEffect(() => {
-        return subscribeRuntimeEndpointChanged(() => setEpoch((current) => current + 1));
+        return subscribeControlPlaneChanged(() => setEpoch((current) => current + 1));
     }, []);
 
     return epoch;

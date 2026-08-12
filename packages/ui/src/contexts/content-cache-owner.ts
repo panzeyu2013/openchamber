@@ -1,5 +1,5 @@
 import type { FilesAPI } from '@/lib/api/types';
-import { subscribeRuntimeEndpointWillChange } from '@/lib/runtime-switch';
+import { subscribeControlPlaneWillChange } from '@/lib/control-plane';
 
 const MAX_ENTRIES = 40;
 const MAX_BYTES = 20 * 1024 * 1024;
@@ -126,7 +126,7 @@ export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; di
     delete: files.delete ? (path) => mutate([path], () => files.delete!(path)) : undefined,
     rename: files.rename ? (oldPath, newPath) => mutate([oldPath, newPath], () => files.rename!(oldPath, newPath)) : undefined,
   };
-  const unsubscribeRuntime = subscribeRuntimeEndpointWillChange((detail) => {
+  const unsubscribeRuntime = subscribeControlPlaneWillChange((detail) => {
     if (detail.runtimeKey === detail.previousRuntimeKey) return;
     // Invalidate cached content for the previous runtime, but keep serving reads.
     // `apis.files` is typically stable across endpoint switches, so permanently

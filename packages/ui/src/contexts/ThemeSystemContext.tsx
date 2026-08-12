@@ -31,7 +31,7 @@ import {
 } from './theme-embedded-bootstrap';
 import { isValidTheme } from './theme-validation';
 import { getSyncedThemeFromPayload, getSyncedThemeVariant } from './theme-sync-payload';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { getControlPlaneKey, subscribeControlPlaneChanged } from '@/lib/control-plane';
 
 type ThemePreferences = {
   themeMode: ThemeMode;
@@ -271,7 +271,7 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
       return;
     }
 
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getControlPlaneKey();
     const request = ++customThemesRequestRef.current;
     setCustomThemesLoading(true);
     try {
@@ -293,14 +293,14 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
       }
 
       const payload = await res.json();
-      if (request !== customThemesRequestRef.current || runtimeKey !== getRuntimeKey()) return;
+      if (request !== customThemesRequestRef.current || runtimeKey !== getControlPlaneKey()) return;
       const incoming = Array.isArray(payload?.themes) ? payload.themes : [];
       const normalized = incoming.filter(isValidTheme);
       setCustomThemes(normalized);
     } catch {
       // ignore
     } finally {
-      if (request === customThemesRequestRef.current && runtimeKey === getRuntimeKey()) {
+      if (request === customThemesRequestRef.current && runtimeKey === getControlPlaneKey()) {
         setCustomThemesLoading(false);
       }
     }
@@ -310,7 +310,7 @@ export function ThemeSystemProvider({ children, defaultThemeId }: ThemeSystemPro
     void reloadCustomThemes();
   }, [reloadCustomThemes]);
 
-  useEffect(() => subscribeRuntimeEndpointChanged((detail) => {
+  useEffect(() => subscribeControlPlaneChanged((detail) => {
     if (detail.runtimeKey === detail.previousRuntimeKey || isVSCode) return;
     customThemesRequestRef.current += 1;
     setCustomThemes([]);

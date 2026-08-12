@@ -2,7 +2,7 @@ import { isElectronShell } from '@/lib/desktop';
 import { desktopHostProbe, desktopHostsGet, desktopHostsSet, desktopLocalClientTokenGet, getDesktopHostApiUrl, normalizeHostUrl } from '@/lib/desktopHosts';
 import { getActiveRelayTunnel } from '@/lib/relay/runtime-tunnel';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey, setControlPlane, subscribeControlPlaneChanged } from '@/lib/control-plane';
 
 // Let the post-switch bootstrap traffic settle before the background refresh.
 const CANDIDATE_REFRESH_DELAY_MS = 5_000;
@@ -61,7 +61,7 @@ const refreshDesktopHostCandidates = async (hostId: string): Promise<void> => {
   const runtimeKey = `host:${hostId}`;
   // The candidates fetch rides the active runtime's transport — only meaningful
   // while this host IS the active runtime.
-  if (getRuntimeKey() !== runtimeKey) return;
+  if (getControlPlaneKey() !== runtimeKey) return;
   candidateRefreshInFlight.add(hostId);
   try {
     const config = await desktopHostsGet().catch(() => null);
@@ -107,8 +107,8 @@ const refreshDesktopHostCandidates = async (hostId: string): Promise<void> => {
       expectedServerId: host.relay.serverId,
     }).catch(() => ({ status: 'unreachable' as const, latencyMs: 0 }));
     if (probe.status === 'unreachable' || probe.status === 'wrong-service' || probe.status === 'incompatible') return;
-    if (getRuntimeKey() !== runtimeKey) return; // user switched away meanwhile
-    switchRuntimeEndpoint({
+    if (getControlPlaneKey() !== runtimeKey) return; // user switched away meanwhile
+    setControlPlane({
       apiBaseUrl: nextApiUrl,
       clientToken: host.clientToken || null,
       requestHeaders: host.requestHeaders || null,
@@ -132,7 +132,7 @@ export const scheduleDesktopHostCandidateRefresh = (hostId: string): void => {
  * shell boots the LOCAL UI for any host that carries a relay leg and defers
  * transport selection to the renderer: here we probe the direct address first
  * (cheap, preferred on the home network) and fall back to the E2EE tunnel via
- * switchRuntimeEndpoint({ relay }) — the multi-transport model mobile uses.
+ * setControlPlane({ relay }) — the multi-transport model mobile uses.
  * Direct-only hosts normally receive their endpoint in preload; restoring them
  * here also repairs reloads after an in-renderer host switch, because Chromium
  * additionalArguments are immutable for the lifetime of a window.
@@ -151,9 +151,9 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
   if (!hostId) return;
   if (hostId === 'local') {
     const localOrigin = normalizeHostUrl(config.localOrigin || '');
-    if (localOrigin && (getRuntimeKey() !== 'local' || runtimeOrigin(getRuntimeApiBaseUrl()) !== runtimeOrigin(localOrigin))) {
+    if (localOrigin && (getControlPlaneKey() !== 'local' || runtimeOrigin(getControlPlaneBaseUrl()) !== runtimeOrigin(localOrigin))) {
       const clientToken = await desktopLocalClientTokenGet().catch(() => '');
-      switchRuntimeEndpoint({ apiBaseUrl: localOrigin, clientToken: clientToken || null, runtimeKey: 'local' });
+      setControlPlane({ apiBaseUrl: localOrigin, clientToken: clientToken || null, runtimeKey: 'local' });
     }
     return;
   }
@@ -162,9 +162,9 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
   const runtimeKey = `host:${host.id}`;
   const directUrl = host.apiUrl ? normalizeHostUrl(getDesktopHostApiUrl(host)) : null;
   if (!desktopHostRuntimeNeedsRestore({
-    activeRuntimeKey: getRuntimeKey(),
+    activeRuntimeKey: getControlPlaneKey(),
     targetRuntimeKey: runtimeKey,
-    activeApiBaseUrl: getRuntimeApiBaseUrl(),
+    activeApiBaseUrl: getControlPlaneBaseUrl(),
     directUrl,
     relayActive: Boolean(getActiveRelayTunnel()),
   })) return;
@@ -174,7 +174,7 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
     // Only an explicit per-window identity needs reload repair here.
     if (!explicitHostId) return;
     if (!directUrl) return;
-    switchRuntimeEndpoint({
+    setControlPlane({
       apiBaseUrl: directUrl,
       clientToken: host.clientToken || null,
       requestHeaders: host.requestHeaders || null,
@@ -183,7 +183,7 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
     return;
   }
   let cancelled = false;
-  const unsubscribeRuntime = subscribeRuntimeEndpointChanged((detail) => {
+  const unsubscribeRuntime = subscribeControlPlaneChanged((detail) => {
     // A user-selected runtime change wins over this startup probe. Our own
     // switch to the target host is allowed and late direct adoption below is
     // additionally guarded by the stable runtime key.
@@ -191,7 +191,7 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
   });
 
   const switchToDirect = (url: string) => {
-    switchRuntimeEndpoint({
+    setControlPlane({
       apiBaseUrl: url,
       clientToken: host.clientToken || null,
       requestHeaders: host.requestHeaders || null,
@@ -199,7 +199,7 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
     });
   };
   const switchToRelay = () => {
-    switchRuntimeEndpoint({
+    setControlPlane({
       apiBaseUrl: typeof window !== 'undefined' ? window.location.origin : '',
       clientToken: host.clientToken || null,
       runtimeKey,
@@ -257,7 +257,7 @@ export const restoreDesktopRelayRuntime = async (targetHostId?: string): Promise
   unsubscribeRuntime();
   void probePromise.then((probe) => {
     if (!probeOk(probe)) return;
-    if (getRuntimeKey() !== runtimeKey) return; // user switched away meanwhile
+    if (getControlPlaneKey() !== runtimeKey) return; // user switched away meanwhile
     switchToDirect(directUrl);
   });
 };

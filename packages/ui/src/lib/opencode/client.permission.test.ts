@@ -85,9 +85,11 @@ mock.module('@/lib/runtime-url', () => ({
   })),
 }));
 
-mock.module('@/lib/runtime-switch', () => ({
-  getRuntimeApiBaseUrl: mock(() => ''),
-  getRuntimeKey: mock(() => 'test-runtime'),
+const realControlPlane = await import('@/lib/control-plane');
+mock.module('@/lib/control-plane', () => ({
+  ...realControlPlane,
+  getControlPlaneBaseUrl: mock(() => ''),
+  getControlPlaneKey: mock(() => 'test-runtime'),
 }));
 
 mock.module('@/lib/runtime-fetch', () => ({

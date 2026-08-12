@@ -3,7 +3,7 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { setDesktopWindowTitle } from '@/lib/desktopNative';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import type { WorkspaceCatalogSnapshot } from '@/workspaces/types';
@@ -116,7 +116,7 @@ export const useWindowTitle = () => {
         }
 
         const localOrigin = window.__OPENCHAMBER_LOCAL_ORIGIN__ || window.location.origin;
-        const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+        const runtimeApiBaseUrl = getControlPlaneBaseUrl();
 
         if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) {
           if (!cancelled) {

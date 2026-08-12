@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test'
-import { getRuntimeKey } from '@/lib/runtime-switch'
+import { getControlPlaneKey } from '@/lib/control-plane'
 import { workspaceScopeKey, workspaceSessionKey } from '@/workspaces/identity'
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store'
 import type { WorkspaceSessionSnapshot, WorkspaceSessionSummary } from '@/workspaces/types'
@@ -20,6 +20,7 @@ const makeSession = (workspaceId: string, sessionId: string, directory: string):
   title: `Session ${sessionId}`,
   updatedAt: 1000,
   archived: false,
+  createdAt: 1000,
 })
 
 const setIndexSessions = (sessions: WorkspaceSessionSummary[]): void => {
@@ -47,12 +48,12 @@ describe('session scope migration', () => {
     getDeferredSafeStorage().removeItem('openchamber.chatDrafts.v2')
   })
 
-  test('resolveSessionScopeKey returns the workspace scope when indexed, runtime key otherwise', () => {
+  test('resolveSessionScopeKey returns the workspace scope when indexed, the unscoped bucket otherwise', () => {
     setIndexSessions([makeSession('ws-1', 'ses-1', '/a'), makeSession('ws-2', 'ses-2', '/b')])
     expect(resolveSessionScopeKey('ses-1', '/a')).toBe(workspaceScopeKey('ws-1'))
     expect(resolveSessionScopeKey('ses-2', '/b')).toBe(workspaceScopeKey('ws-2'))
-    expect(resolveSessionScopeKey('ses-unknown', '/c')).toBe(getRuntimeKey())
-    expect(resolveSessionScopeKey(null, null)).toBe(getRuntimeKey())
+    expect(resolveSessionScopeKey('ses-unknown', '/c')).toBe('')
+    expect(resolveSessionScopeKey(null, null)).toBe('')
   })
 
   test('two workspaces with the same sessionId and directory do not share selection data', () => {
@@ -128,8 +129,8 @@ describe('session scope migration', () => {
     expect(read.getSessionModelSelection('legacy-ses')).toEqual({ providerId: 'provider-new', modelId: 'model-new' })
   })
 
-  test('viewport keys are byte-identical to the legacy format in non-workspace mode', () => {
-    expect(viewportSessionKey('ses-x')).toBe(`${getRuntimeKey()}\nses-x`)
+  test('viewport keys outside workspace mode use the unscoped bucket', () => {
+    expect(viewportSessionKey('ses-x')).toBe(`\nses-x`)
   })
 
   test('viewport memory is isolated per workspace scope and keeps the legacy bare-key fallback', () => {
@@ -140,7 +141,7 @@ describe('session scope migration', () => {
     const map = useViewportStore.getState().sessionMemoryState
     expect(map.get(viewportSessionKey('ses-a'))?.viewportAnchor).toBe(3)
     expect(map.get(viewportSessionKey('ses-b'))?.viewportAnchor).toBe(7)
-    expect(map.get(`${getRuntimeKey()}\nses-a`)).toBe(undefined)
+    expect(map.get(`${getControlPlaneKey()}\nses-a`)).toBe(undefined)
 
     // Legacy bare-session-id entries remain readable.
     useViewportStore.setState({ sessionMemoryState: new Map([['ses-legacy', { viewportAnchor: 11, isStreaming: false, lastAccessedAt: 1, backgroundMessageCount: 0 }]]) })
@@ -157,7 +158,7 @@ describe('session scope migration', () => {
     expect(isSessionPinned(useSessionPinnedStore.getState().ids, directory, sessionId)).toBe(true)
 
     // Legacy runtime-keyed pin is still readable (dual read).
-    const legacyKey = getPinnedSessionKey(getRuntimeKey(), directory, sessionId)!
+    const legacyKey = getPinnedSessionKey(getControlPlaneKey(), directory, sessionId)!
     const ids = new Set(useSessionPinnedStore.getState().ids)
     ids.add(legacyKey)
     useSessionPinnedStore.setState({ ids, touchedAt: { ...useSessionPinnedStore.getState().touchedAt, [legacyKey]: 1 } })
@@ -185,16 +186,14 @@ describe('session scope migration', () => {
     expect(isSessionPinned(ids, '/repo/b', 'ses-same')).toBe(true)
   })
 
-  test('todos keys use the workspace scope and keep the legacy runtime-keyed entries readable', () => {
+  test('todos keys use the workspace scope; unmapped sessions use the unscoped bucket', () => {
     const directory = '/repo'
     const sessionId = 'ses-todo'
     setIndexSessions([makeSession('ws-1', sessionId, directory)])
     expect(getTodosPersistenceKey(resolveSessionScopeKey(sessionId, directory), directory, sessionId))
       .toBe(JSON.stringify([workspaceScopeKey('ws-1'), directory, sessionId]))
-
-    const legacyKey = getTodosPersistenceKey(getRuntimeKey(), directory, sessionId)
-    useTodosPersistStore.setState({ sessions: { [legacyKey]: { todos: [{ content: 'todo-1', status: 'pending' } as never], touchedAt: 1 } } })
-    expect(useTodosPersistStore.getState().getSessionTodos(directory, sessionId)?.[0]?.content).toBe('todo-1')
+    expect(getTodosPersistenceKey(resolveSessionScopeKey('ses-unmapped', directory), directory, 'ses-unmapped'))
+      .toBe(JSON.stringify(['', directory, 'ses-unmapped']))
   })
 
   test('chat drafts are isolated per workspace scope and keep legacy runtime-keyed drafts readable', () => {
@@ -209,7 +208,7 @@ describe('session scope migration', () => {
     expect(readChatDraft(identity).text).toBe('scoped text')
 
     // Legacy runtime-keyed draft is still readable through the dual read.
-    const legacyIdentity = createChatDraftIdentity(getRuntimeKey(), directory, sessionId)!
+    const legacyIdentity = createChatDraftIdentity(getControlPlaneKey(), directory, sessionId)!
     const storage = getDeferredSafeStorage()
     const envelope = JSON.parse(storage.getItem('openchamber.chatDrafts.v2') ?? '{}') as { drafts: Record<string, { text: string; confirmedMentions: string[]; touchedAt: number }> }
     envelope.drafts[getChatDraftIdentityKey(legacyIdentity)] = { text: 'legacy text', confirmedMentions: [], touchedAt: 1 }
@@ -231,14 +230,13 @@ describe('session scope migration', () => {
     expect(readChatDraft(ws2).text).toBe('workspace two draft')
   })
 
-  test('message queue targets use the workspace scope; non-workspace targets keep the legacy key shape', () => {
+  test('message queue targets use the workspace scope; unmapped targets use the unscoped bucket', () => {
     setIndexSessions([makeSession('ws-1', 'ses-q', '/repo')])
     const workspaceTarget = createMessageQueueTarget('ses-q', '/repo')!
     expect(workspaceTarget.scopeKey).toBe(workspaceScopeKey('ws-1'))
     expect(getMessageQueueKey(workspaceTarget)).toBe(`${workspaceScopeKey('ws-1')}\n/repo\nses-q`)
 
-    const legacyTarget = createMessageQueueTarget('ses-q2', '/repo2')!
-    expect(legacyTarget.scopeKey).toBe(getRuntimeKey())
-    expect(getMessageQueueKey(legacyTarget)).toBe(`${getRuntimeKey()}\n/repo2\nses-q2`)
+    // Unmapped sessions have no sync scope, so no queue target exists.
+    expect(createMessageQueueTarget('ses-q2', '/repo2')).toBeNull()
   })
 })

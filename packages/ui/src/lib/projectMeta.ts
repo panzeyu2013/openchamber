@@ -1,7 +1,7 @@
 import React from 'react';
 import type { ProjectEntry } from '@/lib/api/types';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import type { IconName } from "@/components/icon/icons";
 
 type ThemeVariant = 'light' | 'dark';
@@ -85,7 +85,7 @@ const buildProjectIconObjectUrlCacheKey = (
 ): string | null => {
   if (!projectId) return null;
   return [
-    getRuntimeApiBaseUrl() || 'same-origin',
+    getControlPlaneBaseUrl() || 'same-origin',
     projectId,
     query.toString(),
   ].join('|');

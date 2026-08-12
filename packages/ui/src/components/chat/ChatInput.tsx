@@ -23,7 +23,7 @@ import { useSnippetsStore } from '@/stores/useSnippetsStore';
 import { appendInlineComments } from '@/lib/messages/inlineComments';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { startReviewFlow } from '@/lib/reviewFlow';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 import {
     createChatDraftIdentity,
     readChatDraft,
@@ -837,7 +837,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
     const autoReviewRunning = useAutoReviewStore(React.useCallback((state) => {
         if (!currentSessionId) return false;
         const run = state.runsByOriginalSessionID[currentSessionId];
-        return run?.status === 'running' && run.runtimeKey === getRuntimeKey();
+        return run?.status === 'running' && run.runtimeKey === getControlPlaneKey();
     }, [currentSessionId]));
 
     const handleOpenMobilePanel = React.useCallback((panel: MobileControlsPanel) => {

@@ -5,7 +5,7 @@ import type { WorkspaceSessionSummary } from '@/workspaces/types';
  *
  * The same action serves local and remote workspaces: the composite
  * `(workspaceId, upstreamSessionId)` target is passed to `setCurrentSession`,
- * so this click NEVER calls `switchRuntimeEndpoint()` and never clears other
+ * so this click NEVER calls `setControlPlane()` and never clears other
  * workspaces' state. The sync remounts on the workspace-bound runtime handle
  * keyed by workspaceId.
  */

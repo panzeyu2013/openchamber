@@ -12,7 +12,7 @@ import { useSync } from '@/sync/use-sync';
 import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { openWorkspaceSessionEventStream } from '@/workspaces/session-index-client';
-import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 
@@ -80,7 +80,7 @@ export function SyncRuntimeEffects({ embeddedBackgroundWorkEnabled }: {
 }
 
 // Keeps the main process's per-window runtime config in sync with the
-// renderer's Active Runtime. switchRuntimeEndpoint only updates renderer-side
+// renderer's Active Runtime. setControlPlane only updates renderer-side
 // state; the main process needs the live runtimeKey to route tray clicks to a
 // window serving the SAME runtime. Gated to the desktop shell; the command
 // itself is local-sender-only in main.mjs.
@@ -90,15 +90,15 @@ const DesktopRuntimeSyncBridge: React.FC = () => {
 
     const push = () => {
       void invokeDesktop('desktop_set_runtime_config', {
-        apiBaseUrl: getRuntimeApiBaseUrl(),
-        runtimeKey: getRuntimeKey(),
+        apiBaseUrl: getControlPlaneBaseUrl(),
+        runtimeKey: getControlPlaneKey(),
         clientToken: getRuntimeBearerTokenSync(),
         requestHeaders: getRuntimeExtraHeadersSync(),
       }).catch(() => {});
     };
 
     push();
-    const unsubscribe = subscribeRuntimeEndpointChanged(push);
+    const unsubscribe = subscribeControlPlaneChanged(push);
     return unsubscribe;
   }, []);
 

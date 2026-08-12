@@ -21,7 +21,7 @@ describe('openWorkspaceSession', () => {
   test('never switches the global runtime endpoint and never resets state', () => {
     // The open contract: only `setCurrentSession` is invoked with the
     // session identity; the workspace scope is resolved inside the store, so
-    // no switchRuntimeEndpoint / runtime reset call can originate here.
+    // no setControlPlane / runtime reset call can originate here.
     const invoked = new Set<string>();
     openWorkspaceSession({ workspaceId: 'workspace-1', upstreamSessionId: 'ses-1', directory: '/repo' }, () => {
       invoked.add('setCurrentSession');

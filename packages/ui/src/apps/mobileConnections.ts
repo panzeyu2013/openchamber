@@ -24,7 +24,7 @@ import { isCapacitorApp } from '@/lib/platform';
 import { adoptRelayTunnel, isRelayModeActive } from '@/lib/relay/runtime-tunnel';
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl, getRuntimeKey, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey, setControlPlane } from '@/lib/control-plane';
 import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
 
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
@@ -198,8 +198,8 @@ export const isSameConnectionUrl = (left: string, right: string): boolean =>
 // ---------------------------------------------------------------------------
 
 // Stable identity for a relay connection. Also used as the runtime key passed
-// to switchRuntimeEndpoint so "is this saved entry the active runtime?" checks
-// can compare against getRuntimeKey().
+// to setControlPlane so "is this saved entry the active runtime?" checks
+// can compare against getControlPlaneKey().
 export const relayConnectionRuntimeKey = (relay: MobileRelayConfig): string =>
   `relay:${relay.serverId}@${relay.relayUrl.trim()}`;
 
@@ -496,12 +496,12 @@ const switchToRelayRuntime = (
     ...(grant ? { grant } : {}),
   };
   // Adopt the probe/redeem tunnel as the runtime tunnel BEFORE the switch: the
-  // activate call inside switchRuntimeEndpoint sees an equal descriptor and
+  // activate call inside setControlPlane sees an equal descriptor and
   // reuses it, skipping a second WebSocket connect + E2EE handshake.
   if (liveTunnel) {
     adoptRelayTunnel(descriptor, liveTunnel);
   }
-  switchRuntimeEndpoint({
+  setControlPlane({
     apiBaseUrl,
     clientToken,
     runtimeKey: runtimeKey ?? relayConnectionRuntimeKey(relay),
@@ -1021,7 +1021,7 @@ const switchToTransport = (
   if (transport.kind === 'relay') {
     switchToRelayRuntime(transport.relay, token, options?.grant, options?.runtimeKey, transport.tunnel);
   } else {
-    switchRuntimeEndpoint({ apiBaseUrl: transport.url, clientToken: token, runtimeKey: options?.runtimeKey });
+    setControlPlane({ apiBaseUrl: transport.url, clientToken: token, runtimeKey: options?.runtimeKey });
   }
   // Learn whether the connected server is an OpenChamber control plane and
   // pin the control-plane origin accordingly. Background-only: never blocks
@@ -1205,19 +1205,19 @@ export const validateActiveRuntimeSession = async (input: {
 const transportMatchesCurrentRuntime = (transport: ChosenTransport): boolean =>
   transport.kind === 'relay'
     ? isRelayModeActive()
-    : !isRelayModeActive() && isSameConnectionUrl(transport.url, getRuntimeApiBaseUrl());
+    : !isRelayModeActive() && isSameConnectionUrl(transport.url, getControlPlaneBaseUrl());
 
 // The saved device currently bound to the runtime, matched by its stable key.
 const findActiveConnection = (): MobileSavedConnection | null => {
-  const runtimeKey = getRuntimeKey();
-  if (!runtimeKey) return null;
-  return readConnections().find((connection) => secureTokenKeyOf(connection) === runtimeKey) ?? null;
+  const controlPlaneKey = getControlPlaneKey();
+  if (!controlPlaneKey) return null;
+  return readConnections().find((connection) => secureTokenKeyOf(connection) === controlPlaneKey) ?? null;
 };
 
 // Exported for the connections list: is this saved device the active runtime?
 export const isActiveRuntimeConnection = (connection: MobileSavedConnection): boolean => {
-  const runtimeKey = getRuntimeKey();
-  return Boolean(runtimeKey) && secureTokenKeyOf(connection) === runtimeKey;
+  const controlPlaneKey = getControlPlaneKey();
+  return Boolean(controlPlaneKey) && secureTokenKeyOf(connection) === controlPlaneKey;
 };
 
 export type ReprobeOutcome = 'switched' | 'unchanged' | 'unreachable' | 'needs-login' | 'no-connection';
@@ -1259,7 +1259,7 @@ export const reprobeActiveConnection = async (): Promise<ReprobeOutcome> => {
 
   // 2. No better transport — is the current one still alive on its live channel?
   if (currentIndex >= 0) {
-    const stillValid = await validateActiveRuntimeSession({ url: getRuntimeApiBaseUrl(), clientToken: token }, { fast: true });
+    const stillValid = await validateActiveRuntimeSession({ url: getControlPlaneBaseUrl(), clientToken: token }, { fast: true });
     if (stillValid) {
       // Still on the same transport (typically: woke up on the relay, old LAN
       // candidate dead). Ask the server for its current LAN addresses in the

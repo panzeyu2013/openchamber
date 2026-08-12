@@ -5,7 +5,7 @@ import { reloadOpenCodeConfiguration } from '@/stores/useAgentsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { getControlPlaneKey, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import {
@@ -131,18 +131,18 @@ export const OpenCodeUpdateToast: React.FC = () => {
     let cancelled = false;
     const timeoutIds: Array<ReturnType<typeof setTimeout>> = [];
 
-    const checkForUpdate = async (attempt: number, runtimeKey = getRuntimeKey()) => {
+    const checkForUpdate = async (attempt: number, runtimeKey = getControlPlaneKey()) => {
       try {
         const response = await runtimeFetch('/api/opencode/upgrade-status', { headers: { Accept: 'application/json' } });
         if (!response.ok) throw new Error(response.statusText || 'OpenCode upgrade status check failed');
         const status = await response.json().catch(() => null) as OpenCodeUpgradeStatusLike | null;
         const version = resolveOpenCodeUpgradeStatusVersion(status);
-        if (!cancelled && runtimeKey === getRuntimeKey() && version) {
+        if (!cancelled && runtimeKey === getControlPlaneKey() && version) {
           showUpdateAvailableToast(version);
         }
       } catch {
         const delay = CHECK_RETRY_DELAYS_MS[attempt];
-        if (!cancelled && runtimeKey === getRuntimeKey() && delay !== undefined) {
+        if (!cancelled && runtimeKey === getControlPlaneKey() && delay !== undefined) {
           timeoutIds.push(setTimeout(() => { void checkForUpdate(attempt + 1, runtimeKey); }, delay));
         }
       }
@@ -159,7 +159,7 @@ export const OpenCodeUpdateToast: React.FC = () => {
       timeoutIds.push(setTimeout(() => { void checkForUpdate(0); }, INITIAL_CHECK_DELAY_MS));
     }
 
-    const unsubscribeRuntime = subscribeRuntimeEndpointChanged(({ runtimeKey }) => {
+    const unsubscribeRuntime = subscribeControlPlaneChanged(({ runtimeKey }) => {
       seenVersionsRef.current.clear();
       toast.dismiss(UPDATE_TOAST_ID);
       if (useUIStore.getState().showOpenCodeUpdateNotifications) {

@@ -15,7 +15,7 @@ import {
   syncDesktopSettings,
   updateDesktopSettings,
 } from './persistence';
-import { switchRuntimeEndpoint } from './runtime-switch';
+import { setControlPlane } from './control-plane';
 
 type TestWindow = {
   __OPENCHAMBER_HOME__?: string;
@@ -242,7 +242,7 @@ describe('updateDesktopSettings', () => {
   });
 
   test('drains a pending save to the previous runtime and ignores its stale response', async () => {
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://settings-a.example', runtimeKey: 'settings-a' });
+    setControlPlane({ apiBaseUrl: 'https://settings-a.example', runtimeKey: 'settings-a' });
     const saveResult = deferred<SettingsPayload>();
     const saveCalls: Array<Partial<SettingsPayload>> = [];
     registerSettingsSave((changes) => {
@@ -251,7 +251,7 @@ describe('updateDesktopSettings', () => {
     });
     const update = updateDesktopSettings({ terminalShell: 'zsh' });
 
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://settings-b.example', runtimeKey: 'settings-b' });
+    setControlPlane({ apiBaseUrl: 'https://settings-b.example', runtimeKey: 'settings-b' });
     registerSettingsSave(async (changes) => changes as SettingsPayload);
     useUIStore.getState().setTerminalShell('fish');
 
@@ -272,11 +272,11 @@ describe('updateDesktopSettings', () => {
         if (init?.method === 'PUT' && url.includes('/api/config/settings')) fallbackRequests.push(url);
         return new Response(null, { status: 404 });
       }) as typeof fetch;
-      switchRuntimeEndpoint({ apiBaseUrl: 'https://failed-save-a.example', runtimeKey: 'failed-save-a' });
+      setControlPlane({ apiBaseUrl: 'https://failed-save-a.example', runtimeKey: 'failed-save-a' });
       registerSettingsSave(() => saveResult.promise);
       const update = updateDesktopSettings({ terminalShell: 'zsh' });
 
-      switchRuntimeEndpoint({ apiBaseUrl: 'https://failed-save-b.example', runtimeKey: 'failed-save-b' });
+      setControlPlane({ apiBaseUrl: 'https://failed-save-b.example', runtimeKey: 'failed-save-b' });
       registerSettingsSave(async (changes) => changes as SettingsPayload);
       saveResult.reject(new Error('runtime A disconnected'));
       await update;
@@ -289,11 +289,11 @@ describe('updateDesktopSettings', () => {
 
   test('rejects stale loads by generation across an A to B to A switch', async () => {
     const originalLoad = deferred<{ settings: SettingsPayload; source: 'web' | 'vscode' }>();
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://load-a.example', runtimeKey: 'load-a' });
+    setControlPlane({ apiBaseUrl: 'https://load-a.example', runtimeKey: 'load-a' });
     registerSettingsApi(async () => ({}), () => originalLoad.promise);
     const firstSync = syncDesktopSettings();
 
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://load-b.example', runtimeKey: 'load-b' });
+    setControlPlane({ apiBaseUrl: 'https://load-b.example', runtimeKey: 'load-b' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: { terminalShell: 'fish', draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true },
       source: 'web',
@@ -301,7 +301,7 @@ describe('updateDesktopSettings', () => {
     await syncDesktopSettings();
     expect(useUIStore.getState().terminalShell).toBe('fish');
 
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://load-a.example', runtimeKey: 'load-a' });
+    setControlPlane({ apiBaseUrl: 'https://load-a.example', runtimeKey: 'load-a' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: { terminalShell: 'bash', draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true },
       source: 'web',
@@ -320,7 +320,7 @@ describe('updateDesktopSettings', () => {
   test('isolates local settings mirrors and removes values omitted by the next runtime', async () => {
     getWindow();
     localStorage.clear();
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://mirror-a.example', runtimeKey: 'mirror-a' });
+    setControlPlane({ apiBaseUrl: 'https://mirror-a.example', runtimeKey: 'mirror-a' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: {
         themeId: 'theme-a',
@@ -332,7 +332,7 @@ describe('updateDesktopSettings', () => {
     }));
     await syncDesktopSettings();
 
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://mirror-b.example', runtimeKey: 'mirror-b' });
+    setControlPlane({ apiBaseUrl: 'https://mirror-b.example', runtimeKey: 'mirror-b' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: { draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true },
       source: 'web',
@@ -352,7 +352,7 @@ describe('updateDesktopSettings', () => {
 
   test('resets in-memory preferences omitted by an authoritative runtime snapshot', async () => {
     getWindow();
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://preferences-a.example', runtimeKey: 'preferences-a' });
+    setControlPlane({ apiBaseUrl: 'https://preferences-a.example', runtimeKey: 'preferences-a' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: {
         showReasoningTraces: false,
@@ -374,7 +374,7 @@ describe('updateDesktopSettings', () => {
     expect(useUIStore.getState().draftStartersVisible).toBe(false);
     expect(useMessageQueueStore.getState().followUpBehavior).toBe('steer');
 
-    switchRuntimeEndpoint({ apiBaseUrl: 'https://preferences-b.example', runtimeKey: 'preferences-b' });
+    setControlPlane({ apiBaseUrl: 'https://preferences-b.example', runtimeKey: 'preferences-b' });
     registerSettingsApi(async () => ({}), async () => ({
       settings: { draftStartersCraftGoalAdded: true, draftStartersScheduleTaskAdded: true },
       source: 'web',

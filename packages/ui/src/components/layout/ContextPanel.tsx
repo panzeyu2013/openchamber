@@ -36,7 +36,7 @@ import { toast } from '@/components/ui';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync, refreshRuntimeUrlAuthToken } from '@/lib/runtime-auth';
 import { getRuntimeUrlResolver } from '@/lib/runtime-url';
-import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey } from '@/lib/control-plane';
 import { getActiveRelayDescriptor } from '@/lib/relay/runtime-tunnel';
 import { getPreviewTargetRecoveryAction } from '@/lib/preview/proxy-response';
 import { Icon } from "@/components/icon/Icon";
@@ -730,7 +730,7 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
     : null;
 
   const targetKey = normalizedUrl ? normalizedUrl.toString() : '';
-  const proxyCacheKey = targetKey ? `${getRuntimeApiBaseUrl() || 'same-origin'}|${targetKey}` : '';
+  const proxyCacheKey = targetKey ? `${getControlPlaneBaseUrl() || 'same-origin'}|${targetKey}` : '';
   const previewColorScheme = currentTheme.metadata.variant;
 
   React.useEffect(() => {
@@ -819,7 +819,7 @@ const PreviewPane: React.FC<PreviewPaneProps> = ({ rawUrl, onNavigate }) => {
 
     let cancelled = false;
     setUrlAuthReadyKey('');
-    void refreshRuntimeUrlAuthToken(getRuntimeApiBaseUrl())
+    void refreshRuntimeUrlAuthToken(getControlPlaneBaseUrl())
       .then((token) => {
         if (!cancelled && token) setUrlAuthReadyKey(proxyUrlAuthKey);
       })
@@ -1647,7 +1647,7 @@ const IframeBrowserPane: React.FC<DesktopBrowserPaneProps> = ({ initialUrl, dire
 
     let cancelled = false;
     setUrlAuthReadyKey('');
-    void refreshRuntimeUrlAuthToken(getRuntimeApiBaseUrl())
+    void refreshRuntimeUrlAuthToken(getControlPlaneBaseUrl())
       .then((token) => {
         if (!cancelled && token) setUrlAuthReadyKey(proxyUrlAuthKey);
       })
@@ -2636,9 +2636,9 @@ export const ContextPanel: React.FC = () => {
       const data = event.data as { type?: unknown; requestId?: unknown };
       if (data?.type === EMBEDDED_RUNTIME_BOOTSTRAP_REQUEST) {
         if (typeof data.requestId !== 'string' || !data.requestId) return;
-        const runtimeKey = getRuntimeKey();
+        const runtimeKey = getControlPlaneKey();
         const payload: EmbeddedSessionRuntimeBootstrap = {
-          apiBaseUrl: getRuntimeApiBaseUrl(),
+          apiBaseUrl: getControlPlaneBaseUrl(),
           clientToken: getRuntimeBearerTokenSync(),
           localOrigin: typeof window.__OPENCHAMBER_LOCAL_ORIGIN__ === 'string'
             ? window.__OPENCHAMBER_LOCAL_ORIGIN__

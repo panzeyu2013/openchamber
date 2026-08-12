@@ -5,7 +5,7 @@ import {
   redactSensitiveUrl,
   type DesktopHost,
 } from '@/lib/desktopHosts';
-import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey } from '@/lib/control-plane';
 
 /**
  * Which configured instance the window is actually talking to.
@@ -44,14 +44,14 @@ type ResolvedDesktopHost = {
 export const resolveCurrentDesktopHost = (hosts: DesktopHost[]): ResolvedDesktopHost => {
   const currentHref = typeof window === 'undefined' ? '' : window.location.href;
   const localOrigin = hosts.find((host) => host.id === LOCAL_HOST_ID)?.url || getLocalDesktopOrigin();
-  const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+  const runtimeApiBaseUrl = getControlPlaneBaseUrl();
   const normalizedLocal = normalizeHostUrl(localOrigin) || localOrigin;
   const normalizedCurrent = normalizeHostUrl(currentHref) || currentHref;
 
   // Relay hosts share the window origin as their (virtual) API base, so URL
   // matching can't distinguish them — identify the active relay host by its
   // stable runtime key instead.
-  const activeRuntimeKey = getRuntimeKey();
+  const activeRuntimeKey = getControlPlaneKey();
   const relayMatch = hosts.find((host) => host.relay && runtimeKeyForDesktopHost(host) === activeRuntimeKey);
   if (relayMatch) {
     return { id: relayMatch.id, label: relayMatch.label, url: relayMatch.url };

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 import { getPinnedSessionKey, isSessionPinned, useSessionPinnedStore } from './useSessionPinnedStore';
 
 describe('useSessionPinnedStore', () => {
@@ -21,7 +21,7 @@ describe('useSessionPinnedStore', () => {
   });
 
   test('explicit deletion clears only the matching runtime and directory', () => {
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getControlPlaneKey();
     const activeKey = getPinnedSessionKey(runtimeKey, '/repo', 'session-1')!;
     const otherRuntimeKey = getPinnedSessionKey('other-runtime', '/repo', 'session-1')!;
     useSessionPinnedStore.setState({

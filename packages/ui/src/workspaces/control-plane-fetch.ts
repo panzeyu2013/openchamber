@@ -1,4 +1,4 @@
-import { getRuntimeApiBaseUrl } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl } from '@/lib/control-plane';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
 import { sameRuntimeOrigin } from '@/lib/runtime-origin';
 import { isRelayModeActive } from '@/lib/relay/runtime-tunnel';
@@ -95,8 +95,20 @@ const controlPlaneUnavailableResponse = (): Response => new Response(
   },
 );
 
-/** Resolves the control-plane base URL (no trailing slash). */
-export const getControlPlaneBaseUrl = (): string => {
+/**
+ * Resolves the control-plane base URL for pinned control-plane requests
+ * (no trailing slash). This is the WINDOW-ORIGIN pinning concept — which
+ * control plane served THIS page — distinct from the ACTIVE endpoint
+ * `getControlPlaneBaseUrl()` in `lib/control-plane.ts`.
+ *
+ * Priority order:
+ *   1. an explicit `setControlPlaneOrigin(...)` injection (Capacitor mobile
+ *      pins the connected OpenChamber server after a capability probe);
+ *   2. `__OPENCHAMBER_LOCAL_ORIGIN__` (desktop loopback);
+ *   3. the window origin; when the active runtime IS the control plane, its
+ *      base URL keeps the deployment path prefix (nginx subpath deployments).
+ */
+export const getPinnedControlPlaneBaseUrl = (): string => {
   if (explicitControlPlaneOrigin) return explicitControlPlaneOrigin;
   const injected = typeof window !== 'undefined'
     ? (window as typeof window & { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__
@@ -106,7 +118,7 @@ export const getControlPlaneBaseUrl = (): string => {
   }
   if (typeof window === 'undefined') return '';
   const windowOrigin = window.location.origin || '';
-  const apiBaseUrl = getRuntimeApiBaseUrl();
+  const apiBaseUrl = getControlPlaneBaseUrl();
   // When the active runtime is the control plane itself, keep its path
   // prefix so subpath deployments (nginx `location /chamber`) stay correct.
   // In relay mode the active runtime base IS the window (virtual) origin, so
@@ -122,7 +134,7 @@ type ControlPlaneRequestInit = RequestInit & { query?: RuntimeUrlQuery };
 const appendQuery = (urlValue: string, query?: RuntimeUrlQuery): string => {
   if (!query) return urlValue;
   try {
-    const url = new URL(urlValue, getControlPlaneBaseUrl() || 'http://openchamber.local');
+    const url = new URL(urlValue, getPinnedControlPlaneBaseUrl() || 'http://openchamber.local');
     const entries = query instanceof URLSearchParams ? Array.from(query.entries()) : Object.entries(query);
     for (const [name, value] of entries) {
       if (value === null || value === undefined) continue;
@@ -136,7 +148,7 @@ const appendQuery = (urlValue: string, query?: RuntimeUrlQuery): string => {
 };
 
 const resolveControlPlaneUrl = (input: string | URL | Request): string => {
-  const base = getControlPlaneBaseUrl();
+  const base = getPinnedControlPlaneBaseUrl();
   if (typeof input === 'string') {
     if (input.startsWith('/')) return `${base}${input}`;
     return rewriteWindowOriginUrl(input, base);
@@ -193,9 +205,9 @@ const rewriteWindowOriginUrl = (raw: string, base: string): string => {
 /** True when the caller's URL is the control plane itself (same origin), so
  * its bearer credential is the control plane's own and can be attached. */
 const credentialBelongsToControlPlane = (): boolean => {
-  const base = getControlPlaneBaseUrl();
+  const base = getPinnedControlPlaneBaseUrl();
   if (!base) return false;
-  const apiBaseUrl = getRuntimeApiBaseUrl();
+  const apiBaseUrl = getControlPlaneBaseUrl();
   if (!apiBaseUrl) return false;
   if (sameRuntimeOrigin(apiBaseUrl, base)) return true;
   // Relay-mode virtual base URLs equal the window origin, which IS the
@@ -217,7 +229,7 @@ export const createControlPlaneFetch = (): typeof fetch => {
     if (isRelayModeActive()) {
       return runtimeFetch(url, { ...requestInit, ...(query ? { query } : {}) });
     }
-    const base = getControlPlaneBaseUrl();
+    const base = getPinnedControlPlaneBaseUrl();
     // No http(s) control plane in this runtime (VS Code / Capacitor webview
     // with no injected origin): answer explicitly instead of dispatching a
     // request to a virtual origin's static server or the opencode binary.

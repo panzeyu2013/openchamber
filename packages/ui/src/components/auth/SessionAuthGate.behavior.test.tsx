@@ -269,16 +269,16 @@ mock.module('@/lib/runtime-auth', () => ({
   getRuntimeExtraHeadersSync: mock(() => ({})),
 }));
 
-mock.module('@/lib/runtime-switch', () => ({
-  getRuntimeApiBaseUrl: () => runtimeApiBaseUrl,
-  getRuntimeKey: () => runtimeKey,
-  subscribeRuntimeEndpointChanged: (listener: () => void) => {
+mock.module('@/lib/control-plane', () => ({
+  getControlPlaneBaseUrl: () => runtimeApiBaseUrl,
+  getControlPlaneKey: () => runtimeKey,
+  subscribeControlPlaneChanged: (listener: () => void) => {
     runtimeEndpointChangedListener = listener;
     return () => {
       if (runtimeEndpointChangedListener === listener) runtimeEndpointChangedListener = null;
     };
   },
-  switchRuntimeEndpoint: () => { runtimeSwitchCalls += 1; },
+  setControlPlane: () => { runtimeSwitchCalls += 1; },
 }));
 
 mock.module('@/lib/desktopHosts', () => ({

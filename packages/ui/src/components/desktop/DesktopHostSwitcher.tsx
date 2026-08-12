@@ -40,7 +40,7 @@ import {
 import { scheduleDesktopHostCandidateRefresh } from '@/lib/desktopRelayRestore';
 import { adoptRelayTunnel } from '@/lib/relay/runtime-tunnel';
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
-import { subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { setControlPlane, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import {
   desktopSshConnect,
   desktopSshDisconnect,
@@ -295,7 +295,7 @@ export function DesktopHostSwitcherDialog({
   }, [configHosts, localOrigin]);
 
   React.useEffect(() => {
-    return subscribeRuntimeEndpointChanged(() => setRuntimeEndpointEpoch((epoch) => epoch + 1));
+    return subscribeControlPlaneChanged(() => setRuntimeEndpointEpoch((epoch) => epoch + 1));
   }, []);
 
   const current = React.useMemo(() => {
@@ -447,16 +447,16 @@ export function DesktopHostSwitcherDialog({
 
   const handleSwitch = React.useCallback(async (host: DesktopHost) => {
     // Relay legs ride the E2EE tunnel activated in-renderer via
-    // switchRuntimeEndpoint({ relay }); the runtime fetch/socket layers route
+    // setControlPlane({ relay }); the runtime fetch/socket layers route
     // through the tunnel from the singleton registry.
     const activateRelay = (relay: NonNullable<DesktopHost['relay']>, liveTunnel?: ReturnType<typeof createRelayTunnelClient>) => {
       // Adopt the probe's live tunnel (when it kept one) BEFORE the switch: the
-      // activate call inside switchRuntimeEndpoint sees an equal descriptor and
+      // activate call inside setControlPlane sees an equal descriptor and
       // reuses it — no second WebSocket connect + E2EE handshake.
       if (liveTunnel) {
         adoptRelayTunnel({ relayUrl: relay.relayUrl, serverId: relay.serverId, hostEncPubJwk: relay.hostEncPubJwk }, liveTunnel);
       }
-      switchRuntimeEndpoint({
+      setControlPlane({
         apiBaseUrl: typeof window !== 'undefined' ? window.location.origin : '',
         clientToken: host.clientToken || null,
         runtimeKey: runtimeKeyForDesktopHost(host),
@@ -485,7 +485,7 @@ export function DesktopHostSwitcherDialog({
         if (cached.via === 'relay' && host.relay) {
           activateRelay(host.relay);
         } else if (apiOrigin) {
-          switchRuntimeEndpoint({ apiBaseUrl: apiOrigin, clientToken: clientToken || null, requestHeaders: host.requestHeaders || null, runtimeKey: runtimeKeyForDesktopHost(host) });
+          setControlPlane({ apiBaseUrl: apiOrigin, clientToken: clientToken || null, requestHeaders: host.requestHeaders || null, runtimeKey: runtimeKeyForDesktopHost(host) });
         } else if (host.relay) {
           activateRelay(host.relay);
         }
@@ -524,7 +524,7 @@ export function DesktopHostSwitcherDialog({
       if (transport === 'relay' && host.relay) {
         activateRelay(host.relay, relayProbeTunnel);
       } else {
-        switchRuntimeEndpoint({ apiBaseUrl: apiOrigin, clientToken: clientToken || null, requestHeaders: host.requestHeaders || null, runtimeKey: runtimeKeyForDesktopHost(host) });
+        setControlPlane({ apiBaseUrl: apiOrigin, clientToken: clientToken || null, requestHeaders: host.requestHeaders || null, runtimeKey: runtimeKeyForDesktopHost(host) });
       }
       onHostSwitched?.();
       setSwitchingHostId(null);
@@ -712,7 +712,7 @@ export function DesktopHostSwitcherDialog({
     const localTarget = toNavigationUrl(localOrigin);
     if (isElectronShell()) {
       const clientToken = await getLocalClientToken();
-      switchRuntimeEndpoint({ apiBaseUrl: localOrigin, clientToken: clientToken || null, runtimeKey: 'local' });
+      setControlPlane({ apiBaseUrl: localOrigin, clientToken: clientToken || null, runtimeKey: 'local' });
       onHostSwitched?.();
       return;
     }

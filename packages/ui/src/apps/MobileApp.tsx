@@ -24,9 +24,8 @@ import { readTabletLayout, useOrientation, useTabletLayout } from '@/lib/device'
 import { useHardwareKeyboard } from '@/lib/hardwareKeyboard';
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey, resetControlPlane, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
-import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
 import { clearLastActiveSession, readLastActiveSession } from '@/sync/last-session-cache';
 import { cn } from '@/lib/utils';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -58,7 +57,10 @@ import { DedicatedMobileAppProvider, type MobileAppActions } from './mobileAppCo
 import { autoConnectLastInstance, getAutoConnectTargetLabel, reprobeActiveConnection, type AutoConnectOutcome } from './mobileConnections';
 import { isCapacitorMobileApp, useNativeAndroidBackButton, useNativeMobileChrome, useNativeMobileLifecycle } from './mobileNativeChrome';
 import { refreshWorkspaceStateAfterResume } from './mobileWorkspaceResume';
-import { reconnectAppForTransportSwitch, resetAppForRuntimeEndpointChange } from './runtimeEndpointReset';
+import { disposeTerminalInputTransport } from '@/lib/terminalApi';
+import { resetStreamingState } from '@/sync/streaming';
+import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useFontsReady } from './useFontsReady';
 import { useDeepLinkHandlers, useDeepLinkSource } from './deepLinkNavigation';
@@ -77,20 +79,16 @@ import {
 
 const MobileWorkspaceSyncMount: React.FC<{
   runtimeEndpointEpoch: number;
-  directory: string;
   children: React.ReactNode;
-}> = ({ runtimeEndpointEpoch, directory, children }) => {
+}> = ({ runtimeEndpointEpoch, children }) => {
   const { handle } = useWorkspaceRuntime();
-  const workspaceId = useActiveWorkspaceId();
-  if (workspaceId && !handle) {
+  if (!handle) {
     return <WorkspaceRuntimeGate />;
   }
 
   return (
     <SyncProvider
-      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
-      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
-      directory={directory}
+      key={`${runtimeEndpointEpoch}:${handle.workspaceId}`}
       workspaceHandle={handle}
     >
       {children}
@@ -678,7 +676,7 @@ export function MobileApp({ apis }: MobileAppProps) {
   const nativeResumeValidationSeqRef = React.useRef(0);
 
   const handleNativeResume = React.useCallback(() => {
-    const apiBaseUrl = getRuntimeApiBaseUrl();
+    const apiBaseUrl = getControlPlaneBaseUrl();
     const validationSeq = nativeResumeValidationSeqRef.current + 1;
     nativeResumeValidationSeqRef.current = validationSeq;
 
@@ -713,7 +711,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     };
     const disconnect = () => {
       setControlPlaneOrigin(null);
-      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+      resetControlPlane();
       setConnectionEpoch((value) => value + 1);
     };
 
@@ -795,17 +793,18 @@ export function MobileApp({ apis }: MobileAppProps) {
     return () => registerRuntimeAPIs(null);
   }, [apis]);
 
-  // Switching instances (or disconnecting) only changes the runtime endpoint; the
-  // stores still hold the previous instance's data. Mirror the web App.tsx reset
-  // sequence so the UI fully re-bootstraps against the new server instead of going
-  // stale. The SyncProvider is keyed by runtimeEndpointEpoch so it remounts too.
+  // Switching instances (or disconnecting) only changes the control plane; the
+  // workspace-scoped stores keep their own state and are never cleared. The
+  // narrow bootstrap re-fetches the control-plane-owned catalog + session index;
+  // the SyncProvider is keyed by runtimeEndpointEpoch so the ambient sync
+  // remounts against the new endpoint.
   React.useEffect(() => {
-    return subscribeRuntimeEndpointChanged((detail) => {
-      // A LAN⇄relay swap for the SAME device keeps the runtime key stable. Treat
-      // that as a transport-only change: rebind the sync layer to the new
+    return subscribeControlPlaneChanged((detail) => {
+      // A LAN⇄relay swap for the SAME device keeps the control-plane key stable.
+      // Treat that as a transport-only change: rebind the sync layer to the new
       // transport but keep the user's session/connection state — no reconnecting
       // screen, no bounce back to the draft. Only a real instance switch (key
-      // change) does the full reset.
+      // change) re-bootstraps.
       const sameDevice = Boolean(detail.runtimeKey) && detail.runtimeKey === detail.previousRuntimeKey;
       if (sameDevice) {
         // Transport-only swap for the same device: rebind the SDK to the new
@@ -814,11 +813,17 @@ export function MobileApp({ apis }: MobileAppProps) {
         // reconnect over the new transport WITHOUT remounting — so the message
         // pagination refs, the open session, and the whole view are preserved.
         // No key bump, no flash, no bounce to the draft.
-        reconnectAppForTransportSwitch();
+        disposeTerminalInputTransport();
+        opencodeClient.reconnectToRuntimeBaseUrl();
+        resetStreamingState();
         bumpTransportSwitch();
         return;
       }
-      resetAppForRuntimeEndpointChange(detail);
+      // Instance switch: re-fetch control-plane-owned state through the existing
+      // catalog/session-index store refresh paths. A failed refresh keeps the
+      // prior snapshot (the stores signal failure, never empty success).
+      void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
+      void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
       setRuntimeEndpointEpoch((epoch) => epoch + 1);
       setConnectionEpoch((epoch) => epoch + 1);
     });
@@ -828,10 +833,10 @@ export function MobileApp({ apis }: MobileAppProps) {
   // returning user — and notification deep-links — land in the app instead of the
   // connect screen. The splash is held while we try (see render below). If there's
   // no saved instance, it's unreachable, or it needs a (re)login, we fall through
-  // to the connect screen. A successful switchRuntimeEndpoint fires the endpoint-
+  // to the connect screen. A successful setControlPlane fires the control-plane-
   // changed subscription above, which bumps the epochs and bootstraps the app.
   React.useEffect(() => {
-    if (!isNativeMobileApp || isConnected || getRuntimeApiBaseUrl()) {
+    if (!isNativeMobileApp || isConnected || getControlPlaneBaseUrl()) {
       setAutoConnectPhase('done');
       return;
     }
@@ -867,12 +872,12 @@ export function MobileApp({ apis }: MobileAppProps) {
     // NOTE: do NOT gate on isConnected here — the persisted store can claim a
     // stale `isConnected: true` at mount, which would skip the classification
     // exactly when it's needed. Check it at resolution time instead.
-    if (!isNativeMobileApp || !getRuntimeApiBaseUrl()) return;
+    if (!isNativeMobileApp || !getControlPlaneBaseUrl()) return;
     let cancelled = false;
     const dropToConnectScreen = (notice: MobileConnectionNotice | null) => {
       if (notice) setAutoConnectNotice(notice);
       setControlPlaneOrigin(null);
-      switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+      resetControlPlane();
       setConnectionEpoch((value) => value + 1);
     };
     void reprobeActiveConnection().then(async (outcome) => {
@@ -919,7 +924,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     // static server answers every request with index.html — the bootstrap
     // "succeeds" against a fake backend and flips isConnected back on, leaving
     // the user in an empty shell after a disconnect.
-    if (isNativeMobileApp && !getRuntimeApiBaseUrl()) return;
+    if (isNativeMobileApp && !getControlPlaneBaseUrl()) return;
     void initializeApp();
   }, [connectionEpoch, initializeApp, isNativeMobileApp]);
 
@@ -948,7 +953,7 @@ export function MobileApp({ apis }: MobileAppProps) {
       setLastSessionRestorePending(false);
       return;
     }
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getControlPlaneKey();
     const persisted = readLastActiveSession(runtimeKey);
     if (!persisted) {
       lastSessionRestoreDoneRef.current = true;
@@ -969,14 +974,15 @@ export function MobileApp({ apis }: MobileAppProps) {
         setLastSessionRestorePending(false);
         return;
       }
-      const snapshot = await refreshGlobalSessions().catch(() => null);
+      await useWorkspaceSessionIndexStore.getState().refresh().catch(() => null);
       if (cancelled) return;
-      if (!snapshot) {
+      if (useWorkspaceSessionIndexStore.getState().status === 'error') {
         setLastSessionRestorePending(false);
         return;
       }
       lastSessionRestoreDoneRef.current = true;
-      const session = snapshot.activeSessions.find((entry) => entry.id === persisted.sessionId);
+      const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+      const session = snapshot?.sessions.find((entry) => entry.upstreamSessionId === persisted.sessionId);
       if (!session) {
         // Authoritative snapshot says the session is gone (deleted/archived) —
         // drop the stale pointer instead of retrying it on every launch.
@@ -987,8 +993,8 @@ export function MobileApp({ apis }: MobileAppProps) {
       const latest = useSessionUIStore.getState();
       if (!latest.currentSessionId) {
         void latest.setCurrentSession(
-          session.id,
-          resolveGlobalSessionDirectory(session) ?? persisted.directory ?? undefined,
+          session.upstreamSessionId,
+          session.directory || persisted.directory || undefined,
         );
       }
       setLastSessionRestorePending(false);
@@ -1097,7 +1103,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     // Native: only while an instance is selected and reconnecting. Browser: the
     // runtime is same-origin (no explicit base URL), so any not-connected spell
     // counts — the splash holds until this fires, then the error screen shows.
-    const waitingOnConnection = !isConnected && (isNativeMobileApp ? Boolean(getRuntimeApiBaseUrl()) : true);
+    const waitingOnConnection = !isConnected && (isNativeMobileApp ? Boolean(getControlPlaneBaseUrl()) : true);
     if (!waitingOnConnection) {
       setShowConnectionRecovery(false);
       return;
@@ -1150,7 +1156,7 @@ export function MobileApp({ apis }: MobileAppProps) {
   // deleted, revoked token, unreachable). The connect screen is the only valid
   // UI then — regardless of what a stale isConnected flag claims (the store can
   // be poisoned by a bootstrap that ran against the webview's own origin).
-  const hasRuntimeEndpoint = Boolean(getRuntimeApiBaseUrl());
+  const hasRuntimeEndpoint = Boolean(getControlPlaneBaseUrl());
 
   if (isNativeMobileApp && (!hasRuntimeEndpoint || (!isConnected && !isReconnecting))) {
     // A runtime endpoint is already selected (first connect or switching instances):
@@ -1173,7 +1179,7 @@ export function MobileApp({ apis }: MobileAppProps) {
                   variant="outline"
                   onClick={() => {
                     setControlPlaneOrigin(null);
-                    switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+                    resetControlPlane();
                     setConnectionEpoch((value) => value + 1);
                   }}
                 >
@@ -1241,7 +1247,7 @@ export function MobileApp({ apis }: MobileAppProps) {
     <ErrorBoundary>
       <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
         <WorkspaceCatalogSessionIndexEffects />
-        <MobileWorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch} directory={currentDirectory || ''}>
+        <MobileWorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch}>
           <RuntimeAPIProvider apis={apis}>
             <TooltipProvider delayDuration={300} skipDelayDuration={150}>
               <div className="h-full bg-background text-foreground">
@@ -1259,7 +1265,7 @@ export function MobileApp({ apis }: MobileAppProps) {
               <MobileAppUpdateToast />
               <MobileShell onActiveConnectionDeleted={() => {
                 setControlPlaneOrigin(null);
-                switchRuntimeEndpoint({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+                resetControlPlane();
                 setConnectionEpoch((value) => value + 1);
               }} />
               <Toaster position="top-center" offset="calc(var(--oc-safe-area-top, 0px) + 16px)" />

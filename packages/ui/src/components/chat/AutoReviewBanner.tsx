@@ -4,7 +4,7 @@ import { Icon } from '@/components/icon/Icon';
 import { BusyDots } from '@/components/chat/message/parts/BusyDots';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/i18n';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
@@ -15,7 +15,7 @@ export const AutoReviewBanner = memo(() => {
   const run = useAutoReviewStore(React.useCallback((state) => {
     if (!currentSessionId) return null;
     const run = state.runsByOriginalSessionID[currentSessionId] ?? null;
-    return run?.runtimeKey === getRuntimeKey() ? run : null;
+    return run?.runtimeKey === getControlPlaneKey() ? run : null;
   }, [currentSessionId]));
   const stopRun = useAutoReviewStore((state) => state.stopRun);
   const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);

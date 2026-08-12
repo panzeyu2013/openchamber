@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
 import { getDesktopHomeDirectory, isVSCodeRuntime } from '@/lib/desktop';
-import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
@@ -451,7 +451,7 @@ if (typeof window !== 'undefined') {
   // Host switches happen in place (no page reload), so the home directory
   // must be re-resolved from the new runtime's authoritative source instead
   // of keeping the previous host's value cached.
-  subscribeRuntimeEndpointChanged(() => {
+  subscribeControlPlaneChanged(() => {
     // A workspace provider owns its directory and service. Runtime endpoint
     // changes are a legacy ambient concern; applying them here would rewrite
     // the compatibility directory while a workspace session is mounted.

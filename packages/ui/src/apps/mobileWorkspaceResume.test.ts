@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
-import { switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { setControlPlane } from '@/lib/control-plane';
 import { clearLastActiveSession, persistLastActiveSession } from '@/sync/last-session-cache';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
@@ -52,6 +52,7 @@ const makeIndexSession = (overrides: Partial<WorkspaceSessionSummary>): Workspac
     title: 'Session 1',
     updatedAt: 1000,
     archived: false,
+    createdAt: 1000,
     ...overrides,
   };
   return { ...session, key: session.key || workspaceSessionKey(session.workspaceId, session.upstreamSessionId) };
@@ -72,7 +73,7 @@ describe('refreshWorkspaceStateAfterResume', () => {
     setControlPlaneOrigin(null);
     // Establish the active runtime key so the persisted last-session entry is
     // read under the same scope the app would use.
-    switchRuntimeEndpoint({ apiBaseUrl: 'http://192.168.1.5:3901', clientToken: null, runtimeKey: 'rt-1' });
+    setControlPlane({ apiBaseUrl: 'http://192.168.1.5:3901', clientToken: null, runtimeKey: 'rt-1' });
     // The deferred storage is a process-wide singleton — clear the entry so
     // tests never read each other's persisted sessions.
     clearLastActiveSession('rt-1');

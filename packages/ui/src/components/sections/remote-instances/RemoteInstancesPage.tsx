@@ -67,7 +67,7 @@ import {
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { getDesktopLanAddress, isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeApiBaseUrl, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, setControlPlane } from '@/lib/control-plane';
 
 const randomPort = (): number => {
   return Math.floor(20000 + Math.random() * 30000);
@@ -272,7 +272,7 @@ const getRuntimePort = (): number | null => {
     return null;
   }
 
-  const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+  const runtimeApiBaseUrl = getControlPlaneBaseUrl();
   const portSource = runtimeApiBaseUrl || window.location.href;
   try {
     const port = Number(new URL(portSource).port || window.location.port);
@@ -293,7 +293,7 @@ const isLoopbackUrl = (value: string): boolean => {
 };
 
 const resolvePairingServerUrl = async (): Promise<string> => {
-  const fallback = normalizeHostUrl(getRuntimeApiBaseUrl()) || window.location.origin;
+  const fallback = normalizeHostUrl(getControlPlaneBaseUrl()) || window.location.origin;
   if (!isDesktopShell() || !isDesktopLocalOriginActive()) {
     return fallback;
   }
@@ -980,7 +980,7 @@ export const RemoteInstancesPage: React.FC = () => {
         setRemoteClients((clients) => clients.map((entry) => entry.id === client.id
           ? { ...entry, revokedAt: new Date().toISOString() }
           : entry));
-        switchRuntimeEndpoint({ apiBaseUrl: getRuntimeApiBaseUrl(), clientToken: null, runtimeKey: 'local' });
+        setControlPlane({ apiBaseUrl: getControlPlaneBaseUrl(), clientToken: null, runtimeKey: 'local' });
         return;
       }
       await loadRemoteClients();

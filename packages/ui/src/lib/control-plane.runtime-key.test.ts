@@ -1,15 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { getRuntimeKey } from './runtime-switch';
+// Fresh module instance: other test files in the same worker (e.g.
+// persistence.test.ts) mutate the shared control-plane state via
+// setControlPlane, which would poison the derived-key cache these tests pin.
+const { getControlPlaneKey } = await import(`./control-plane?runtime-key=${Date.now()}-${Math.random()}`);
 
 /**
- * `getRuntimeKey` runs on store, event, and render paths, so its cost is
+ * `getControlPlaneKey` runs on store, event, and render paths, so its cost is
  * multiplied by everything the UI does. These tests pin both directions of the
  * derived-key cache: repeated calls with unchanged inputs must do no work, and
  * any change to the inputs it derives from must still be observed.
  *
  * This lives in its own file because the cache is only reachable while the
- * runtime endpoint has not been explicitly initialised, and module state is
+ * control plane has not been explicitly initialised, and module state is
  * shared across tests within a file.
  */
 
@@ -46,35 +49,35 @@ afterEach(() => {
   else Reflect.deleteProperty(globalThis, 'window');
 });
 
-describe('getRuntimeKey caching', () => {
+describe('getControlPlaneKey caching', () => {
   test('resolves a same-origin endpoint to the local runtime key', () => {
     setRuntimeWindow('https://app.example.com/api', 'https://app.example.com');
-    expect(getRuntimeKey()).toBe('local');
+    expect(getControlPlaneKey()).toBe('local');
   });
 
   test('performs no URL work on repeated calls with unchanged inputs', () => {
     setRuntimeWindow('https://remote.example.com', 'https://app.example.com');
-    const first = getRuntimeKey();
+    const first = getControlPlaneKey();
     expect(first).toBe('url:https://remote.example.com');
 
     urlConstructions = 0;
-    for (let index = 0; index < 50; index += 1) expect(getRuntimeKey()).toBe(first);
+    for (let index = 0; index < 50; index += 1) expect(getControlPlaneKey()).toBe(first);
     expect(urlConstructions).toBe(0);
   });
 
   test('recomputes when the injected API base URL changes at runtime', () => {
     setRuntimeWindow('https://first.example.com', 'https://app.example.com');
-    expect(getRuntimeKey()).toBe('url:https://first.example.com');
+    expect(getControlPlaneKey()).toBe('url:https://first.example.com');
 
     (globalThis as RuntimeWindow & { window: RuntimeWindow }).window.__OPENCHAMBER_API_BASE_URL__ = 'https://second.example.com';
-    expect(getRuntimeKey()).toBe('url:https://second.example.com');
+    expect(getControlPlaneKey()).toBe('url:https://second.example.com');
   });
 
   test('recomputes when the injected local origin changes at runtime', () => {
     setRuntimeWindow('https://app.example.com', 'https://other.example.com');
-    expect(getRuntimeKey()).toBe('url:https://app.example.com');
+    expect(getControlPlaneKey()).toBe('url:https://app.example.com');
 
     (globalThis as RuntimeWindow & { window: RuntimeWindow }).window.__OPENCHAMBER_LOCAL_ORIGIN__ = 'https://app.example.com';
-    expect(getRuntimeKey()).toBe('local');
+    expect(getControlPlaneKey()).toBe('local');
   });
 });

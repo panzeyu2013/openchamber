@@ -1,3 +1,18 @@
+// Control-plane identity and switching.
+//
+// This module owns the ACTIVE control plane: its API base URL, its identity
+// key, its bearer/extra-headers state, relay tunnel activation, and the
+// change notifications fired when the active endpoint is replaced. It is the
+// successor of the deleted legacy runtime-endpoint module: every export here
+// is the byte-identical re-home of that role, renamed from
+// "runtime endpoint" vocabulary to "control plane".
+//
+// Distinguish it from `workspaces/control-plane-fetch.ts`: that module owns
+// the PINNED window-origin resolution used by the Workspace Catalog / Session
+// Index (which control plane served THIS page), while this module owns the
+// ACTIVE endpoint the rest of the UI talks to. Both concepts coexist; they
+// are not interchangeable.
+
 import { refreshRuntimeUrlAuthToken, setRuntimeAuthApiBaseUrl, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@/lib/runtime-auth';
 import { configureRuntimeUrlResolver } from '@/lib/runtime-url';
 import {
@@ -13,13 +28,17 @@ import {
   type RelayRuntimeDescriptor,
 } from '@/lib/relay/runtime-tunnel';
 
-export type RuntimeEndpointChangedDetail = {
+export type ControlPlaneChangedDetail = {
   apiBaseUrl: string;
   previousApiBaseUrl: string;
   runtimeKey: string;
   previousRuntimeKey: string;
 };
 
+// The event names are a cross-module contract: dictation-client.ts listens to
+// the raw `openchamber:runtime-endpoint-changed` string and tests dispatch the
+// raw `openchamber:runtime-endpoint-will-change` string, so they must stay
+// byte-identical to the legacy module they replace.
 const RUNTIME_ENDPOINT_CHANGED_EVENT = 'openchamber:runtime-endpoint-changed';
 const RUNTIME_ENDPOINT_WILL_CHANGE_EVENT = 'openchamber:runtime-endpoint-will-change';
 
@@ -39,7 +58,7 @@ const setWindowRuntimeValue = <K extends '__OPENCHAMBER_API_BASE_URL__' | '__OPE
     runtimeWindow[key] = value;
   } catch {
     // Electron preload exposes some initial globals through contextBridge, which
-    // makes them read-only. Runtime switching must still update in-memory state.
+    // makes them read-only. Control-plane switching must still update in-memory state.
   }
 };
 
@@ -71,8 +90,8 @@ const getCurrentOrigin = (): string => {
 
 // The injected API base URL is only trustworthy when it belongs to the current
 // page: a stale loopback URL from another SSH tunnel (or an old local server)
-// must never become the active runtime. Sanitized lazily and cached against
-// the raw globals it derives from, mirroring the getRuntimeKey cache.
+// must never become the active control plane. Sanitized lazily and cached
+// against the raw globals it derives from, mirroring the getControlPlaneKey cache.
 let cachedInjectedApiBaseUrl = '';
 let cachedInjectedRawApiBaseUrl: string | undefined;
 let cachedInjectedRawLocalOrigin: string | undefined;
@@ -97,16 +116,19 @@ const readInjectedApiBaseUrl = (): string => {
   return cachedInjectedApiBaseUrl;
 };
 
-export const getRuntimeApiBaseUrl = (): string => activeApiBaseUrl || readInjectedApiBaseUrl();
+/** The ACTIVE control-plane base URL (explicit selection or sanitized boot
+ * injection). Distinguish from the pinned window-origin resolution in
+ * `workspaces/control-plane-fetch.ts`. */
+export const getControlPlaneBaseUrl = (): string => activeApiBaseUrl || readInjectedApiBaseUrl();
 
-// `getRuntimeKey` keys caches, stores, and persisted state across the whole UI,
-// so it runs on store reads, event handling, and render paths. Before the
-// runtime endpoint is explicitly initialised, every call re-derived the key by
+// `getControlPlaneKey` keys caches, stores, and persisted state across the whole
+// UI, so it runs on store reads, event handling, and render paths. Before the
+// control plane is explicitly initialised, every call re-derived the key by
 // trimming two injected globals and constructing three `URL` objects, which
 // made this one of the most expensive functions during streaming.
 //
 // The result depends only on `activeApiBaseUrl` and the two injected globals,
-// and `switchRuntimeEndpoint` writes the injected API base URL at runtime, so
+// and `setControlPlane` writes the injected API base URL at runtime, so
 // the cache is validated against the raw, untrimmed values. That comparison
 // allocates nothing and still recomputes the moment any input changes.
 let cachedRuntimeKey = '';
@@ -126,7 +148,10 @@ const readRawRuntimeGlobal = (key: '__OPENCHAMBER_API_BASE_URL__' | '__OPENCHAMB
   return typeof value === 'string' ? value : undefined;
 };
 
-export const getRuntimeKey = (): string => {
+/** Control-plane identity key for cache partitioning (host keys, 'local',
+ * 'mobile-disconnected'). NOT the workspace scope key; workspace-bound sync
+ * partitions on explicit workspace scope keys instead. */
+export const getControlPlaneKey = (): string => {
   if (activeRuntimeKey) return activeRuntimeKey;
 
   const rawApiBaseUrl = readRawRuntimeGlobal('__OPENCHAMBER_API_BASE_URL__');
@@ -146,7 +171,7 @@ export const getRuntimeKey = (): string => {
     return cachedRuntimeKey;
   }
 
-  const apiBaseUrl = getRuntimeApiBaseUrl();
+  const apiBaseUrl = getControlPlaneBaseUrl();
   cachedRuntimeKey = apiBaseUrl
     ? (sameRuntimeOrigin(apiBaseUrl, readInjectedLocalOrigin())
       ? 'local'
@@ -165,7 +190,10 @@ export const getRuntimeKey = (): string => {
   return cachedRuntimeKey;
 };
 
-export const initializeRuntimeEndpoint = (options: { apiBaseUrl?: string | null; runtimeKey?: string | null } = {}): void => {
+/** Boot-time control-plane initialization: silent, fires no events, and is a
+ * no-op once an active control plane exists. Successor of
+ * `initializeRuntimeEndpoint`. */
+export const initializeControlPlane = (options: { apiBaseUrl?: string | null; runtimeKey?: string | null } = {}): void => {
   if (activeApiBaseUrl || activeRuntimeKey) {
     return;
   }
@@ -185,24 +213,34 @@ export const initializeRuntimeEndpoint = (options: { apiBaseUrl?: string | null;
     : normalizeRuntimeUrlKey(apiBaseUrl));
 };
 
-export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken?: string | null; runtimeKey?: string | null; requestHeaders?: Record<string, string> | null; relay?: RelayRuntimeDescriptor | null }): void => {
+/** Replace the ACTIVE control plane. Byte-identical successor of the legacy
+ * runtime-endpoint switch: fires will-change + changed notifications, updates
+ * the runtime auth state, window globals and URL resolver, activates or
+ * deactivates the relay tunnel singleton, and refreshes the URL-scoped token
+ * through the active transport. */
+export const setControlPlane = (options: { apiBaseUrl: string; clientToken?: string | null; runtimeKey?: string | null; requestHeaders?: Record<string, string> | null; relay?: RelayRuntimeDescriptor | null }): void => {
   const context = readWindowRuntimeOriginContext();
-  // Runtime switches are explicit user/application selections. Unlike boot
+  // Control-plane switches are explicit user/application selections. Unlike boot
   // globals, a distinct loopback endpoint here is authoritative (for example
   // switching between two SSH forwards in the same renderer).
   const apiBaseUrl = normalizeRuntimeBaseUrl(options.apiBaseUrl);
-  const previousApiBaseUrl = getRuntimeApiBaseUrl();
-  const previousRuntimeKey = getRuntimeKey();
-  const runtimeKey = apiBaseUrl
-    ? (options.runtimeKey?.trim() || normalizeRuntimeUrlKey(apiBaseUrl))
-    : (readInjectedDesktopHostId() === 'local'
-      ? 'local'
-      : readInjectedDesktopHostId()
-        ? `host:${readInjectedDesktopHostId()}`
-      : `url:${context.currentOrigin || 'default'}`);
+  const previousApiBaseUrl = getControlPlaneBaseUrl();
+  const previousRuntimeKey = getControlPlaneKey();
+  // An explicit key always wins. Without one, a base URL normalizes to its
+  // `url:` key and an empty base derives from the desktop host identity or the
+  // window origin. This also covers the disconnected state, whose explicit
+  // 'mobile-disconnected' key must never be replaced by a derived key.
+  const runtimeKey = options.runtimeKey?.trim()
+    || (apiBaseUrl
+      ? normalizeRuntimeUrlKey(apiBaseUrl)
+      : (readInjectedDesktopHostId() === 'local'
+        ? 'local'
+        : readInjectedDesktopHostId()
+          ? `host:${readInjectedDesktopHostId()}`
+          : `url:${context.currentOrigin || 'default'}`));
   const detail = { apiBaseUrl, previousApiBaseUrl, runtimeKey, previousRuntimeKey };
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent<RuntimeEndpointChangedDetail>(RUNTIME_ENDPOINT_WILL_CHANGE_EVENT, { detail }));
+    window.dispatchEvent(new CustomEvent<ControlPlaneChangedDetail>(RUNTIME_ENDPOINT_WILL_CHANGE_EVENT, { detail }));
   }
   activeApiBaseUrl = apiBaseUrl;
   activeRuntimeKey = runtimeKey;
@@ -230,26 +268,40 @@ export const switchRuntimeEndpoint = (options: { apiBaseUrl: string; clientToken
   }
   void refreshRuntimeUrlAuthToken(apiBaseUrl || undefined).catch(() => {});
   if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent<RuntimeEndpointChangedDetail>(RUNTIME_ENDPOINT_CHANGED_EVENT, {
+    window.dispatchEvent(new CustomEvent<ControlPlaneChangedDetail>(RUNTIME_ENDPOINT_CHANGED_EVENT, {
       detail,
     }));
   }
 };
 
-export const subscribeRuntimeEndpointWillChange = (callback: (detail: RuntimeEndpointChangedDetail) => void): (() => void) => {
+/** Disconnect the control plane (mobile disconnect / connect-screen state).
+ * Successor of the legacy disconnected-state switch (empty base URL, no
+ * client token, `runtimeKey: 'mobile-disconnected'`). `getControlPlaneKey()` keeps
+ * returning 'mobile-disconnected' in this state so the key never matches a
+ * saved mobile connection. */
+export const resetControlPlane = (): void => {
+  setControlPlane({ apiBaseUrl: '', clientToken: null, runtimeKey: 'mobile-disconnected' });
+};
+
+export const subscribeControlPlaneWillChange = (callback: (detail: ControlPlaneChangedDetail) => void): (() => void) => {
   if (typeof window === 'undefined') return () => {};
   const listener = (event: Event) => {
-    callback((event as CustomEvent<RuntimeEndpointChangedDetail>).detail);
+    callback((event as CustomEvent<ControlPlaneChangedDetail>).detail);
   };
   window.addEventListener(RUNTIME_ENDPOINT_WILL_CHANGE_EVENT, listener);
   return () => window.removeEventListener(RUNTIME_ENDPOINT_WILL_CHANGE_EVENT, listener);
 };
 
-export const subscribeRuntimeEndpointChanged = (callback: (detail: RuntimeEndpointChangedDetail) => void): (() => void) => {
+export const subscribeControlPlaneChanged = (callback: (detail: ControlPlaneChangedDetail) => void): (() => void) => {
   if (typeof window === 'undefined') return () => {};
   const listener = (event: Event) => {
-    callback((event as CustomEvent<RuntimeEndpointChangedDetail>).detail);
+    callback((event as CustomEvent<ControlPlaneChangedDetail>).detail);
   };
   window.addEventListener(RUNTIME_ENDPOINT_CHANGED_EVENT, listener);
   return () => window.removeEventListener(RUNTIME_ENDPOINT_CHANGED_EVENT, listener);
 };
+
+// Control-plane bearer/extra-header state lives in runtime-auth; these are the
+// control-plane-named successors of getRuntimeBearerTokenSync /
+// getRuntimeExtraHeadersSync.
+export { getRuntimeBearerTokenSync as getControlPlaneBearerTokenSync, getRuntimeExtraHeadersSync as getControlPlaneExtraHeadersSync } from '@/lib/runtime-auth';

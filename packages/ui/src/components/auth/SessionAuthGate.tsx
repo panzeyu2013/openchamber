@@ -13,7 +13,7 @@ import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
-import { getRuntimeApiBaseUrl, getRuntimeKey, subscribeRuntimeEndpointChanged, switchRuntimeEndpoint } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey, setControlPlane, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { desktopHostsGet, desktopHostsSet, getDesktopHostApiUrl, normalizeHostUrl } from '@/lib/desktopHosts';
 import { resolveStatusCheckFailureState, runtimeIdentityMatches, type GateState, type RuntimeIdentity } from './sessionAuthGateState';
 import {
@@ -75,7 +75,7 @@ const isLocalDesktopRuntime = (): boolean => {
   // which on desktop IS the embedded local server. Requiring an exact origin
   // match here used to leave local client tokens untagged (no desktop-local
   // clientKind), and the server's client-create gate then 403'd them.
-  const apiBaseUrl = getRuntimeApiBaseUrl();
+  const apiBaseUrl = getControlPlaneBaseUrl();
   const effectiveTarget = apiBaseUrl || (typeof window !== 'undefined' ? window.location.origin : '');
   if (sameOrigin(localOrigin, effectiveTarget)) return true;
   // Loopback aliases (localhost vs 127.0.0.1) still address this machine's
@@ -161,8 +161,8 @@ const shouldUseDesktopShellPasswordLogin = (): boolean => {
 };
 
 const captureRuntimeIdentity = (): RuntimeIdentity => ({
-  apiBaseUrl: getRuntimeApiBaseUrl(),
-  runtimeKey: getRuntimeKey(),
+  apiBaseUrl: getControlPlaneBaseUrl(),
+  runtimeKey: getControlPlaneKey(),
 });
 
 const isRuntimeIdentityActive = (identity: RuntimeIdentity): boolean => {
@@ -242,7 +242,7 @@ const applyDesktopClientToken = async (
   if (!clientToken || !isRuntimeIdentityActive(runtime)) return false;
   if (!await persistDesktopClientToken(runtime, clientToken)) return false;
   if (!isRuntimeIdentityActive(runtime)) return false;
-  switchRuntimeEndpoint({
+  setControlPlane({
     apiBaseUrl: runtime.apiBaseUrl,
     clientToken,
     requestHeaders: Object.keys(requestHeaders).length > 0 ? requestHeaders : null,
@@ -536,7 +536,7 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
       return;
     }
 
-    return subscribeRuntimeEndpointChanged(() => {
+    return subscribeControlPlaneChanged(() => {
       cancelPasskeyCeremony();
       setPassword('');
       setErrorMessage('');

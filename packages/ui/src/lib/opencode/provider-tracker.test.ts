@@ -1,7 +1,8 @@
 import { expect, mock, test } from "bun:test"
 
 let runtimeKey = "runtime-a"
-mock.module("@/lib/runtime-switch", () => ({ getRuntimeKey: () => runtimeKey }))
+const realControlPlane = await import("@/lib/control-plane")
+mock.module("@/lib/control-plane", () => ({ ...realControlPlane, getControlPlaneKey: () => runtimeKey }))
 
 const { assertProviderCircuitClosed, recordProviderError, recordProviderSuccess } = await import("./provider-tracker")
 
