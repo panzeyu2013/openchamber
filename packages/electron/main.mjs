@@ -2752,7 +2752,7 @@ const openMainWindow = async () => {
     // Relay hosts have no reachable HTTP base. Boot the LOCAL UI with the local
     // runtime; the renderer re-opens the E2EE tunnel on startup by reading the
     // relay descriptor + token from desktopHosts and calling
-    // switchRuntimeEndpoint({ relay }).
+    // setControlPlane({ relay }).
     const localApiBaseUrl = state.sidecarUrl || state.apiBaseUrl || state.localOrigin || '';
     const localToken = resolveStoredClientTokenForUrl(localApiBaseUrl, config) || state.clientToken || '';
     return activateMainWindow(localUiUrl, state.localOrigin, state.bootOutcome, {
@@ -4555,8 +4555,8 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
 
     case 'desktop_set_runtime_config': {
       // The renderer re-pushes its live Active Runtime identity whenever
-      // switchRuntimeEndpoint runs in place (gated to local senders, so a
-      // remote page can never claim another runtime and bait tray clicks).
+      // setControlPlane runs in place (gated to local senders, so a remote
+      // page can never claim another runtime and bait tray clicks).
       if (!browserWindow || browserWindow.isDestroyed()) return null;
       const apiBaseUrl = typeof args.apiBaseUrl === 'string' ? args.apiBaseUrl : '';
       const runtimeKey = typeof args.runtimeKey === 'string' ? args.runtimeKey.trim() : '';

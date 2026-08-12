@@ -406,16 +406,31 @@ type PersistedDraftTarget = { projectId: string | null; directory: string | null
  * is current when the draft is opened. */
 const draftTargetStorageKey = (scopeKey: string): string => `${DRAFT_TARGET_STORAGE_KEY}.${scopeKey}`
 
+const parseDraftTarget = (raw: string): PersistedDraftTarget => {
+  const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown }
+  return {
+    projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
+    directory: normalizePath(typeof parsed?.directory === "string" ? parsed.directory : null),
+  }
+}
+
 const readPersistedDraftTarget = (scopeKey: string): PersistedDraftTarget | null => {
   try {
-    // Dual read: the scope-suffixed key first, then the legacy unscoped key.
-    const raw = safeStorage.getItem(draftTargetStorageKey(scopeKey)) ?? safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
-    if (!raw) return null
-    const parsed = JSON.parse(raw) as { projectId?: unknown; directory?: unknown }
-    return {
-      projectId: typeof parsed?.projectId === "string" ? parsed.projectId : null,
-      directory: normalizePath(typeof parsed?.directory === "string" ? parsed.directory : null),
+    // Scope-suffixed key first. The unscoped legacy key (written by builds
+    // before workspace scoping) is only a one-time migration source: on first
+    // read it is promoted into this scope and left in place so a downgraded
+    // build still finds it.
+    const scopedRaw = safeStorage.getItem(draftTargetStorageKey(scopeKey))
+    if (scopedRaw) return parseDraftTarget(scopedRaw)
+    const legacyRaw = safeStorage.getItem(DRAFT_TARGET_STORAGE_KEY)
+    if (!legacyRaw) return null
+    const parsed = parseDraftTarget(legacyRaw)
+    try {
+      safeStorage.setItem(draftTargetStorageKey(scopeKey), legacyRaw)
+    } catch {
+      // Promotion is best-effort; the legacy key remains readable.
     }
+    return parsed
   } catch {
     return null
   }
@@ -929,7 +944,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     )
     // The draft target is persisted under the scope of the session that was
     // current when the draft opened (workspace scope or runtime key); the
-    // unscoped legacy key stays readable as a fallback.
+    // unscoped legacy key is read once and promoted into this scope.
     const draftScopeKey = scopeMemoryKey(get().currentSessionId, get().currentSessionDirectory, workspaceId)
     const persistedTarget = readPersistedDraftTarget(draftScopeKey)
 

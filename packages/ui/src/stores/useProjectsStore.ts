@@ -508,6 +508,9 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const now = Date.now();
       const label = options?.label?.trim() || deriveProjectLabel(normalizedPath);
+      // Catalog unavailable fallback: a path-derived id is a local
+      // compatibility id until the Catalog projection replaces the entry
+      // with the workspace id.
       const id = options?.id ?? normalizedPath;
       const entry: ProjectEntry = {
         id,

@@ -640,9 +640,9 @@ type NativeSecureStorage = {
 const nativeSecure = SecureStorage as unknown as NativeSecureStorage;
 const KEYCHAIN_ACCESS_WHEN_UNLOCKED = 0; // KeychainAccess.whenUnlocked
 
-// `key` is a connection storage key (connectionKeyOf): the normalized URL for
-// direct connections (unchanged historical format, existing tokens stay valid)
-// or the relay identity key for relay connections.
+// `key` is a connection storage key (getConnectionStorageKey): the normalized
+// URL for direct connections (unchanged historical format, existing tokens
+// stay valid) or the relay identity key for relay connections.
 const prefixedTokenKey = (key: string): string =>
   `${MOBILE_SECURE_STORAGE_PREFIX}token.${encodeURIComponent(key)}`;
 

@@ -152,6 +152,9 @@ export const withBackoffJitter = (
 
 export interface WorkspaceSessionEventStreamOptions {
   initialBackoffMs?: number;
+  /** Deterministic jitter seed; defaults to an entropy-derived per-stream
+   * seed so independent streams never reconnect in lockstep (§17.5). */
+  jitterSeed?: number;
 }
 
 const parseEventChunk = (chunk: string): WorkspaceSessionEvent | null => {
@@ -174,7 +177,8 @@ const parseEventChunk = (chunk: string): WorkspaceSessionEvent | null => {
  * backoff (1s base, 30s cap) mirroring the fleet summary transport pacing:
  * EOF and errors count as failures; only a stream that stayed up long enough
  * resets the backoff. Each reconnect delay gets deterministic ±20% jitter
- * (seeded per stream, clamped to the configured bounds — §17.5) so a fleet
+ * (seeded per stream via `jitterSeed` or an entropy default, clamped to the
+ * configured bounds — §17.5) so a fleet
  * of clients does not reconnect in lockstep. Returns a cleanup function that
  * aborts the connection and clears any pending reconnect timer.
  */
@@ -187,7 +191,9 @@ export const openWorkspaceSessionEventStream = (
   const onOuterAbort = () => abort.abort();
   signal.addEventListener('abort', onOuterAbort, { once: true });
   const initialBackoffMs = options.initialBackoffMs ?? DEFAULT_INITIAL_BACKOFF_MS;
-  const jitterRandom = createSeededRandom(0x9e3779b9);
+  const jitterRandom = createSeededRandom(
+    options.jitterSeed ?? ((Date.now() ^ Math.floor(Math.random() * 0xFFFFFFFF)) >>> 0),
+  );
   let consecutiveFailures = 0;
   let waitTimer: ReturnType<typeof setTimeout> | null = null;
 

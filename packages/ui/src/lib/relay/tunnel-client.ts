@@ -136,7 +136,9 @@ export const wrapBrowserWebSocket = (ws: WebSocket): RelayTunnelWebSocket => {
     }
   };
   ws.onerror = () => socket.onerror?.();
-  ws.onclose = (event) => socket.onclose?.({ code: event.code, reason: event.reason });
+  // Close events may arrive without a CloseEvent payload on bridged or
+  // minimal implementations; default to the spec "abnormal closure" code.
+  ws.onclose = (event) => socket.onclose?.({ code: event?.code ?? 1006, reason: event?.reason ?? '' });
   return socket;
 };
 
