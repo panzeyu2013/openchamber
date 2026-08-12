@@ -6,6 +6,7 @@ import { handleFsBridgeMessage } from './bridge-fs-runtime';
 import { handleConfigBridgeMessage } from './bridge-config-runtime';
 import { handleSystemBridgeMessage } from './bridge-system-runtime';
 import { handleProxyBridgeMessage } from './bridge-proxy-runtime';
+import { handleWorkspaceBridgeMessage } from './bridge-workspace-runtime';
 import { handlePermissionAutoAcceptBridgeMessage } from './bridge-permission-auto-accept-runtime';
 import {
   fetchOpenCodeSkillsFromApi,
@@ -34,6 +35,7 @@ import {
   collectHeaders,
   base64EncodeUtf8,
 } from './bridge-localfs-proxy-runtime';
+import { resolveWorkspaceFolders } from './workspaceResolver';
 
 export interface BridgeRequest {
   id: string;
@@ -147,6 +149,21 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
     );
     if (proxyResponse) {
       return proxyResponse;
+    }
+
+    const workspaceResponse = await handleWorkspaceBridgeMessage(
+      { id, type, payload },
+      {
+        readWorkspaceFolders: () => resolveWorkspaceFolders(vscode.workspace.workspaceFolders ?? []),
+        // No OpenChamber control plane is embedded in the extension host yet.
+        // A future control-plane proxy resolves the Workspace Catalog from
+        // `openchamber.apiUrl` here; until then every descriptor resolution
+        // answers the explicit capability_unavailable state.
+        fetchCatalogWorkspaces: async () => null,
+      },
+    );
+    if (workspaceResponse) {
+      return workspaceResponse;
     }
 
     switch (type) {

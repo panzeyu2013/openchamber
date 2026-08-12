@@ -51,6 +51,12 @@ The webview CSP permits `blob:` only for `worker-src` so shared UI parsers can r
   - The webview allocates each SSE stream ID and installs its listener before requesting the upstream stream, so immediate OpenCode replay events cannot race the bridge start response.
   - `api:proxy` accepts forward-compat `controlPlane` / `workspaceId` payload fields (backward compatible; existing callers omit them). A `controlPlane: true` request is answered with an explicit `capability_unavailable` (501, `control_plane_unavailable`) and is NEVER forwarded to the opencode binary — the current extension host has no OpenChamber control plane. A future control-plane proxy would resolve the target from `openchamber.apiUrl` here instead.
 
+- `bridge-workspace-runtime.ts`
+  - Workspace-identity message handlers (`api:workspace:descriptor:get`) with injected dependencies.
+  - The current VS Code folder set (the same `resolveWorkspaceFolders` candidates the webview bootstrap uses) resolves to a stable workspace descriptor per plan §15.6: an `available` result carries the full `WorkspaceDescriptor` with its stable UUID `workspaceId` (the webview types the payload with the shared catalog type `@openchamber/ui/workspaces/types`; the host's structural mirror is documented in the module). Matching is a pure function (`matchFolderToCatalogWorkspace`) against the descriptor `canonicalPath` with the active folder preferred and the first folder as fallback — same precedence as the legacy folder bridge.
+  - The extension host has no control plane yet, so `fetchCatalogWorkspaces` (the injected seam a future control-plane proxy drives) currently returns `null` and the bridge answers the explicit deterministic state `{ status: 'capability_unavailable', code: 'capability_unavailable', reason: 'control_plane_unavailable', workspaceFolders, activePath }` — it NEVER synthesizes a path-derived ID as authoritative identity. `no_folder` (untitled window) and `not_found` (catalog reachable, folder not cataloged) are separate explicit states. The result carries no `workspaceId` in any non-`available` state.
+  - Workspace-scoped bridge requests follow the existing shape: the descriptor result carries the resolved `workspaceId` when `available`, and `api:proxy` (`controlPlane: true`) accepts the same `workspaceId` passthrough for a future control-plane proxy.
+
 - `bridge-config-runtime.ts`
   - Config and skills message handlers (`api:config/*`).
   - Includes OpenCode resolution diagnostics parity handler used by shared UI (`/api/config/opencode-resolution`).
