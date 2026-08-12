@@ -1,6 +1,6 @@
 # 统一工作区与会话架构
 
-> 状态：**已交付并提交**（2026-08-11；分支 `feat/multi-server-remote-open`，共 36 个提交领先 `main`；另有本轮门禁收尾改动未提交：构建修复、URL-token allowlist、设置页重命名、VS Code descriptor）
+> 状态：**已交付并提交**（2026-08-11；分支 `feat/multi-server-remote-open`，共 36 个提交领先 `main`；兼容层全量删除完成，另有一批收尾改动未提交，待最终验证后提交）
 > 基线日期：2026-08-10
 > 适用范围：`packages/ui`、`packages/web`、`packages/electron`、`packages/vscode`、`packages/mobile`
 > 核心目标：以一个本地 OpenChamber 控制面统一管理所有服务器上的工作区与会话；用户不再通过切换服务器来切换会话。
@@ -9,14 +9,14 @@
 
 ## 1. 未完成事项（退出门禁）
 
-### 1.1 发布周期门禁（§12.4/§9.4，需 ≥1 个兼容发布周期 + VS Code 依赖落地）
+### 1.1 兼容层删除 — 全部关闭（2026-08-11，发布周期门禁经决策豁免）
 
-1. `packages/ui/src/lib/projectId.ts` 最终删除——当前仍是 `openchamberConfig.ts`（legacy 迁移）、`persistence.ts`（兼容读）、`useProjectsStore.ts`（VS Code folder bridge）的合法兼容路径。
-2. `useProjectsStore` legacy 双读路径（`legacyProjectMetadataByPath`、`legacyKey`）移除——等 Catalog 完全取代；VS Code folder bridge 需稳定 VS Code workspace descriptor。**进展**（2026-08-11）：descriptor 基础已落地——`packages/vscode/src/bridge-workspace-runtime.ts`（`api:workspace:descriptor:get`，纯函数匹配 catalog `canonicalPath`，状态机 `available`/`no_folder`/`capability_unavailable`/`not_found`，非 available 态绝不合成 workspaceId）+ `packages/vscode/webview/api/workspaces.ts`（共享类型包装，14 测试通过，vscode build 通过）。剩余链：① 扩展宿主实现控制面 proxy（`fetchCatalogWorkspaces` 接 `openchamber.apiUrl`）→ ② UI 消费 descriptor（替换 `syncVSCodeWorkspaceFolders` 与 `VSCodeApp` 无 handle SyncProvider）→ ③ 兼容发布周期后删除。
-3. `runtime-switch.ts` 核心导出（`getRuntimeKey`/`getRuntimeApiBaseUrl`/`switchRuntimeEndpoint`/`subscribeRuntimeEndpoint*`）删除——依赖 1+2 与 1.3-1；`sync-context` 的 `getRuntimeKey()` fallback 同步移除（`VSCodeApp` 无 workspace handle，需先落地 VS Code 控制面代理）。当前活调用点清单见 `packages/ui/src/workspaces/DOCUMENTATION.md`。
-4. `runtimeEndpointReset.ts` 整模块删除——依赖 1.3-1。
-5. `useGlobalSessionsStore` 退役（含 test-only `resetForRuntimeSwitch`）——被 Session Index + workspace-bound 消费者取代。
-6. 旧 Fleet/projects 分片数据删除——独立、延后、可审计的版本步骤，不与任何迁移同事务。
+1. ~~`projectId.ts` 删除~~ —— **已关闭**：模块已删除，三个导入者（`openchamberConfig.ts`、`persistence.ts`、`useProjectsStore.ts`）全部迁移，路径派生身份零引用。
+2. ~~`useProjectsStore` legacy 双读 + VS Code folder bridge~~ —— **已关闭**：`legacyProjectMetadataByPath`/`legacyKey`/`syncVSCodeWorkspaceFolders` 全部移除，Catalog 为唯一权威；VS Code 经 descriptor bridge（`api:workspace:descriptor:get`，状态机 `available`/`no_folder`/`capability_unavailable`/`not_found`，非 available 态绝不合成 workspaceId）消费。
+3. ~~`runtime-switch.ts` 核心导出 + sync-context ambient fallback~~ —— **已关闭**：模块删除，重安置为 `packages/ui/src/lib/control-plane.ts`（`setControlPlane`/`resetControlPlane`（key 保持 `'mobile-disconnected'`）/`getControlPlaneBaseUrl`/`getControlPlaneKey`/`subscribeControlPlane*`/`initializeControlPlane`，relay 隧道激活与 URL-token 路径行为字节一致）；`sync-context` 12 处 ambient fallback 全部移除，`scopeKey = workspaceHandle.scopeKey` 为唯一来源；`getControlPlaneKey` 仅剩 24 处控制面身份用途（主机匹配/`local`/`mobile-disconnected`/自动评审匹配/宿主缓存分区）。
+4. ~~`runtimeEndpointReset.ts` + 全部 reset 动作~~ —— **已关闭**：模块删除；`resetForRuntimeSwitch`/`prepareForRuntimeSwitch`/`restoreForRuntimeSwitch` 从全部 8 个 store 移除（终端/文件标签/会话文件夹/Git/GitHub PR/文件搜索/项目/全局）；App.tsx 与 MobileApp.tsx 触发点改为窄控制面 bootstrap（catalog+session-index refresh + epoch，绝不清理 workspace 作用域 store）。
+5. ~~`useGlobalSessionsStore` 退役~~ —— **已关闭**：store 与其测试删除，33 个消费者全部迁移（session-index summaries / 活动工作区 handle SDK）；新增 `workspaces/session-summary.ts` 与 `lib/sessionDirectory.ts`；`WorkspaceSessionSummary` 增补 `parentID`/`createdAt`（含服务端 `session-index.js` 同步）；竞态不变量 3 项移植到 `session-index-store.test.ts`（含 `refresh()` 的 revision ≤ lastApplied 拒绝提交守卫）。
+6. ~~旧分片数据与 legacy 存储双读删除~~ —— **已关闭**：persist-cache/session-prefetch-cache/viewport/session-deletion-cleanup/selection/session-ui-store/messageQueue/pinned/todos/草稿/工作树拓扑等 legacy key 双读与桶全部移除，仅剩 workspace scope 键读写。
 
 ### 1.2 环境与真实验收门禁
 
@@ -29,14 +29,14 @@
 
 ### 1.3 产品决策门禁
 
-1. 17 处 `switchRuntimeEndpoint` 调用（DesktopHostSwitcher 4、desktopRelayRestore 5、MobileApp 4、mobileConnections 2、SessionAuthGate 1、RemoteInstancesPage 1）当前全部为合法控制面切换；是否远期改为 workspace-bound 等价物由产品决定，是 facade 删除的总门禁。
+1. ~~17 处 `switchRuntimeEndpoint` 调用远期改造~~ —— **已关闭（经迁移解决）**：facade 删除后控制面重定向作为一等机制保留在 `lib/control-plane.ts`（`setControlPlane`/`resetControlPlane`），全部调用点（DesktopHostSwitcher、mobileConnections、MobileApp 断开、SessionAuthGate、desktopRelayRestore、RemoteInstancesPage revoke）已迁移，语义不变；不再存在"旧切换藏在按钮后"的问题。
 2. ~~设置页"Remote Instances"重命名为"服务器/连接"（§13.4/§15.4）~~ —— **已关闭**（2026-08-11）：页面标题/侧栏标题改为"Servers"（zh-CN 服务器），`settings/metadata.ts` title 与关键词、`settings/search.ts` 关键词、全部 11 个 locale 的 `settings.page.remoteInstances.title` 与 `settings.remoteInstances.sidebar.title` 已更新；slug `remote-instances` 保留（深链/anchors 兼容，DesktopHostSwitcher 与 SettingsView 仍按该 slug 定位）。
 
 ### 1.4 工程 DoD 未达成项
 
 - [x] 设置页重命名与 settings search 关键词已更新（见 1.3-2，2026-08-11）。
-- [x] type-check / build 已通过（2026-08-11）：`packages/ui`、`packages/web` 均 0 错误，`build:ui`/`build:web` 成功（见 1.2-1）；改动文件 lint 为 0 错误。
-- [ ] 真实边界报告（1.2-5）未交付。
+- [x] type-check / build 已通过（2026-08-11）：`packages/ui`、`packages/web`、`packages/vscode` 均 0 错误，`build:ui`/`build:web`/vscode build 成功；lint 0 错误 0 警告。
+- [ ] 真实边界报告（1.2-5）未交付——VS Code 侧已具备（descriptor + 控制面 HTTP/SSE 转发，WS 显式 501），Electron packaged/Direct/Relay/SSH/Mobile 需真实实例复验。
 - [ ] 性能预算真实测量证据（1.2-2 阻塞）——当前代码级证据：
 
 | §17.5 预算项 | 代码审查结论 |
