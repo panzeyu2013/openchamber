@@ -8,6 +8,18 @@ type OpenSseProxyOptions = {
   signal: AbortSignal;
   onChunk: (chunk: string) => void;
   stallTimeoutMs?: number;
+  /** Forward to the configured control plane (`openchamber.apiUrl`) instead
+   * of the managed opencode binary: the target is `{controlPlaneOrigin}{path}`
+   * verbatim (no `/event` normalization, no default-directory injection) with
+   * the same auth headers the binary's event stream uses. The upstream stream
+   * is relayed as-is and the host does NOT reconnect — the session-index
+   * client owns reconnect with its own backoff, so the host fails fast instead
+   * of stacking retry layers. */
+  controlPlane?: boolean;
+  /** Control-plane origin resolved by the caller (`readConfiguredControlPlaneOrigin`),
+   * required when `controlPlane` is set. Missing origins throw before any
+   * fetch so the callers can answer `capability_unavailable` explicitly. */
+  controlPlaneOrigin?: string | null;
 };
 
 type OpenSseProxyResult = {
@@ -89,17 +101,34 @@ const fetchSseResponse = async (
   path: string,
   headers: Record<string, string> | undefined,
   signal: AbortSignal,
+  controlPlane: boolean | undefined,
+  controlPlaneOrigin: string | null | undefined,
 ): Promise<Response> => {
-  const baseUrl = await waitForApiUrl(manager);
-  if (!baseUrl) {
-    throw new Error('OpenCode API URL not available');
+  let targetUrl: string;
+  if (controlPlane) {
+    const origin = typeof controlPlaneOrigin === 'string' && controlPlaneOrigin.trim().length > 0
+      ? controlPlaneOrigin.trim()
+      : null;
+    if (!origin) {
+      throw new Error('Control plane is not available in the VS Code runtime');
+    }
+    const parsed = new URL(path, 'https://openchamber.invalid');
+    // Resolve relative to the origin base (no leading slash) so a
+    // path-prefixed control-plane origin (`https://host/chamber`) keeps its
+    // prefix — same joining rule as the generic `api:proxy` forward.
+    targetUrl = new URL(`${parsed.pathname}${parsed.search}`.replace(/^\/+/, ''), `${origin.replace(/\/+$/, '')}/`).toString();
+  } else {
+    const baseUrl = await waitForApiUrl(manager);
+    if (!baseUrl) {
+      throw new Error('OpenCode API URL not available');
+    }
+
+    const { pathname, searchParams, directory } = normalizeSsePath(path);
+    const resolvedDirectory = directory || resolveDefaultDirectory(manager);
+    targetUrl = createSseUrl(baseUrl, pathname, searchParams, resolvedDirectory).toString();
   }
 
-  const { pathname, searchParams, directory } = normalizeSsePath(path);
-  const resolvedDirectory = directory || resolveDefaultDirectory(manager);
-  const targetUrl = createSseUrl(baseUrl, pathname, searchParams, resolvedDirectory);
-
-  const response = await fetch(targetUrl.toString(), {
+  const response = await fetch(targetUrl, {
     method: 'GET',
     headers: createSseHeaders(manager, headers),
     signal,
@@ -204,6 +233,8 @@ export const openSseProxy = async ({
   signal,
   onChunk,
   stallTimeoutMs,
+  controlPlane,
+  controlPlaneOrigin,
 }: OpenSseProxyOptions): Promise<OpenSseProxyResult> => {
   // Reconnect logic with exponential backoff
   let reconnectAttempts = 0;
@@ -211,9 +242,10 @@ export const openSseProxy = async ({
   const connect = async (): Promise<Response> => {
     try {
       const { pathname } = normalizeSsePath(path);
-      console.log(`[SSE] Connecting to ${pathname} (attempt ${reconnectAttempts + 1}/${MAX_RECONNECTS + 1})`);
+      const displayPath = controlPlane ? path : pathname;
+      console.log(`[SSE] Connecting to ${displayPath} (attempt ${reconnectAttempts + 1}/${MAX_RECONNECTS + 1})`);
 
-      const result = await fetchSseResponse(manager, path, headers, signal);
+      const result = await fetchSseResponse(manager, path, headers, signal, controlPlane, controlPlaneOrigin);
       reconnectAttempts = 0;
       return result;
     } catch (error) {
@@ -221,26 +253,29 @@ export const openSseProxy = async ({
         throw error;
       }
 
-      // Implement reconnect logic
-      if (!signal.aborted && reconnectAttempts < MAX_RECONNECTS) {
-        reconnectAttempts++;
-        const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1); // Exponential backoff
-
-        console.warn(
-          `[SSE] Connection failed (attempt ${reconnectAttempts}/${MAX_RECONNECTS}), ` +
-          `retrying in ${delay}ms...`,
-          error
-        );
-
-        await sleep(delay, signal);
-        if (signal.aborted) {
-          throw getAbortReason(signal);
-        }
-        return connect(); // Recursive retry
+      // Control-plane streams fail fast: the session-index client owns
+      // reconnect with its own backoff, so the host must not stack retries on
+      // top (or delay the explicit capability_unavailable answer).
+      if (controlPlane || (!signal.aborted && reconnectAttempts >= MAX_RECONNECTS)) {
+        console.error(`[SSE] Connection failed after ${reconnectAttempts} attempts`, error);
+        throw error;
       }
 
-      console.error(`[SSE] Connection failed after ${reconnectAttempts} attempts`, error);
-      throw error;
+      // Implement reconnect logic
+      reconnectAttempts++;
+      const delay = BASE_RECONNECT_DELAY * Math.pow(2, reconnectAttempts - 1); // Exponential backoff
+
+      console.warn(
+        `[SSE] Connection failed (attempt ${reconnectAttempts}/${MAX_RECONNECTS}), ` +
+        `retrying in ${delay}ms...`,
+        error
+      );
+
+      await sleep(delay, signal);
+      if (signal.aborted) {
+        throw getAbortReason(signal);
+      }
+      return connect(); // Recursive retry
     }
   };
 
@@ -254,7 +289,7 @@ export const openSseProxy = async ({
       const cause = (error as { cause?: { code?: string } } | null)?.cause;
 
       // Attempt reconnect on socket errors
-      if (!signal.aborted) {
+      if (!signal.aborted && !controlPlane) {
         if (cause?.code === 'UND_ERR_SOCKET' || cause?.code === 'ECONNRESET') {
           console.warn('[SSE] Socket error detected, attempting reconnect...');
 

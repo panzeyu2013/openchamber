@@ -1,6 +1,7 @@
 import { createVSCodeAPIs } from './api';
-import { onCommand, onThemeChange, proxyApiRequest, proxySessionMessageRequest, sendBridgeMessage, startSseProxy, stopSseProxy } from './api/bridge';
-import { buildControlPlaneUnavailableResponse, isControlPlaneApiPath } from './api/controlPlane';
+import { onCommand, onThemeChange, proxyApiRequest, proxySessionMessageRequest, sendBridgeMessage, startSseProxy, stopSseProxy, type ProxiedSseStartResponse } from './api/bridge';
+import { buildControlPlaneUnavailableResponse, isControlPlaneApiPath, isControlPlaneSseRequest } from './api/controlPlane';
+import { resolveCurrentWorkspaceDescriptor } from './api/workspaces';
 import { vscodeStreamPerfCount, vscodeStreamPerfMeasure, vscodeStreamPerfObserve } from './api/streamPerf';
 import { extractBodyBase64, extractBodyText, extractJsonBody, hasInitBody } from './requestBodyTransport';
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
@@ -355,6 +356,89 @@ const buildProxiedResponse = (
 
   const body = proxied.bodyBase64 ? decodeBase64(proxied.bodyBase64) : new ArrayBuffer(0);
   return new Response(body, { status: proxied.status, headers: proxied.headers });
+};
+
+const startSseBridgeStream = async (options: {
+  path: string;
+  headers: Record<string, string>;
+  signal?: AbortSignal;
+  controlPlane?: boolean;
+}): Promise<{ stream: ReadableStream<Uint8Array>; start: ProxiedSseStartResponse }> => {
+  // Install the listener before the extension opens the upstream stream. A
+  // reconnect can replay an event immediately, before the start response
+  // has crossed the VS Code bridge.
+  const streamId = `sse_webview_${Date.now()}_${++sseStreamCounter}`;
+  const encoder = new TextEncoder();
+  let unsubscribe: (() => void) | null = null;
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const onMessage = (event: MessageEvent) => {
+        const msg = event.data as { type?: string; streamId?: string; chunk?: string; error?: string };
+        if (!msg || msg.streamId !== streamId) return;
+
+        if (msg.type === 'api:sse:chunk' && typeof msg.chunk === 'string') {
+          vscodeStreamPerfCount('vscode.webview.sse_chunk');
+          vscodeStreamPerfObserve('vscode.webview.sse_chunk_bytes', msg.chunk.length);
+          controller.enqueue(encoder.encode(msg.chunk));
+          return;
+        }
+
+        if (msg.type === 'api:sse:end') {
+          vscodeStreamPerfCount('vscode.webview.sse_end');
+          unsubscribe?.();
+          unsubscribe = null;
+          if (typeof msg.error === 'string' && msg.error.length > 0) {
+            controller.error(new Error(msg.error));
+          } else {
+            controller.close();
+          }
+          void stopSseProxy({ streamId }).catch(() => {});
+        }
+      };
+
+      window.addEventListener('message', onMessage);
+      unsubscribe = () => window.removeEventListener('message', onMessage);
+
+      const signal = options.signal;
+      if (signal) {
+        const onAbort = () => {
+          unsubscribe?.();
+          unsubscribe = null;
+          try {
+            controller.error(new DOMException('Aborted', 'AbortError'));
+          } catch {
+            controller.close();
+          }
+          void stopSseProxy({ streamId }).catch(() => {});
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    },
+    cancel() {
+      unsubscribe?.();
+      unsubscribe = null;
+      void stopSseProxy({ streamId }).catch(() => {});
+    },
+  });
+
+  let start;
+  try {
+    start = await vscodeStreamPerfMeasure('vscode.webview.sse_start_ms', () => startSseProxy({
+      path: options.path,
+      headers: options.headers,
+      streamId,
+      ...(options.controlPlane === true ? { controlPlane: true } : {}),
+    }));
+  } catch (error) {
+    await stream.cancel();
+    throw error;
+  }
+  return { stream, start };
 };
 
 const isSseApiPath = (pathname: string) => pathname === '/api/event' || pathname === '/api/global/event';
@@ -1169,14 +1253,45 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
   }
 
   // Control-plane-owned paths (workspace catalog / session index /
-  // connections). The opencode binary cannot answer them: the current
-  // extension host has no OpenChamber control plane, so answer an explicit
-  // control_plane_unavailable instead of forwarding to the binary (which
-  // would surface a confusing 404). When a future extension host exposes a
-  // control plane, route through the bridge (`api:proxy` with
-  // `controlPlane: true`) instead of short-circuiting.
+  // connections). The opencode binary cannot answer them: when the extension
+  // host has no OpenChamber control plane configured (`openchamber.apiUrl`),
+  // answer an explicit control_plane_unavailable instead of forwarding to the
+  // binary (which would surface a confusing 404). When a control plane IS
+  // configured the requests ride the bridge (`api:proxy` with
+  // `controlPlane: true`) and the extension host forwards them to that origin
+  // (or answers its own explicit capability_unavailable). SSE streams ride
+  // the streamed SSE bridge (`api:sse:start` with `controlPlane: true`) — a
+  // single-response proxy message cannot stream an open event stream.
   if (targetUrl && isControlPlaneApiPath(normalizedPathname)) {
-    return buildControlPlaneUnavailableResponse();
+    const configuredOrigin = window.__VSCODE_CONFIG__?.apiUrl?.trim();
+    if (!configuredOrigin) {
+      return buildControlPlaneUnavailableResponse();
+    }
+    const headersFromRequest = input instanceof Request ? headersToRecord(input.headers) : {};
+    const headersFromInit = headersToRecord(init?.headers);
+    const headers = { ...headersFromRequest, ...headersFromInit };
+    const signal = (input instanceof Request ? input.signal : init?.signal) as AbortSignal | undefined;
+    const controlPlanePath = `${normalizedPathname}${targetUrl.search}`;
+
+    if (isControlPlaneSseRequest(headers)) {
+      const { stream, start } = await startSseBridgeStream({ path: controlPlanePath, headers, signal, controlPlane: true });
+      if (!start.streamId) {
+        void stream.cancel();
+        return new Response(null, { status: start.status || 503, headers: start.headers || {} });
+      }
+      return new Response(stream, { status: start.status || 200, headers: start.headers || { 'content-type': 'text/event-stream' } });
+    }
+
+    const bodyBase64 = await extractBodyBase64(input, init, method);
+    const proxied = await proxyApiRequest({
+      method,
+      path: controlPlanePath,
+      headers,
+      bodyBase64,
+      signal,
+      controlPlane: true,
+    });
+    return buildProxiedResponse(proxied);
   }
 
   if (targetUrl && isLocalRuntimePath(normalizedPathname)) {
@@ -1197,75 +1312,8 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = { ...headersFromRequest, ...headersFromInit };
 
     if (isSseApiPath(targetUrl.pathname)) {
-      // Install the listener before the extension opens the upstream stream. A
-      // reconnect can replay an event immediately, before the start response
-      // has crossed the VS Code bridge.
-      const streamId = `sse_webview_${Date.now()}_${++sseStreamCounter}`;
       const signal = (input instanceof Request ? input.signal : init?.signal) as AbortSignal | undefined;
-      const encoder = new TextEncoder();
-      let unsubscribe: (() => void) | null = null;
-
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          const onMessage = (event: MessageEvent) => {
-            const msg = event.data as { type?: string; streamId?: string; chunk?: string; error?: string };
-            if (!msg || msg.streamId !== streamId) return;
-
-            if (msg.type === 'api:sse:chunk' && typeof msg.chunk === 'string') {
-              vscodeStreamPerfCount('vscode.webview.sse_chunk');
-              vscodeStreamPerfObserve('vscode.webview.sse_chunk_bytes', msg.chunk.length);
-              controller.enqueue(encoder.encode(msg.chunk));
-              return;
-            }
-
-            if (msg.type === 'api:sse:end') {
-              vscodeStreamPerfCount('vscode.webview.sse_end');
-              unsubscribe?.();
-              unsubscribe = null;
-              if (typeof msg.error === 'string' && msg.error.length > 0) {
-                controller.error(new Error(msg.error));
-              } else {
-                controller.close();
-              }
-              void stopSseProxy({ streamId }).catch(() => {});
-            }
-          };
-
-          window.addEventListener('message', onMessage);
-          unsubscribe = () => window.removeEventListener('message', onMessage);
-
-          if (signal) {
-            const onAbort = () => {
-              unsubscribe?.();
-              unsubscribe = null;
-              try {
-                controller.error(new DOMException('Aborted', 'AbortError'));
-              } catch {
-                controller.close();
-              }
-              void stopSseProxy({ streamId }).catch(() => {});
-            };
-            if (signal.aborted) {
-              onAbort();
-              return;
-            }
-            signal.addEventListener('abort', onAbort, { once: true });
-          }
-        },
-        cancel() {
-          unsubscribe?.();
-          unsubscribe = null;
-          void stopSseProxy({ streamId }).catch(() => {});
-        },
-      });
-
-      let start;
-      try {
-        start = await vscodeStreamPerfMeasure('vscode.webview.sse_start_ms', () => startSseProxy({ path: suffixPath, headers, streamId }));
-      } catch (error) {
-        await stream.cancel();
-        throw error;
-      }
+      const { stream, start } = await startSseBridgeStream({ path: suffixPath, headers, signal });
       if (!start.streamId) {
         void stream.cancel();
         return new Response(null, { status: start.status || 503, headers: start.headers || {} });
@@ -1422,37 +1470,39 @@ const normalizeWorkspaceFoldersPayload = (value: unknown): Array<{ name: string;
     .filter((entry): entry is { name: string; path: string } => entry !== null);
 };
 
-const syncVSCodeWorkspaceProjects = async (
-  workspaceFolders: Array<{ name: string; path: string }>,
-  activePath?: string,
-) => {
-  if (window.__VSCODE_CONFIG__) {
-    window.__VSCODE_CONFIG__.workspaceFolders = workspaceFolders;
-  }
-  const { useProjectsStore } = await import('@/stores/useProjectsStore');
-  return useProjectsStore.getState().syncVSCodeWorkspaceFolders(workspaceFolders, activePath);
-};
-
 onCommand('workspaceFoldersChanged', (payload) => {
   const record = payload as { workspaceFolders?: unknown } | undefined;
-  const workspaceFolders = normalizeWorkspaceFoldersPayload(record?.workspaceFolders);
-  void syncVSCodeWorkspaceProjects(workspaceFolders);
+  if (window.__VSCODE_CONFIG__) {
+    window.__VSCODE_CONFIG__.workspaceFolders = normalizeWorkspaceFoldersPayload(record?.workspaceFolders);
+  }
+  // The folder set drives the workspace identity through the descriptor
+  // bridge (api:workspace:descriptor:get). Re-resolve it and re-render the
+  // app root so the descriptor-driven mount reflects the new folders.
+  void import('@openchamber/ui/apps/renderVSCodeApp').then(async ({ renderVSCodeApp }) => {
+    const descriptor = await toWorkspaceDescriptorResult();
+    renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs(), descriptor);
+  });
 });
 
 // Listen for newSession command from extension title bar button
 onCommand('newSession', (payload) => {
-  const record = payload as { directory?: unknown; workspaceFolders?: unknown } | undefined;
+  const record = payload as { directory?: unknown } | undefined;
   const directory = record?.directory;
   const directoryOverride = typeof directory === 'string' && directory.trim().length > 0 ? directory.trim() : undefined;
-  const workspaceFolders = normalizeWorkspaceFoldersPayload(record?.workspaceFolders);
 
   Promise.all([
     import('@/sync/session-ui-store'),
-    syncVSCodeWorkspaceProjects(workspaceFolders, directoryOverride),
-  ]).then(([{ useSessionUIStore }, selectedProject]) => {
+    import('@/stores/useProjectsStore'),
+  ]).then(([{ useSessionUIStore }, { useProjectsStore }]) => {
+    // The draft directory is the requested folder; the project id resolves
+    // from the Catalog-first projects projection by path (no path-derived
+    // identity is synthesized).
+    const project = useProjectsStore.getState().projects
+      .find((entry) => directoryOverride && entry.path === directoryOverride.replace(/\\/g, '/').replace(/\/+$/, ''))
+      ?? null;
     useSessionUIStore.getState().openNewSessionDraft(
       directoryOverride
-        ? { directoryOverride, selectedProjectId: selectedProject?.id ?? undefined }
+        ? { directoryOverride, selectedProjectId: project?.id ?? undefined }
         : undefined
     );
   });
@@ -1882,9 +1932,33 @@ onCommand('activeEditorFile', (payload) => {
   });
 });
 
+const toWorkspaceDescriptorResult = (): Promise<import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult> =>
+  resolveCurrentWorkspaceDescriptor().then(
+    (result): import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult => {
+      if (result.status === 'available') {
+        return {
+          phase: 'available',
+          workspaceId: result.workspaceId,
+          workspace: result.workspace,
+          activePath: result.activePath,
+        };
+      }
+      return {
+        phase: 'unavailable',
+        code: result.status === 'capability_unavailable' ? result.code : result.status,
+        reason: result.status === 'capability_unavailable' ? result.reason : undefined,
+      };
+    },
+    (): import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult => ({
+      phase: 'unavailable',
+      code: 'bridge_error',
+    }),
+  );
+
 import('@openchamber/ui/apps/renderVSCodeApp')
   .then(async ({ renderVSCodeApp }) => {
-    renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs());
+    const descriptor = await toWorkspaceDescriptorResult();
+    renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs(), descriptor);
     await waitForUiMount();
     uiMounted = true;
     maybeHideLoadingOverlay();

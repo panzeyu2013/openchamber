@@ -8,6 +8,7 @@ const createDeps = () => ({
   sanitizeForwardHeaders: mock((headers) => headers || {}),
   collectHeaders: mock(() => ({})),
   base64EncodeUtf8: mock((text) => Buffer.from(text, 'utf8').toString('base64')),
+  resolveControlPlaneOrigin: mock(() => null),
 });
 
 describe('bridge proxy runtime', () => {

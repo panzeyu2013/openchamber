@@ -63,15 +63,66 @@ const isSseProxyPath = (requestPath: string): boolean => {
   }
 };
 
-type ProxyRuntimeDeps = {
+const isSseAcceptRequest = (headers: Record<string, string> | undefined): boolean => {
+  if (!headers) {
+    return false;
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === 'accept' && value.toLowerCase().includes('text/event-stream')) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const isWebSocketUpgradeRequest = (headers: Record<string, string> | undefined): boolean => {
+  if (!headers) {
+    return false;
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === 'upgrade' && value.toLowerCase().trim() === 'websocket') {
+      return true;
+    }
+  }
+  return false;
+};
+
+const collectControlPlaneResponseHeaders = (
+  headers: Headers,
+  deps: Pick<ProxyRuntimeDeps, 'collectHeaders'>,
+): Record<string, string> => {
+  const result = collectProxyResponseHeaders(headers, deps);
+  for (const name of CONTROL_PLANE_RESPONSE_HEADER_BLOCKLIST) {
+    delete result[name];
+  }
+  return result;
+};
+
+export type ProxyRuntimeDeps = {
   tryHandleLocalFsProxy: (method: string, requestPath: string) => Promise<ApiProxyResponsePayload | null>;
   buildUnavailableApiResponse: () => ApiProxyResponsePayload;
   sanitizeForwardHeaders: (input: Record<string, string> | undefined) => Record<string, string>;
   collectHeaders: (headers: Headers) => Record<string, string>;
   base64EncodeUtf8: (text: string) => string;
+  /** Configured control-plane origin (`openchamber.apiUrl`) or `null` when no
+   * control plane is configured. The managed opencode binary is NOT a control
+   * plane, so `controlPlane: true` requests forward ONLY when this resolves a
+   * non-null origin; otherwise they keep the explicit `capability_unavailable`
+   * answer. */
+  resolveControlPlaneOrigin: () => string | null;
 };
 
 const proxyAbortControllers = new Map<string, AbortController>();
+
+// Control-plane proxy forward: the target origin is the explicitly configured
+// `openchamber.apiUrl` (the same origin `bridge-workspace-runtime.ts` reads the
+// catalog from). The timeout mirrors that catalog read's 8s abort, and the
+// per-request controller keeps `api:proxy:abort` working like the binary path.
+const CONTROL_PLANE_PROXY_TIMEOUT_MS = 8000;
+
+// Upstream credentials must never reach the webview: response headers that
+// could carry auth/session material are dropped before the payload is returned.
+const CONTROL_PLANE_RESPONSE_HEADER_BLOCKLIST = ['authorization', 'set-cookie', 'www-authenticate'];
 
 // ---------------------------------------------------------------------------
 // In-flight read coalescing (parity with the web runtimeFetch coalescer)
@@ -125,6 +176,51 @@ const performApiProxyFetch = async (
   }
 };
 
+/** Forward one non-streaming control-plane request to the configured control
+ * plane (`{origin}{path}` with the host's auth headers) and return the
+ * upstream status/body/headers to the webview. Upstream auth material is
+ * stripped from the response headers; the body is returned verbatim. SSE
+ * streams never reach this function — the webview routes those through the
+ * dedicated SSE bridge, and this handler rejects SSE-accept control-plane
+ * requests explicitly so nothing buffers an open stream. */
+const performControlPlaneProxyFetch = async (
+  origin: string,
+  requestPath: string,
+  method: string,
+  headers: Record<string, string>,
+  body: Buffer | undefined,
+  signal: AbortSignal,
+  deps: Pick<ProxyRuntimeDeps, 'collectHeaders'>,
+): Promise<ApiProxyResponsePayload> => {
+  try {
+    const base = `${origin.replace(/\/+$/, '')}/`;
+    const targetUrl = new URL(requestPath.replace(/^\/+/, ''), base).toString();
+    const response = await fetch(targetUrl, { method, headers, body, signal });
+    const responseHeaders = collectControlPlaneResponseHeaders(response.headers, deps);
+    if (shouldReturnTextBody(response.headers)) {
+      return { status: response.status, headers: responseHeaders, bodyText: await response.text() };
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return {
+      status: response.status,
+      headers: responseHeaders,
+      bodyBase64: Buffer.from(arrayBuffer).toString('base64'),
+    };
+  } catch (error) {
+    const isTimeout =
+      error instanceof Error
+      && ((error as Error & { name?: string }).name === 'TimeoutError'
+        || (error as Error & { name?: string }).name === 'AbortError');
+    return {
+      status: isTimeout ? 504 : 502,
+      headers: { 'content-type': 'application/json' },
+      bodyText: JSON.stringify({
+        error: isTimeout ? 'Control plane request timed out' : error instanceof Error ? error.message : 'Failed to reach control plane',
+      }),
+    };
+  }
+};
+
 export async function handleProxyBridgeMessage(
   message: BridgeMessageInput,
   ctx: BridgeContext | undefined,
@@ -162,22 +258,85 @@ export async function handleProxyBridgeMessage(
       }
 
       // Control-plane-owned requests (workspace catalog / session index /
-      // connections) must NEVER reach the opencode binary. The current
-      // extension host has no OpenChamber control plane, so answer an
-      // explicit capability_unavailable. A future control-plane proxy would
-      // resolve the target from openchamber.apiUrl here and forward the
-      // request (optionally scoped by `workspaceId`) instead.
+      // connections) must NEVER reach the opencode binary. With an explicitly
+      // configured control plane (`openchamber.apiUrl`, the same origin the
+      // descriptor resolution reads the catalog from) the request is forwarded
+      // to `{origin}{path}{query}` with the host's auth headers; without one
+      // the request keeps the explicit capability_unavailable answer. The
+      // managed opencode binary is deliberately NOT treated as a control
+      // plane, so no localhost fallback is ever guessed.
       if (controlPlane === true) {
-        const data: ApiProxyResponsePayload = {
-          status: 501,
-          headers: { 'content-type': 'application/json' },
-          bodyText: JSON.stringify({
-            error: 'Control plane is not available in the VS Code runtime',
-            code: 'capability_unavailable',
-            ...(typeof workspaceId === 'string' && workspaceId.length > 0 ? { workspaceId } : {}),
-          }),
+        // VS Code V1 does not support terminal/WebSocket surfaces: never try
+        // to HTTP-forward a WS upgrade to the control plane.
+        if (isWebSocketUpgradeRequest(headers)) {
+          const data: ApiProxyResponsePayload = {
+            status: 501,
+            headers: { 'content-type': 'application/json' },
+            bodyText: JSON.stringify({
+              error: 'Terminal (WebSocket) is not supported in the VS Code runtime',
+              code: 'capability_unavailable',
+            }),
+          };
+          return { id, type, success: true, data };
+        }
+
+        // SSE streams cannot be answered by a single-response proxy message;
+        // the webview routes control-plane SSE through api:sse:start. Reject
+        // SSE-accept requests here explicitly instead of buffering an open
+        // upstream stream.
+        if (isSseAcceptRequest(headers)) {
+          const data: ApiProxyResponsePayload = {
+            status: 400,
+            headers: { 'content-type': 'application/json' },
+            bodyText: JSON.stringify({ error: 'SSE requests must use api:sse:start' }),
+          };
+          return { id, type, success: true, data };
+        }
+
+        const controlPlaneOrigin = deps.resolveControlPlaneOrigin();
+        if (!controlPlaneOrigin) {
+          const data: ApiProxyResponsePayload = {
+            status: 501,
+            headers: { 'content-type': 'application/json' },
+            bodyText: JSON.stringify({
+              error: 'Control plane is not available in the VS Code runtime',
+              code: 'capability_unavailable',
+              ...(typeof workspaceId === 'string' && workspaceId.length > 0 ? { workspaceId } : {}),
+            }),
+          };
+          return { id, type, success: true, data };
+        }
+
+        const requestHeaders: Record<string, string> = {
+          ...deps.sanitizeForwardHeaders(headers),
+          ...ctx?.manager?.getOpenCodeAuthHeaders(),
         };
-        return { id, type, success: true, data };
+        const requestBody =
+          typeof bodyBase64 === 'string' && bodyBase64.length > 0 && normalizedMethod !== 'GET' && normalizedMethod !== 'HEAD'
+            ? Buffer.from(bodyBase64, 'base64')
+            : undefined;
+
+        const abortController = new AbortController();
+        proxyAbortControllers.set(id, abortController);
+        const timeoutSignal = AbortSignal.timeout(CONTROL_PLANE_PROXY_TIMEOUT_MS);
+        const onTimeout = () => abortController.abort();
+        timeoutSignal.addEventListener('abort', onTimeout, { once: true });
+
+        try {
+          const data = await performControlPlaneProxyFetch(
+            controlPlaneOrigin,
+            normalizedPath,
+            normalizedMethod,
+            requestHeaders,
+            requestBody,
+            abortController.signal,
+            deps,
+          );
+          return { id, type, success: true, data };
+        } finally {
+          timeoutSignal.removeEventListener('abort', onTimeout);
+          proxyAbortControllers.delete(id);
+        }
       }
 
       const localFsResponse = await deps.tryHandleLocalFsProxy(normalizedMethod, normalizedPath);

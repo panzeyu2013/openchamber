@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { handleBridgeMessage, type BridgeRequest, type BridgeResponse } from './bridge';
+import { handleBridgeMessage, readConfiguredControlPlaneOrigin, type BridgeRequest, type BridgeResponse } from './bridge';
 import { getThemeKindName } from './theme';
 import type { OpenCodeManager, ConnectionStatus } from './opencode';
 import { getWebviewShikiThemes } from './shikiThemes';
@@ -536,7 +536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
   private async _startSseProxy(message: BridgeRequest): Promise<BridgeResponse> {
     const { id, type, payload } = message;
 
-    const { path, headers, streamId: requestedStreamId } = (payload || {}) as { path?: string; headers?: Record<string, string>; streamId?: string };
+    const { path, headers, streamId: requestedStreamId, controlPlane } = (payload || {}) as { path?: string; headers?: Record<string, string>; streamId?: string; controlPlane?: boolean };
     const normalizedPath = typeof path === 'string' && path.trim().length > 0 ? path.trim() : '/event';
 
     if (!this._openCodeManager) {
@@ -545,6 +545,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         type,
         success: true,
         data: { status: 503, headers: { 'content-type': 'application/json' }, streamId: null },
+      };
+    }
+
+    // Control-plane streams need an explicitly configured control plane; the
+    // managed opencode binary is NOT a control plane, so answer
+    // capability_unavailable without touching the network.
+    const controlPlaneOrigin = controlPlane === true ? readConfiguredControlPlaneOrigin() : null;
+    if (controlPlane === true && !controlPlaneOrigin) {
+      return {
+        id,
+        type,
+        success: true,
+        data: { status: 501, headers: { 'content-type': 'application/json' }, streamId: null },
       };
     }
 
@@ -563,6 +576,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         onChunk: (chunk) => {
           this._view?.webview.postMessage({ type: 'api:sse:chunk', streamId, chunk });
         },
+        ...(controlPlane === true ? { controlPlane: true, controlPlaneOrigin } : {}),
       });
 
       start.run

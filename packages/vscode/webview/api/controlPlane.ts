@@ -7,13 +7,14 @@
  * manages. Forwarding these paths to the binary would surface a confusing 404
  * from a server that cannot answer them.
  *
- * The current extension host has no control plane (no OpenChamber server to
- * connect to), so the webview answers these paths with an explicit
- * `control_plane_unavailable` 501. When a future version exposes a control
- * plane (e.g. `openchamber.apiUrl` pointing at an OpenChamber server), the
- * fetch override in `main.tsx` will route these paths through the bridge
- * (`api:proxy` with `controlPlane: true`) instead of short-circuiting here.
- * No URL is ever hardcoded in this module.
+ * The fetch override in `main.tsx` routes these paths through the bridge:
+ * regular requests ride `api:proxy` with `controlPlane: true` and the
+ * extension host forwards them to the configured `openchamber.apiUrl` (or
+ * answers an explicit `capability_unavailable` 501 when no control plane is
+ * configured). SSE streams (`/api/workspace-sessions/events`) ride the
+ * dedicated streamed SSE bridge (`api:sse:start` with `controlPlane: true`),
+ * because a single-response proxy message cannot stream. No URL is ever
+ * hardcoded in this module.
  */
 
 export const CONTROL_PLANE_UNAVAILABLE_CODE = 'control_plane_unavailable';
@@ -24,6 +25,22 @@ export const isControlPlaneApiPath = (pathname: string): boolean => {
   if (pathname === '/api/workspaces' || pathname.startsWith('/api/workspaces/')) return true;
   if (pathname === '/api/connections' || pathname.startsWith('/api/connections/')) return true;
   return pathname === '/api/workspace-sessions' || pathname.startsWith('/api/workspace-sessions/');
+};
+
+/** True for a control-plane request that expects an SSE stream (the
+ * session-index event stream). Such requests are answered through the streamed
+ * SSE bridge (`api:sse:start` with `controlPlane: true`) instead of the
+ * single-response `api:proxy` forward, which cannot stream. */
+export const isControlPlaneSseRequest = (headers: Record<string, string> | undefined): boolean => {
+  if (!headers) {
+    return false;
+  }
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === 'accept' && value.toLowerCase().includes('text/event-stream')) {
+      return true;
+    }
+  }
+  return false;
 };
 
 /** Stable 501 payload for the webview fetch override. */

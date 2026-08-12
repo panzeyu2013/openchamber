@@ -196,6 +196,10 @@ export async function startSseProxy(options: {
   path: string;
   headers?: Record<string, string>;
   streamId?: string;
+  /** Mark the stream as control-plane-owned so the extension host forwards it
+   * to the configured control plane (`openchamber.apiUrl`) instead of the
+   * opencode binary. */
+  controlPlane?: boolean;
 }): Promise<ProxiedSseStartResponse> {
   return sendBridgeMessage<ProxiedSseStartResponse>('api:sse:start', options);
 }

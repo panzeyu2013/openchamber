@@ -34,4 +34,13 @@ describe('VS Code webview control-plane path handling', () => {
     assert.equal(typeof body.error, 'string');
     assert.equal(response.headers.get('content-type'), 'application/json');
   });
+
+  test('detects control-plane SSE requests by the accept header', async () => {
+    const { isControlPlaneSseRequest } = await import('./controlPlane');
+    assert.equal(isControlPlaneSseRequest({ accept: 'text/event-stream' }), true);
+    assert.equal(isControlPlaneSseRequest({ Accept: 'text/event-stream, text/html' }), true);
+    assert.equal(isControlPlaneSseRequest({ accept: 'application/json' }), false);
+    assert.equal(isControlPlaneSseRequest(undefined), false);
+    assert.equal(isControlPlaneSseRequest({}), false);
+  });
 });

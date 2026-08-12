@@ -6,7 +6,7 @@ import { handleFsBridgeMessage } from './bridge-fs-runtime';
 import { handleConfigBridgeMessage } from './bridge-config-runtime';
 import { handleSystemBridgeMessage } from './bridge-system-runtime';
 import { handleProxyBridgeMessage } from './bridge-proxy-runtime';
-import { handleWorkspaceBridgeMessage } from './bridge-workspace-runtime';
+import { fetchControlPlaneCatalogWorkspaces, handleWorkspaceBridgeMessage } from './bridge-workspace-runtime';
 import { handlePermissionAutoAcceptBridgeMessage } from './bridge-permission-auto-accept-runtime';
 import {
   fetchOpenCodeSkillsFromApi,
@@ -60,6 +60,30 @@ const CLIENT_RELOAD_DELAY_MS = 800;
 
 const UPDATE_CHECK_URL = process.env.OPENCHAMBER_UPDATE_API_URL || 'https://api.openchamber.dev/v1/update/check';
 const GITHUB_BACKEND_DISABLED_ERROR = 'OpenChamber VS Code backend GitHub integration is disabled. Use native VS Code GitHub integrations.';
+
+/** The configured `openchamber.apiUrl` (the control-plane origin) or `null`
+ * when unset or not a valid http(s) URL. Mirrors how the host reads the
+ * setting elsewhere (extension.ts `showOpenCodeStatus`). The managed opencode
+ * binary spawned when the setting is empty is deliberately NOT treated as a
+ * control plane. Shared by the `api:proxy` control-plane forward
+ * (`bridge-proxy-runtime.ts` via the `resolveControlPlaneOrigin` seam) and
+ * the control-plane SSE streams (`ChatViewProvider`, `SessionEditorPanelProvider`,
+ * `AgentManagerPanelProvider`). */
+export const readConfiguredControlPlaneOrigin = (): string | null => {
+  const configuredApiUrl = (vscode.workspace.getConfiguration('openchamber').get<string>('apiUrl') || '').trim();
+  if (!configuredApiUrl) {
+    return null;
+  }
+  try {
+    const parsed = new URL(configuredApiUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  return configuredApiUrl;
+};
 
 
 export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeContext): Promise<BridgeResponse> {
@@ -145,6 +169,7 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
         sanitizeForwardHeaders,
         collectHeaders,
         base64EncodeUtf8,
+        resolveControlPlaneOrigin: readConfiguredControlPlaneOrigin,
       },
     );
     if (proxyResponse) {
@@ -155,11 +180,15 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
       { id, type, payload },
       {
         readWorkspaceFolders: () => resolveWorkspaceFolders(vscode.workspace.workspaceFolders ?? []),
-        // No OpenChamber control plane is embedded in the extension host yet.
-        // A future control-plane proxy resolves the Workspace Catalog from
-        // `openchamber.apiUrl` here; until then every descriptor resolution
-        // answers the explicit capability_unavailable state.
-        fetchCatalogWorkspaces: async () => null,
+        // The control-plane origin is the explicitly configured
+        // `openchamber.apiUrl` (an external OpenChamber server). The managed
+        // opencode binary the extension spawns when the setting is empty is
+        // NOT a control plane, so no origin makes the descriptor resolution
+        // answer capability_unavailable without touching the network.
+        fetchCatalogWorkspaces: () => fetchControlPlaneCatalogWorkspaces({
+          origin: readConfiguredControlPlaneOrigin(),
+          authHeaders: ctx?.manager?.getOpenCodeAuthHeaders(),
+        }),
       },
     );
     if (workspaceResponse) {

@@ -13,15 +13,16 @@ import { sendBridgeMessage } from './bridge';
  *
  * Identity rule (mirrors the shared UI invariant): `workspaceId` is a stable
  * random UUID from the control-plane catalog and is NEVER derived from paths.
- * When the extension host has no control plane, the bridge answers an
- * explicit deterministic `capability_unavailable` state
- * (`code: 'capability_unavailable'`, `reason: 'control_plane_unavailable'`)
- * carrying the resolved folder set — the caller must not fall back to a
- * path-derived project identity as authoritative. When a future control-plane
- * proxy exists, the same message returns `available` with the catalog
- * descriptor; requests that touch workspace-scoped state then carry the
- * resolved `workspaceId` (same shape as the `api:proxy`
- * `controlPlane`/`workspaceId` passthrough).
+ * The extension host resolves the catalog from the configured control plane
+ * (`openchamber.apiUrl`); when the control plane is not configured or is
+ * unreachable, the bridge answers an explicit deterministic
+ * `capability_unavailable` state (`code: 'capability_unavailable'`,
+ * `reason: 'control_plane_unavailable'`) carrying the resolved folder set —
+ * the caller must not fall back to a path-derived project identity as
+ * authoritative. When the catalog is reachable the same message returns
+ * `available` with the catalog descriptor; requests that touch
+ * workspace-scoped state then carry the resolved `workspaceId` (same shape as
+ * the `api:proxy` `controlPlane`/`workspaceId` passthrough).
  */
 
 export const WORKSPACE_DESCRIPTOR_BRIDGE_TYPE = 'api:workspace:descriptor:get';
