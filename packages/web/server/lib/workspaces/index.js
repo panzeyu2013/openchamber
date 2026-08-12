@@ -198,6 +198,7 @@ export const createWorkspacesRuntime = async (dependencies) => {
       credentialProvider,
       onConnectionsChanged: syncProfileAdapters,
       workspaceCatalogV1,
+      sessionBindingStore: bindingStore,
     });
     if (workspaceCatalogV1 === false) {
       // Disabled mode (§20): the workspace runtime proxy and the session

@@ -627,7 +627,7 @@ describe('workspace WebSocket upgrade dispatcher', () => {
     });
     const { deps, rejections } = createUpgradeDeps({ connectionBroker: createBrokerStub(adapter) });
     expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/event/ws', deps)).toBe(true);
-    expect(rejections).toEqual([{ status: 503, message: expect.stringContaining('tunnel') }]);
+    expect(rejections).toEqual([{ status: 503, message: 'Workspace WebSocket upgrade failed' }]);
   });
 
   it('passes the server-side credential provider to adapter-owned upgrades', async () => {
@@ -649,6 +649,6 @@ describe('workspace WebSocket upgrade dispatcher', () => {
 
     expect(await runUpgrade('/api/workspaces/ws-1/runtime/api/event/ws', deps)).toBe(true);
     expect(receivedProvider).toBe(credentialProvider);
-    expect(rejections).toEqual([{ status: 503, message: expect.stringContaining('provider check') }]);
+    expect(rejections).toEqual([{ status: 503, message: 'Workspace WebSocket upgrade failed' }]);
   });
 });

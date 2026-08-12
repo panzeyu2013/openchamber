@@ -32,7 +32,7 @@ local unified catalog -> workspace(connectionId + path) -> session(workspaceId +
 | `session-binding-store.js` | Persisted `(connectionId, upstreamSessionId) -> workspaceId` bindings in `workspace-session-bindings.json` with own revision; `created-in-workspace` / `explicit` / `legacy-exact-path` sources; move requires `explicit` source or `allowMove`; deletion only ever removes the binding. |
 | `session-index.js` | Per-connection lightweight session index: one upstream event stream per connection max, debounced structural refreshes, cursor pagination with a bounded page walk, explicit `partial` coverage when the bound is reached, exact-path fallback only when no binding exists, unassigned diagnostics bucket, per-connection freshness (`offline`, `stale`, `partial`; failure/stream loss keeps the last snapshot), incremental upsert/remove events for structural changes, safe error summaries that never retain upstream URLs or credentials, and global revision with revision-gap recovery. Performance contract (§17.5): live activity events resolve through a per-connection `sessionsByUpstreamId` index (one event touches only the affected session, never a collection scan), background snapshot refreshes run through a worker pool capped at `refreshConcurrency` (default 4, injectable; one failure never blocks the queue), and stream reconnect backoff is exponential WITH deterministic ±20% jitter (FNV-1a seed + mulberry32 PRNG, clamped to the 1s→60s bounds). Started via `startSessionIndex()` after route registration. Diagnostics additionally expose per-connection backoff counts and snapshot reload/coverage-gap counters plus the last-event revision. |
 | `migration.js` | Idempotent, resumable import of legacy `settings.projects` (local connection only). Missing paths go to `pendingConnectionIds`; failures never look like an authoritative empty list. A later run whose state is `legacyProjectsImported: true` but still lists pending paths RE-ATTEMPTS them (a temporarily unavailable project that recovers later is still imported) and clears the pending list only once every pending path succeeded. Legacy data stays readable for the compatibility period (dual read); deletion is a later, separate, audited step. |
-| `routes.js` | Catalog API: `GET/POST /api/workspaces`, `PATCH/DELETE /api/workspaces/:id`, `GET /api/workspaces/:id`, `GET /api/workspaces/capabilities` (lightweight `{ workspaceCatalogV1 }` read that stays available in EVERY state), probes, connection-scoped browse, and connection profile CRUD (`POST/PATCH/DELETE /api/connections` with loopback rejection, in-use deletion guard 409, `onConnectionsChanged` adapter sync). All behind the base UI auth gate. Honors the `workspaceCatalogV1` flag: when `false`, every catalog/connection MUTATION returns 501 `capability_unavailable` before touching any store; reads stay available and the catalog files are never rewritten (see "Feature flag" below). Workspace-scoped browse enforces the lexical boundary first, then delegates to the adapter (which enforces under its own path semantics via the `canonicalPath` context). |
+| `routes.js` | Catalog API: `GET/POST /api/workspaces`, `PATCH/DELETE /api/workspaces/:id`, `GET /api/workspaces/:id`, `GET /api/workspaces/capabilities` (lightweight `{ workspaceCatalogV1 }` read that stays available in EVERY state), probes, connection-scoped browse, and connection profile CRUD (`POST/PATCH/DELETE /api/connections` with loopback rejection, in-use deletion guard 409, `onConnectionsChanged` adapter sync). `DELETE /api/workspaces/:id` also removes the deleted workspace's session bindings via `sessionBindingStore.removeBindingsForWorkspace` and reports the count as `bindingsRemoved`. All behind the base UI auth gate. Honors the `workspaceCatalogV1` flag: when `false`, every catalog/connection MUTATION returns 501 `capability_unavailable` before touching any store; reads stay available and the catalog files are never rewritten (see "Feature flag" below). Workspace-scoped browse enforces the lexical boundary first, then delegates to the adapter (which enforces under its own path semantics via the `canonicalPath` context). |
 | `runtime-proxy.js` | `/api/workspaces/:workspaceId/runtime/*`: resolves the workspace server-side, forwards only the documented workspace-capable SDK/RuntimeAPI path families (not control-plane namespaces or machine-wide `/api/fs/home`) with QUERY STRING PRESERVED (pagination/filter/cursor params must reach the upstream), strips the control-plane `oc_url_token` before forwarding/logging, enforces bounded request/response sizes, streams with sanitized response headers, and holds one lease per request. A browser disconnect ABORTS the upstream request/stream (and thus releases the lease promptly); the write path honors backpressure (`drain`). OpenCode `/api/config/*` has no workspace contract and returns an explicit 501 `capability_unavailable` instead of being forwarded. Typed adapter boundary errors retain safe 4xx/5xx codes; generic upstream failures remain sanitized 502s. Resolves the connection via the broker (profile and credential provider included in the adapter context). Also owns the desensitized proxy counters (requests/failures/cancels/active streams — no URLs, headers or bodies) and the canonical `workspaceCatalogV1` env resolver. WebSocket upgrades are wired: `handleWorkspaceUpgrade` is the central dispatcher registered first on the server `upgrade` event (server entrypoint) — it owns every `/api/workspaces/:id/runtime...` upgrade (allowlisted paths `/api/event/ws`, `/api/global/event/ws`, `/api/terminal/ws`), authenticates like the terminal/event sockets (cookie/bearer/URL token + origin), gates on the connection capability AND on `workspaceCatalogV1` (a disabled flag rejects the upgrade 501), holds a broker lease for the socket pair lifetime and pipes either a URL-backed or adapter-owned socket back to the browser. Non-workspace paths are left untouched for the existing module listeners; requests it owns are marked (`WORKSPACE_RUNTIME_UPGRADE_MARKER`) so module listeners that also match workspace-prefixed paths (the terminal runtime) skip them — a workspace upgrade has exactly one handler. Failures reject the upgrade with an explicit HTTP error (501 `capability_unavailable` / 401 / 403 / 404 / 502), never a silent swallow. |
 | `session-index-routes.js` | `GET /api/workspace-sessions/snapshot`, `GET /api/workspace-sessions/events` (SSE, revision-carrying), `POST /api/workspaces/:id/sessions` (create + `created-in-workspace` binding), `POST /api/workspaces/:id/sessions/:sid/bind` (explicit move). The two POST mutations are gated to 501 `capability_unavailable` by index.js when `workspaceCatalogV1` is false (a gate registered before these routes, so the real handlers never see them). |
 | `diagnostics.js` | `GET /api/workspaces/diagnostics` — desensitized control-plane snapshot (plan §19) behind the same UI auth gate: catalog schema/revision/last persist time/recovery state, per-connection broker lifecycle + leases, per-connection session-index freshness (last success, backoff count, event-stream presence, reload/coverage-gap counters), session-index snapshot + last-event revision, runtime proxy request/failure/cancel/active-stream counts, migration status and the `workspaceCatalogV1` flag. Desensitization contract: NO tokens, credentials, headers, upstream URLs or paths; migration pending paths are reduced to a count and a recursive redaction drops known sensitive keys before the payload leaves the route. |
@@ -79,9 +79,13 @@ local unified catalog -> workspace(connectionId + path) -> session(workspaceId +
 The workspaces runtime is created and its routes registered AFTER the base UI
 auth gate (`requireApiAuth` in core-routes.js) and BEFORE the generic OpenCode
 `/api/*` proxy (inside `startupPipelineRuntime.run`). The generic proxy must
-never capture workspace paths. `/api/workspaces`, `/api/connections` and
-`/api/workspace-sessions/*` are on the JSON body-parser allowlist
-(core-routes.js) and the URL-token GET allowlist (ui-auth.js). Read-only
+never capture workspace paths. `/api/workspaces` and `/api/connections` are on
+the JSON body-parser allowlist (core-routes.js; `/api/workspace-sessions/*`
+carries only GET snapshot/SSE reads and needs no body parsing) and the catalog
+read paths (`/api/workspaces`, `/api/workspaces/capabilities`,
+`/api/workspaces/diagnostics`, `/api/workspaces/:id/children`, `/api/connections`,
+`/api/workspace-sessions/snapshot`, `/api/workspace-sessions/events`) are on the
+URL-token GET allowlist (ui-auth.js). Read-only
 workspace runtime SDK/Files/Git/permission/question/event paths are also
 URL-token readable for cookie-less mobile/tray clients; runtime mutations
 still require the normal session/bearer authentication. The events endpoint
@@ -93,17 +97,17 @@ disabled-state mutations; `GET /api/workspaces/capabilities` and
 routes and sit behind the same auth gate. `startSessionIndex()` runs after
 route registration so clients cannot race the initial snapshot.
 
-Note: the capabilities GET is NOT on the URL-token allowlist (ui-auth.js
-matches `/api/workspaces` exactly); cookie-less tray/mobile surfaces fall
-back to "enabled" until a follow-up adds the path if needed.
-
 ## Failure semantics
 
 - Authoritative fetch failure never replaces old data and never renders as
   "no workspaces" (catalog AND session index).
 - One connection failing never blocks or clears other connections; each
   connection carries its own `complete`/`stale`/`lastSuccessAt`/`error`.
-- Workspace delete removes only the catalog reference; it never touches
+- Workspace delete removes the catalog reference and the local
+  `(connectionId, upstreamSessionId)` session bindings pointing at it (the
+  DELETE route calls `removeBindingsForWorkspace`; a binding-cleanup failure
+  after a successful catalog delete returns 500 `binding_cleanup_failed` so
+  the caller can retry); it never touches
   upstream sessions/files/terminals. Connection delete is refused (409) while
   workspaces reference it.
 - A catalog write that succeeds but whose response is lost: client retry hits
@@ -143,6 +147,9 @@ back to "enabled" until a follow-up adds the path if needed.
   directory to e.g. `/etc`.
 - Direct targets pass an SSRF gate (loopback/private/link-local/metadata
   resolution blocked, redirect hops re-validated with a cross-host allowlist).
+  Known limit: the port check accepts the full 1–65535 range rather than a
+  web-common subset — the host-level private/loopback blocking remains the
+  primary defense, and the range check only rejects malformed ports.
 - Upstream auth headers and internal URLs are stripped from proxied responses.
 - Electron SSH adapters forward only to ssh-manager-produced tunnel URLs;
   renderers never see tunnel URLs or SSH material.
@@ -173,5 +180,6 @@ server and verify session list/messages, files/search, Git, terminal,
 permission/question, SSE/WS reconnect, and browser/Storage secret absence.
 Focused tests prove the control-plane contracts but do not substitute for that
 remote acceptance. Non-workspace selections still use the ambient runtime for
-compatibility; `getOpencodeClient()`/`switchRuntimeEndpoint()` remain migration
-facades that new code must not call.
+compatibility; the runtime-switch facades were retired with Phase 6 — the
+control plane is now the only runtime selection mechanism
+(`packages/ui/src/lib/control-plane.ts`).

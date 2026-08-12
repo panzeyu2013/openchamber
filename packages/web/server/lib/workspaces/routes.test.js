@@ -325,6 +325,56 @@ describe('DELETE /api/workspaces/:workspaceId', () => {
     expect(response.statusCode).toBe(409);
     expect(response.body.code).toBe('catalog_revision_conflict');
   });
+
+  const registerWithBindingStore = (bindingStore) => {
+    const registry = createRouteRegistry();
+    registerWorkspaceCatalogRoutes(registry.app, {
+      catalogStore,
+      connectionBroker: broker,
+      profileStore,
+      credentialProvider,
+      sessionBindingStore: bindingStore,
+    });
+    return registry.getRoute('DELETE', '/api/workspaces/:workspaceId');
+  };
+
+  it('cleans up session bindings for the deleted workspace', async () => {
+    const created = await createWorkspaceViaApi();
+    const removedFor = [];
+    const deleteRoute = registerWithBindingStore({
+      removeBindingsForWorkspace: async (workspaceId) => {
+        removedFor.push(workspaceId);
+        return { removed: 2, revision: 5 };
+      },
+    });
+    const response = createMockResponse();
+    await deleteRoute(createMockRequest({
+      params: { workspaceId: created.body.workspace.id },
+    }), response);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toEqual({ revision: 2, bindingsRemoved: 2 });
+    expect(removedFor).toEqual([created.body.workspace.id]);
+  });
+
+  it('reports a partial failure when binding cleanup fails after the catalog delete', async () => {
+    const created = await createWorkspaceViaApi();
+    const deleteRoute = registerWithBindingStore({
+      removeBindingsForWorkspace: async () => {
+        throw new Error('disk full');
+      },
+    });
+    const response = createMockResponse();
+    await deleteRoute(createMockRequest({
+      params: { workspaceId: created.body.workspace.id },
+    }), response);
+
+    expect(response.statusCode).toBe(500);
+    expect(response.body).toEqual({
+      error: 'Workspace deleted but session bindings cleanup failed',
+      code: 'binding_cleanup_failed',
+    });
+  });
 });
 
 describe('POST /api/workspaces/:workspaceId/probe', () => {

@@ -38,6 +38,9 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     workspaceCatalogV1 = true,
     // Inject for tests; defaults to the real DNS-resolving validator.
     safeUpstreamValidator = createSafeUpstreamValidator({}),
+    // Injected by index.js; when absent (tests without a binding store) the
+    // DELETE route only removes the catalog reference.
+    sessionBindingStore = null,
   } = dependencies;
 
   const { assertSafeUpstreamUrl } = safeUpstreamValidator;
@@ -178,7 +181,18 @@ export const registerWorkspaceCatalogRoutes = (app, dependencies) => {
     const ifMatch = readIfMatch(req);
     try {
       const outcome = await catalogStore.deleteWorkspace(workspaceId, ifMatch);
-      res.json({ revision: outcome.revision });
+      let bindingsRemoved = 0;
+      if (sessionBindingStore) {
+        try {
+          bindingsRemoved = (await sessionBindingStore.removeBindingsForWorkspace(workspaceId)).removed;
+        } catch (error) {
+          // The catalog reference is already gone; leaving stale bindings
+          // would keep resolving sessions to a deleted workspace. The caller
+          // must see the partial failure so it can retry the cleanup.
+          return sendError(res, 500, 'Workspace deleted but session bindings cleanup failed', 'binding_cleanup_failed');
+        }
+      }
+      res.json({ revision: outcome.revision, bindingsRemoved });
     } catch (error) {
       if (error?.code === 'catalog_revision_conflict') return sendConflict(res, error);
       if (error?.status === 404) return sendError(res, 404, error.message, error.code);

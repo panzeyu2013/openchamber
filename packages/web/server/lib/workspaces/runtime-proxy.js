@@ -641,7 +641,9 @@ const rejectUpgradeError = (socket, error, rejectWebSocketUpgrade) => {
   const status = Number.isInteger(error?.status) && error.status >= 400 && error.status <= 599
     ? error.status
     : 502;
-  const message = typeof error?.message === 'string' && error.message.length > 0
+  // Mirror the HTTP forward path: 4xx errors carry a safe typed message,
+  // 5xx responses never echo upstream details (which can include host:port).
+  const message = status < 500 && typeof error?.message === 'string' && error.message.length > 0
     ? error.message
     : 'Workspace WebSocket upgrade failed';
   rejectWebSocketUpgrade(socket, status, message);
@@ -679,7 +681,9 @@ const openUpstreamWebSocket = (spec) => {
     clearTimeout(timer);
     if (settled) return;
     settled = true;
-    const wrapped = new Error(`Upstream WebSocket failed: ${error?.message ?? error}`);
+    // Never wrap the raw ws error: its message can carry upstream host:port
+    // details that must not reach the client or logs.
+    const wrapped = new Error('Upstream WebSocket failed');
     wrapped.code = 'catalog_runtime_upstream_failed';
     wrapped.status = 502;
     reject(wrapped);
