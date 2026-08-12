@@ -7,7 +7,6 @@ import type { ShortcutCombo } from '@/lib/shortcuts';
 import type { DraftStarterRef } from '@/lib/draftStarters';
 import { DEFAULT_MONO_FONT, DEFAULT_UI_FONT, type MonoFontOption, type UiFontOption } from '@/lib/fontOptions';
 import { getStoredMobileKeyboardMode, type MobileKeyboardMode } from '@/lib/mobileKeyboardMode';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import type { TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
@@ -128,7 +127,7 @@ const LEFT_SIDEBAR_MIN_WIDTH = 280;
 const activeMainTabByRuntime = new Map<string, MainTab>();
 
 const runtimeMemoryKey = (value?: string | null): string => {
-  const key = (value ?? getRuntimeKey()).trim();
+  const key = (value ?? '').trim();
   return key || 'default';
 };
 
@@ -136,10 +135,10 @@ const resolveContextPanelScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
-const initialContextPanelScopeKey = getRuntimeKey();
+const initialContextPanelScopeKey = '';
 const CONTEXT_PANEL_SCOPE_SNAPSHOT_LIMIT = 8;
 
 // Shared with rail/panel consumers so contextPanelByDirectory lookups agree on keys.
@@ -827,8 +826,6 @@ interface UIStore {
   setSessionSwitcherOpen: (open: boolean) => void;
   setSessionDropdownOpen: (open: boolean) => void;
   setActiveMainTab: (tab: MainTab) => void;
-  prepareForRuntimeSwitch: (runtimeKey?: string | null) => void;
-  restoreForRuntimeSwitch: (runtimeKey?: string | null) => void;
   setMainTabGuard: (guard: MainTabGuard | null) => void;
   setPendingDiffFile: (filePath: string | null, staged?: boolean, scope?: PendingDiffScope | null) => void;
   setPendingDiagramFile: (filePath: string | null) => void;
@@ -1620,15 +1617,6 @@ export const useUIStore = create<UIStore>()(
           }
           activeMainTabByRuntime.set(runtimeMemoryKey(), tab);
           set({ activeMainTab: tab });
-        },
-
-        prepareForRuntimeSwitch: (runtimeKey?: string | null) => {
-          activeMainTabByRuntime.set(runtimeMemoryKey(runtimeKey), get().activeMainTab);
-        },
-
-        restoreForRuntimeSwitch: (runtimeKey?: string | null) => {
-          const restored = activeMainTabByRuntime.get(runtimeMemoryKey(runtimeKey)) ?? 'chat';
-          set({ activeMainTab: restored });
         },
 
         setPendingDiffFile: (filePath, staged = false, scope = null) => {
@@ -2526,7 +2514,7 @@ export const useUIStore = create<UIStore>()(
           const persistedContextScopeKey = typeof state.contextPanelScopeKey === 'string'
             && state.contextPanelScopeKey.trim().length > 0
             ? state.contextPanelScopeKey
-            : getRuntimeKey();
+            : '';
           const currentContextScopeKey = resolveContextPanelScopeKey();
           const activeContextPanelByDirectory = sanitizeContextPanelByDirectory(state.contextPanelByDirectory);
           const contextPanelByScope = sanitizeContextPanelByScope(state.contextPanelByScope);
@@ -2726,7 +2714,6 @@ const installContextPanelScopeSubscription = (): void => {
     };
     useSessionUIStore?.subscribe?.(check);
     useWorkspaceSessionIndexStore?.subscribe?.(check);
-    subscribeRuntimeEndpointChanged(check);
   });
 };
 installContextPanelScopeSubscription();

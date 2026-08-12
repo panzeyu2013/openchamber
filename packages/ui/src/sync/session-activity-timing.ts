@@ -1,7 +1,6 @@
 import { useCallback } from 'react';
 import { create } from 'zustand';
 import { getSafeStorage } from '@/stores/utils/safeStorage';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 // Per-session turn timing behind the sidebar activity readout.
 //
@@ -96,13 +95,9 @@ const STORAGE_KEY = 'oc.session-activity.v1';
 const EMPTY_ACTIVE: ReadonlySet<string> = new Set();
 const EMPTY_RESTORED: ReadonlyMap<string, PersistedStart> = new Map();
 
-const legacyScopeKey = getRuntimeKey();
 const scopeStates = new Map<string, SessionActivityScope>();
 
-const normalizeScopeKey = (scopeKey?: string): string => {
-  const normalized = scopeKey?.trim();
-  return normalized || getRuntimeKey();
-};
+const normalizeScopeKey = (scopeKey: string): string => scopeKey.trim();
 
 const createScopeState = (): SessionActivityScope => ({
   startedAt: new Map(),
@@ -123,7 +118,7 @@ const readScopeState = (scopeKey: string): SessionActivityScope => {
 const currentScopeKey = (): string => useSessionActivityTimingStore.getState().scopeKey;
 
 export const useSessionActivityTimingStore = create<SessionActivityTimingState>((set, get) => {
-  const scopeKey = legacyScopeKey;
+  const scopeKey = "";
   const scope = readScopeState(scopeKey);
 
   return {
@@ -209,7 +204,7 @@ const readPersistedPayload = (): Record<string, unknown> => {
 let persistedPayload: Record<string, unknown> | null = null;
 
 const storageKeyFor = (scopeKey: string, sessionId: string): string => (
-  scopeKey === legacyScopeKey ? sessionId : JSON.stringify([scopeKey, sessionId])
+  JSON.stringify([scopeKey, sessionId])
 );
 
 const decodeStorageKey = (key: string): { scopeKey: string; sessionId: string } | null => {
@@ -238,9 +233,7 @@ const readRestoredStarts = (scopeKey: string): Map<string, PersistedStart> => {
     const decoded = decodeStorageKey(key);
     const sessionId = decoded?.scopeKey === scopeKey
       ? decoded.sessionId
-      : !decoded && scopeKey === legacyScopeKey
-        ? key
-        : null;
+      : null;
     if (!sessionId) continue;
     const entry = parseEntry(value);
     // Rejects stale turns, quiet stamps, and clock-skewed futures rather than
@@ -279,7 +272,7 @@ const persistStarts = (scopeKey: string, startedAt: ReadonlyMap<string, number>,
   const restoredStarts = getRestoredStarts(scopeKey);
   for (const key of Object.keys(payload)) {
     const decoded = decodeStorageKey(key);
-    if (decoded?.scopeKey === scopeKey || (!decoded && scopeKey === legacyScopeKey)) {
+    if (decoded?.scopeKey === scopeKey) {
       delete payload[key];
     }
   }

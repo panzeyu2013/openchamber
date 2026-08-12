@@ -1,7 +1,7 @@
 import { getRuntimeExtraHeadersSync, refreshLocalRuntimeUrlAuthToken, refreshRuntimeUrlAuthToken, setRuntimeBearerToken, setRuntimeExtraHeaders } from '@openchamber/ui/lib/runtime-auth';
 import { installRuntimeFetchBridge } from '@openchamber/ui/lib/runtime-fetch';
 import { sameRuntimeOrigin, sanitizeRuntimeApiBaseUrl, readInjectedDesktopHostId, sanitizeRuntimeKeyPart } from '@openchamber/ui/lib/runtime-origin';
-import { initializeRuntimeEndpoint, switchRuntimeEndpoint } from '@openchamber/ui/lib/runtime-switch';
+import { initializeControlPlane, setControlPlane } from '@openchamber/ui/lib/control-plane';
 import { restoreDesktopRelayRuntime } from '@openchamber/ui/lib/desktopRelayRestore';
 import { configureRuntimeUrlResolver } from '@openchamber/ui/lib/runtime-url';
 import type { EmbeddedSessionRuntimeBootstrap } from '@openchamber/ui/components/layout/contextPanelEmbeddedChat';
@@ -78,20 +78,25 @@ export const createConfiguredWebAPIs = (bootstrap?: EmbeddedSessionRuntimeBootst
     apiBaseUrl: apiBaseUrl || undefined,
     realtimeBaseUrl: apiBaseUrl || undefined,
   });
-  initializeRuntimeEndpoint({
-    apiBaseUrl,
-    runtimeKey: runtimeKey || (sameRuntimeOrigin(apiBaseUrl, localOrigin) ? 'local' : null),
-  });
-  setRuntimeBearerToken(clientToken || null);
-  setRuntimeExtraHeaders(runtimeHeaders || null);
+  // Boot the control plane. A relay descriptor collapses the whole boot into
+  // one setControlPlane call (the single change event pair the old
+  // initialize-then-switch boot sequence produced);
+  // otherwise boot stays silent until an explicit user/application switch.
   if (relay) {
-    switchRuntimeEndpoint({
+    setControlPlane({
       apiBaseUrl,
       clientToken: clientToken || null,
       requestHeaders: runtimeHeaders || null,
       runtimeKey: relayHostId ? `host:${relayHostId}` : null,
       relay,
     });
+  } else {
+    initializeControlPlane({
+      apiBaseUrl,
+      runtimeKey: runtimeKey || (sameRuntimeOrigin(apiBaseUrl, localOrigin) ? 'local' : null),
+    });
+    setRuntimeBearerToken(clientToken || null);
+    setRuntimeExtraHeaders(runtimeHeaders || null);
   }
   // createWebAPIs imports UI stores, which instantiate the SDK singleton before
   // an embedded frame's asynchronous parent bootstrap is available.

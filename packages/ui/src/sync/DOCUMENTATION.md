@@ -12,15 +12,18 @@ There are **two distinct session data scopes** in the UI:
    - Backed by SSE / directory-scoped polling
    - Read via hooks like `useSessions()`, `useDirectorySync()`, `getSyncSessions()`, `getDirectoryState()`
 
-2. **Global sessions cache**
-   - Owned by `packages/ui/src/stores/useGlobalSessionsStore.ts`
-   - Shared source of truth for the Sessions sidebar global lists and Session Retention cleanup
-   - Holds:
-     - global active sessions
-     - global archived sessions
-     - active sessions indexed by directory
+2. **Workspace Session Index (cold/cross-workspace coverage)**
+   - Owned by `packages/ui/src/workspaces/session-index-store.ts` (renderer) and
+     `packages/web/server/lib/workspaces/session-index.js` (server)
+   - Shared source for the unified sidebar's session lists, the archive view,
+     switchers, tray/dock counts and retention cleanup
+   - Holds per-workspace session summaries (key, workspaceId, upstream session
+     ID, directory, title, updatedAt, archived, activity, parentID, createdAt)
 
-These two scopes are intentionally different, but they are no longer equal peers for live UI truth.
+The retired `useGlobalSessionsStore` full-session facade was deleted: cold
+session lists read the Session Index (`session-summary.ts` projections) and
+live full-session data for the ACTIVE workspace comes from the workspace
+runtime handle's SDK or the live child stores — never from a global cache.
 
 ### Fleet observation (multiple saved desktop hosts) — REMOVED (Phase 6)
 
@@ -38,24 +41,9 @@ unified workspace sidebar. Its role is replaced by:
   from the Catalog with sessions from the index.
 
 The revision/failure/backoff coordination algorithms Fleet developed were
-migrated into those modules with their own tests. `switchRuntimeEndpoint()`
+migrated into those modules with their own tests. `setControlPlane()`
 remains only for the legacy Host Switcher / remote-instances / mobile
 disconnect paths until the workspace-bound session-open migration lands.
-
-### Why both exist
-
-The directory-scoped sync stores are **not** a complete global view.
-
-- They are created lazily per directory
-- They only contain data for directories initialized in the current app session
-- They are optimized for live per-directory domain data
-- They do not maintain the complete global active+archived session view needed by the sidebar and retention settings
-
-So:
-
-- Use the **directory sync stores** for per-directory live session/message state
-- Use the **global sessions store** for cold/global session coverage (especially archived pages and unopened directories)
-- Use **aggregated child-store sessions and the global live status index** for live truth across initialized directories
 
 ## Ownership map
 
@@ -67,7 +55,6 @@ So:
 | `session-ordering.ts` | Ephemeral lifecycle rank used by every user-visible session list | All known sessions in the active sync scope; lifecycle phases and ranks are partitioned by scope |
 | `session-activity-timing.ts` | Elapsed time of the running turn and of the turn that just finished, plus the persisted starts that survive a reload | All known sessions in the active sync scope; timing maps and persisted workspace keys are partitioned by scope |
 | `session-ui-store.ts` | Session selection, draft lifecycle, abort prompts, worktree metadata, SDK-facing action entrypoints | App UI state |
-| `useGlobalSessionsStore.ts` | Global active sessions, global archived sessions, `sessionsByDirectory` | All opened project/worktree session lists |
 | `viewport-store.ts` | Scroll anchors, session memory, loading indicators | App UI state |
 | `attachment-files.ts` | Attachment picker allowlists, MIME/content validation, structured-text sanitization, and HEIC conversion | Local chat attachments across shared UI runtimes |
 | `document-attachments.ts` | Bounded Office/OpenDocument extraction, document text serialization, embedded-image extraction, and positional citations | DOCX, PPTX, XLSX, ODT, ODP, and ODS chat attachments |
@@ -84,26 +71,14 @@ The composer compares normalized attachment MIME types with the selected model's
 ## Sync scope (workspace full-sync)
 
 `SyncProvider` computes the sync scope once per mount:
-`scopeKey = workspaceHandle?.scopeKey ?? getRuntimeKey()`. In non-workspace
-mode the scope key is byte-identical to the ambient runtime key, so every
-key derived from it (persisted storage, prefetch cache, loader entries,
-child-store identities) is unchanged and existing persisted data stays
-readable. In workspace mode the scope is `workspaceScopeKey(workspaceId)`
-(`@/workspaces/identity`), which isolates every sync cache across servers:
-equal directory paths and equal session IDs on different workspaces never
-share state.
-
-The ambient `getRuntimeKey()` fallback is **retained deliberately, not
-removed** (plan §12.2): every workspace-targeted entry point passes the
-handle's explicit scope key, but not every `SyncProvider` caller carries a
-workspace. `VSCodeApp.tsx` mounts `SyncProvider` with no `workspaceHandle`
-at all (blocked on the VS Code control-plane descriptor), and the legacy
-non-workspace mounts in `App.tsx` (`WorkspaceSyncMount` /
-`EmbeddedSessionChatRuntime`), `ElectronMiniChatApp` and `MobileApp`
-deliberately pass `workspaceHandle={null}` to preserve the ambient runtime
-scope. The fallback is never exercised by a migrated entry point and is
-byte-identical to the ambient key; it is dropped together with the legacy
-ambient mounts at the §15.7 deletion gate.
+`scopeKey = workspaceHandle.scopeKey` — the workspace scope
+`workspaceScopeKey(workspaceId)` (`@/workspaces/identity`), which isolates
+every sync cache across servers: equal directory paths and equal session IDs
+on different workspaces never share state. There is no ambient fallback:
+callers that cannot resolve a workspace handle render an explicit
+unavailable/selection state instead of mounting sync (the app shows the
+workspace selection gate, VS Code shows the descriptor-driven unavailable
+state, mini-chat gates on the handle).
 
 The same provider binds an `OpencodeService` facade to the handle's SDK,
 directory, scope key, and pinned control-plane fetch. `session-actions.ts` and
@@ -126,10 +101,9 @@ Wiring (all in `sync-context.tsx`):
 - `SessionMessageLoader` is configured with `{ sdk, scopeKey }`; entry keys,
   `invalidateDirectory` and prefetch keys use it, and its
   `ensureChild`/`getChild` calls pass the scope explicitly.
-- `handleEvent` receives the scope key (renamed from `expectedRuntimeKey`).
-  `session.deleted` cleanup resolves the identity through
-  `resolveSessionDeletionIdentity` (workspace-scoped identities always
-  commit; ambient identities keep the stale-runtime guard).
+- `handleEvent` receives the scope key. `session.deleted` cleanup resolves
+  the identity through `resolveSessionDeletionIdentity` (workspace-scoped
+  identities always commit).
 - Materialization requests are enqueued with the scope key.
 - The event pipeline runs with `forceSse` when a workspace handle is active:
   the stream is the bound SDK's `global.event` SSE endpoint through the
@@ -219,14 +193,6 @@ Persisted sidebar state is never reconciled destructively from the first success
 
 Session materialization recency is keyed by runtime and directory. Foreground loads and successful prefetches participate in the same bounded per-directory session LRU. Prefetch pagination metadata has a global count ceiling and is removed with session eviction, directory disposal, loader runtime reconfiguration, and loader disposal.
 
-### Global session list
-
-Use `useGlobalSessionsStore` when the UI needs a **shared global session cache**.
-
-Current consumers:
-
-- `useSessionAutoCleanup.ts`
-
 ### Live cross-directory session/status view
 
 Use the sync hooks backed by aggregated child stores when the UI needs **live truth** for sessions or statuses across all initialized directories.
@@ -257,26 +223,6 @@ The active-session watchdog in `sync-context.tsx` (per-directory status polls an
 Imperative cross-directory session lookups use the cached ID index from `getAllSyncSessionMap()`. The index is rebuilt only when a child store's `state.session` reference changes; permission lineage checks must reuse it instead of rebuilding a full session map per call.
 
 VS Code does not run the server permission-auto-accept runtime. The extension host persists and broadcasts authoritative policy, while its foreground UI runtime resolves missing child-session lineage through the OpenCode API before deciding whether to suppress and answer a `permission.asked` event. Once policy is enabled, a live `permission.asked` event sends the directory-scoped `permission.reply` immediately and does not block on a permission-state preflight request. Enabling the policy treats permission cards already present in the directory store the same way and replies immediately, then reconciles the server's pending list with a state preflight so stale already-resolved requests are not replied to or resurrected. Reconnect/bootstrap also uses the preflight while reconciling pending requests in the session directory, including requests inherited by child sessions. Unknown lineage and exhausted reply retries fail closed and leave the request available for manual action. A later `permission.replied` event invalidates any older deferred ask so the async policy check cannot resurrect a resolved request. With every OpenChamber webview closed or suspended no responder runs; this is an intentional VS Code limitation. Other runtimes remain fully server-owned.
-
-### Mutation responsibility
-
-`useGlobalSessionsStore` is kept correct by:
-
-1. shared global fetch/reconciliation via `loadSessions()` / `refreshGlobalSessions()`
-2. session create/update/delete events; recency-only updates for existing sessions are retained latest-per-session and committed once on `session.idle`/`session.error`, while structural updates and create/delete remain immediate and runtime switching discards pending updates. Display ordering reacts separately to active/settled lifecycle transitions, not to these recency publications
-3. direct mutation from session actions after successful SDK calls:
-   - create
-   - title update
-   - share
-   - unshare
-    - archive
-    - delete
-    - move to another worktree directory
-   - retention cleanup batch archive/delete
-
-This keeps cold/global lists responsive without requiring a refetch after every change.
-
-Live activity/status indicators must not depend on this cache. They must use the event/snapshot-reconciled global live status index.
 
 ## Session message loading
 
@@ -349,27 +295,16 @@ Rules:
 
 ## Session action rules
 
-Session actions live in `session-actions.ts` and are the canonical place for SDK-calling session mutations that affect global session lists.
+Session actions live in `session-actions.ts` and are the canonical place for SDK-calling session mutations. The Session Index reconciles itself from the server event stream, so actions never mirror list membership into a client-side cache.
 
 Rules:
 
-1. If an action mutates session list membership or visible session metadata, update `useGlobalSessionsStore` there.
-2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
+1. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
 3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
 4. Sending after a revert commits the new branch optimistically: remove the reverted tail and marker before inserting the new message, and restore both if the send is rejected.
 5. Composer and queued sends carry their captured runtime, directory, and session through asynchronous preparation. A runtime change cancels the send instead of re-resolving it against the new runtime.
 6. After session creation, the directory returned by the server is authoritative over the requested draft directory. The server may canonicalize a worktree path, and the first prompt must use the same directory identity as the created session.
 7. A prompt send that fails **after** the request left the client is ambiguous, never a definite failure: the server may already be answering it. Transports tag those errors (`markAmbiguousTransportFailure` in `@/lib/relay/transport-error`; the relay tunnel tags every stream that dies with a request in flight), and `isAmbiguousSendFailure` reads the tag before falling back to status/text heuristics. An ambiguous failure waits for the connection to return, refetches recent messages, and confirms the optimistic message in place instead of rolling it back — rolling it back lets the message queue re-send a prompt the engine is already running, producing two independent AI responses for one user message.
-
-Examples of global-store updates performed in `session-actions.ts`:
-
-- `createSession()` -> `upsertSession(session)`
-- `updateSessionTitle()` -> `upsertSession(result.data)`
-- `shareSession()` / `unshareSession()` -> `upsertSession(result.data)`
-- `archiveSession()` / `archiveSessions()` -> wait for server confirmation, then upsert each archived session
-- `unarchiveSession()` / `unarchiveSessions()` -> wait for server confirmation, then upsert each restored session
-- `deleteSession()` / `deleteSessions()` -> wait for server confirmation or `404`, then remove the session and its persisted state
-- `moveSessionToDirectory()` -> move the session between directory stores and update the global directory index
 
 ### Blocking-request (question/permission) reply routing
 
@@ -386,13 +321,13 @@ so `0` reads as active in the UI, the event reducer, and the OpenCode app/TUI.
 
 The server's `time_archived IS NULL` list filter still excludes such rows, so
 any query that wants a truthful active list must fetch inclusively
-(`archived: true`) and split client-side (`splitGlobalSessionsByArchived`).
-The global sessions store does this for its full and per-directory loads;
-directory bootstrap keeps using the server filter because live child stores
-must not hold archived sessions. A restored session re-enters its live
-directory store through the authoritative `session.updated` event the server
-publishes for the update; until then it remains fully visible through the
-global store (sidebar, switcher) and addressable by ID (message loading).
+(`archived: true`) and split client-side. The server-side Session Index does
+this for its snapshots; directory bootstrap keeps using the server filter
+because live child stores must not hold archived sessions. A restored session
+re-enters its live directory store through the authoritative
+`session.updated` event the server publishes for the update; until then it
+remains fully visible through the Session Index (sidebar, switcher) and
+addressable by ID (message loading).
 
 Archive and delete actions capture the active runtime key when they start and
 recheck it before every store reconciliation, so a response

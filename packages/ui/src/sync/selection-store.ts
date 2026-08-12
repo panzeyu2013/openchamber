@@ -13,17 +13,16 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { createDeferredSafeJSONStorage } from "@/stores/utils/safeStorage"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import { workspaceScopeKey } from "@/workspaces/identity"
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
 
 /**
  * Resolves the scope key for a session: the workspace scope when the session
- * index maps (sessionId, directory) to a workspace, otherwise the ambient
- * runtime key (non-workspace compatibility). A caller that already has the
- * authoritative workspace target may pass `workspaceId` to avoid ambiguity
+ * index maps (sessionId, directory) to a workspace. A caller that already has
+ * the authoritative workspace target may pass `workspaceId` to avoid ambiguity
  * when two connections expose the same upstream session ID and directory.
- * The result is byte-identical to `getRuntimeKey()` in non-workspace mode.
+ * Sessions the index does not map (unassigned) have no sync scope and key
+ * their state under the empty string.
  */
 export const resolveSessionScopeKey = (
   sessionId: string | null | undefined,
@@ -35,7 +34,7 @@ export const resolveSessionScopeKey = (
   const snapshot = useWorkspaceSessionIndexStore.getState().snapshot
   const sessions = snapshot?.sessions
   const inferredWorkspaceId = resolveActiveWorkspaceId(sessions, sessionId ?? null, directory ?? null)
-  return inferredWorkspaceId ? workspaceScopeKey(inferredWorkspaceId) : getRuntimeKey()
+  return inferredWorkspaceId ? workspaceScopeKey(inferredWorkspaceId) : ''
 }
 
 type ModelSelection = { providerId: string; modelId: string }

@@ -3,7 +3,6 @@ import type { GitStatus } from '@/lib/api/types';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 const { useGitStore } = await import('./useGitStore');
 
@@ -75,7 +74,7 @@ const createGitApi = (getGitStatus: GitAPI['getGitStatus']): GitAPI => ({
 
 const clearGitStoreState = () => {
   useGitStore.setState({
-    scopeKey: getRuntimeKey(),
+    scopeKey: '',
     directories: new Map(),
     directoriesByScope: {},
     activeDirectory: null,
@@ -85,7 +84,6 @@ const clearGitStoreState = () => {
 describe('useGitStore', () => {
   beforeEach(() => {
     clearGitStoreState();
-    useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
   });
 
   test('does not reuse an in-flight light status request for full status', async () => {
@@ -156,18 +154,21 @@ describe('useGitStore', () => {
     ]);
   });
 
-  test('rejects an old runtime completion after reset', async () => {
+  test('rejects a stale workspace completion after a scope switch', async () => {
     setDirectoryStatus(createStatus());
     const request = createDeferred<GitStatus>();
     const git = createGitApi(() => request.promise);
     const loading = useGitStore.getState().fetchStatus('/repo', git, { silent: true });
 
-    useGitStore.getState().resetForRuntimeSwitch('runtime-b');
+    setWorkspaceSession('ws-b');
+    await Promise.resolve();
     request.resolve(createStatus(undefined, [{ path: 'stale.ts', index: 'M', working_dir: ' ' }]));
     await loading;
 
-    expect(useGitStore.getState().scopeKey).toBe(getRuntimeKey());
-    expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files).toEqual([]);
+    expect(useGitStore.getState().scopeKey).toBe('workspace:ws-b');
+    // The stale completion must not land: the ws-b scope either has no /repo
+    // entry or only a branch-cache seed without a status payload.
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status ?? null).toBeNull();
   });
 
   test('rejects direct diff commits captured for another runtime', () => {
@@ -363,6 +364,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
       title: 'title',
       updatedAt: 1,
       archived: false,
+    createdAt: 1,
     }],
     freshnessByConnection: {},
   };
@@ -385,7 +387,6 @@ describe('useGitStore workspace scope', () => {
   beforeEach(() => {
     clearWorkspaceSession();
     clearGitStoreState();
-    useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
   });
 
   afterEach(clearWorkspaceSession);
@@ -401,22 +402,26 @@ describe('useGitStore workspace scope', () => {
     });
 
     setWorkspaceSession('ws-a');
+    await Promise.resolve();
     await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
 
     setWorkspaceSession('ws-b');
-    expect(useGitStore.getState().getDirectoryState('/repo') ?? null).toBe(null);
+    await Promise.resolve();
+    // The ws-b scope must not inherit ws-a's status snapshot (only a
+    // branch-cache seed with no status may exist).
+    expect(useGitStore.getState().getDirectoryState('/repo')?.status ?? null).toBe(null);
     await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('b.ts');
 
     setWorkspaceSession('ws-a');
+    await Promise.resolve();
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
     expect(statusCalls).toEqual(['ws-a', 'ws-b']);
   });
 
-  test('scope key falls back to the ambient runtime key outside workspace mode', () => {
-    useGitStore.getState().resetForRuntimeSwitch(getRuntimeKey());
-    expect(useGitStore.getState().scopeKey).toBe(getRuntimeKey());
+  test('scope key is the unscoped bucket outside workspace mode', () => {
+    expect(useGitStore.getState().scopeKey).toBe('');
     expect(useGitStore.getState().directoriesByScope).toEqual({});
   });
 });

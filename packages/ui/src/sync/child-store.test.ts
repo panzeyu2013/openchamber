@@ -30,7 +30,7 @@ const settle = async () => {
 
 describe('ChildStoreManager.subscribeAllSelected', () => {
   test('ignores unrelated child-store updates', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     let notifications = 0;
     const unsubscribe = manager.subscribeAllSelected((state) => state.session, () => {
@@ -48,7 +48,7 @@ describe('ChildStoreManager.subscribeAllSelected', () => {
   });
 
   test('notifies when the child-store registry changes', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     let notifications = 0;
     const unsubscribe = manager.subscribeAllSelected((state) => state.session, () => {
       notifications += 1;
@@ -65,7 +65,7 @@ describe('ChildStoreManager.subscribeAllSelected', () => {
 
 describe('ChildStoreManager directory lifecycle', () => {
   test('keeps an idle directory alive until its final consumer releases it', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const now = 10_000;
     const originalDateNow = Date.now;
     let currentTime = now;
@@ -96,7 +96,7 @@ describe('ChildStoreManager directory lifecycle', () => {
 
 describe('ChildStoreManager permission subscriptions', () => {
   test('does not notify session permission listeners for unrelated high-frequency updates', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     let notifications = 0;
     const unsubscribers = Array.from({ length: 50 }, (_, index) => (
@@ -125,7 +125,7 @@ describe('ChildStoreManager permission subscriptions', () => {
 
 describe('ChildStoreManager question subscriptions', () => {
   test('notifies only the owning session and ignores unrelated high-frequency updates', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     const notifications = new Map<string, number>();
     const unsubscribers = Array.from({ length: 50 }, (_, index) => {
@@ -168,7 +168,7 @@ describe('ChildStoreManager question subscriptions', () => {
   });
 
   test('notifies subtree and exact-session rows once for each relevant replacement', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     let parentNotifications = 0;
     let childNotifications = 0;
@@ -211,7 +211,7 @@ describe('ChildStoreManager question subscriptions', () => {
   });
 
   test('aggregates exact question buckets across directory stores', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const parentStore = manager.ensureChild('/repo', { bootstrap: false });
     const childStore = manager.ensureChild('/worktrees/feature', { bootstrap: false });
     let notifications = 0;
@@ -251,7 +251,7 @@ describe('ChildStoreManager question subscriptions', () => {
 
 describe('ChildStoreManager session message subscriptions', () => {
   test('routes annotated part changes only to the owning session', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     const notifications = new Map<string, number>();
     const unsubscribers = Array.from({ length: 50 }, (_, index) => {
@@ -278,7 +278,7 @@ describe('ChildStoreManager session message subscriptions', () => {
   });
 
   test('conservatively resets active subscribers for unannotated bulk part replacement', () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const child = manager.ensureChild('/workspace', { bootstrap: false });
     let reset = false;
     const unsubscribe = subscribeDirectorySessionMessages(child, 'session-1', (change) => {
@@ -295,7 +295,7 @@ describe('ChildStoreManager session message subscriptions', () => {
 
 describe('ChildStoreManager directory bootstrap scheduler', () => {
   test('bounds concurrency and eventually refreshes every queued directory', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const running = new Map<string, ReturnType<typeof deferred>>();
     const started: string[] = [];
     let maxRunning = 0;
@@ -332,7 +332,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('reserves capacity for foreground work while background refresh drains', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const tasks = new Map<string, ReturnType<typeof deferred>>();
     const started: string[] = [];
     manager.setBootstrapDemand('sidebar', [
@@ -363,7 +363,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('promotes a queued worktree without duplicating its execution', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const blocker = deferred();
     const started: string[] = [];
     manager.setBootstrapDemand('sidebar', [
@@ -392,7 +392,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('failed work does not block unrelated queued directories', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const started: string[] = [];
     manager.setBootstrapDemand('sidebar', [
       { directory: '/failed', priority: 'expanded', reason: 'project-expanded' },
@@ -416,7 +416,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('records os-permission failures and clears them on forced retry', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     let denied = true;
     const cleanup = manager.configure({
       onBootstrap: () => {
@@ -450,7 +450,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('continues after a synchronous bootstrap failure', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const started: string[] = [];
     manager.setBootstrapDemand('sidebar', [
       { directory: '/failed', priority: 'expanded', reason: 'project-expanded' },
@@ -475,7 +475,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('reruns a forced manual demand that arrives while the directory is running', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const firstRun = deferred();
     const started: string[] = [];
     const cleanup = manager.configure({
@@ -504,7 +504,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('coalesces repeated non-forced manual demands while a directory is running', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const firstRun = deferred();
     let starts = 0;
     const cleanup = manager.configure({
@@ -529,7 +529,7 @@ describe('ChildStoreManager directory bootstrap scheduler', () => {
   });
 
   test('reruns a manual demand after its bootstrap generation becomes stale', async () => {
-    const manager = new ChildStoreManager();
+    const manager = new ChildStoreManager('workspace:test');
     const staleRun = deferred();
     const started: string[] = [];
     const cleanupStale = manager.configure({

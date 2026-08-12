@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
-import { desktopHostRuntimeNeedsRestore } from './desktopRelayRestore';
+
+const { desktopHostRuntimeNeedsRestore } = await import('./desktopRelayRestore');
 
 describe('desktop host runtime restore', () => {
   test('repairs a stale endpoint even when the injected host identity already matches', () => {

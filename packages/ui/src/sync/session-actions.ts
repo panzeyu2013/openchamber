@@ -10,7 +10,7 @@ import { useInputStore } from "./input-store"
 import type { ChildStoreManager } from "./child-store"
 import { computeSubtreeIds } from "./scoped-blocking-requests"
 import { opencodeClient, type OpencodeService } from "@/lib/opencode/client"
-import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
+import { mergeSessionDirectoryMetadata } from "@/lib/sessionDirectory"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { getSyncScopeKey, registerSessionDirectory } from "./sync-refs"
 import { recordSendFailure } from "./send-failure-log"
@@ -29,7 +29,6 @@ import { withContextObligatoryMessage, type ContextObligatoryMessage } from "@/l
 import { withLinkedIssue, type LinkedIssue } from "@/lib/linkedIssues"
 import { getImperativeSessionMessageLoader } from "./session-message-loader"
 import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
@@ -200,7 +199,7 @@ function actionService(): OpencodeService {
 }
 
 function actionScopeKey(): string {
-  return _scopeKey ?? getRuntimeKey()
+  return _scopeKey ?? ""
 }
 
 const waitForWorkspaceActionScope = async (workspaceId: string): Promise<void> => {
@@ -397,10 +396,9 @@ export async function moveSessionToDirectory(
 
   invalidateSessionLoads(session.id, [sourceDirectory, destinationDirectory])
 
-  const moved = reconcileSessionMove(session, sourceDirectory, destinationDirectory)
+  reconcileSessionMove(session, sourceDirectory, destinationDirectory)
 
   registerSessionDirectory(session.id, destinationDirectory)
-  useGlobalSessionsStore.getState().upsertSession(moved)
   useSessionUIStore.getState().setSessionDirectory(session.id, destinationDirectory)
 }
 
@@ -482,16 +480,9 @@ type SessionListSnapshot = {
 
 type DirectoryStoreApi = ReturnType<ChildStoreManager["ensureChild"]>
 
-function getGlobalSessionSnapshot(sessionId: string): Session | null {
-  const global = useGlobalSessionsStore.getState()
-  return [...global.activeSessions, ...global.archivedSessions].find((session) => session.id === sessionId) ?? null
-}
-
 function getSessionDirectory(sessionId: string): string | undefined {
-  const globalSession = getGlobalSessionSnapshot(sessionId)
   return findSessionDirectoryInChildStores(sessionId)
     || useSessionUIStore.getState().getDirectoryForSession(sessionId)
-    || (globalSession ? resolveGlobalSessionDirectory(globalSession) ?? undefined : undefined)
     || dir()
 }
 
@@ -798,7 +789,6 @@ export async function createSession(
       workspaceIdFromScopeKey(actionScopeKey()),
     )
     useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id)
-    useGlobalSessionsStore.getState().upsertSession(session)
     return session
   } catch (error) {
     console.error("[session-actions] createSession failed", error)
@@ -839,7 +829,6 @@ export async function patchSessionMetadata(
   const nextMetadata = updater(getSessionMetadata(current))
   const updated = await actionService().updateSession(sessionId, { metadata: nextMetadata }, targetDirectory)
   if (isStaleRuntime(expectedRuntimeKey)) throw new Error("runtime changed")
-  useGlobalSessionsStore.getState().upsertSession(updated)
   const sessionDirectory = (updated as { directory?: string | null }).directory ?? targetDirectory
   if (sessionDirectory) registerSessionDirectory(updated.id, sessionDirectory)
   return updated
@@ -942,12 +931,12 @@ function cleanupSessionWorktreeMetadata(sessionId: string): void {
 /**
  * Commit a server-confirmed deletion.
  *
- * `expectedRuntimeKey` is the runtime the deletion was confirmed on. It is
+ * `expectedRuntimeKey` is the scope the deletion was confirmed on. It is
  * forwarded to `cleanupPersistedSessionState`, which rejects an identity whose
- * runtime is no longer active. Passing the live `getRuntimeKey()` here would
+ * scope is no longer active. Passing the live `actionScopeKey()` here would
  * make that existing check a tautology, so the captured key is required to keep
- * it meaningful. Callers must still reject a stale runtime themselves, because
- * the in-memory live/global/UI stores mutated below are not runtime-scoped.
+ * it meaningful. Callers must still reject a stale scope themselves, because
+ * the in-memory live/UI stores mutated below are not scope-partitioned.
  */
 function finalizeConfirmedSessionDeletion(
   sessionId: string,
@@ -956,7 +945,6 @@ function finalizeConfirmedSessionDeletion(
 ): void {
   const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
   invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
-  useGlobalSessionsStore.getState().removeSessions([sessionId])
   const ui = useSessionUIStore.getState()
   if (ui.currentSessionId === sessionId) ui.setCurrentSession(null)
   cleanupSessionWorktreeMetadata(sessionId)
@@ -1112,7 +1100,6 @@ export async function archiveSession(sessionId: string, expectedRuntimeKey = act
     }
     const snapshots = removeSessionFromLiveStores(sessionId, sessionDirectory)
     invalidateSessionLoads(sessionId, [...snapshots.map((snapshot) => snapshot.directory), sessionDirectory])
-    useGlobalSessionsStore.getState().upsertSession(archived)
     const ui = useSessionUIStore.getState()
     if (ui.currentSessionId === sessionId) ui.setCurrentSession(null)
     return true
@@ -1172,9 +1159,7 @@ export async function archiveSessions(
  * OpenCode app/TUI all classify archive state by truthiness of
  * `time.archived`, and `0` is falsy. The one place that still excludes such a
  * session is the server's own `time_archived IS NULL` list filter, so the
- * global session cache loads with the inclusive `archived` flag and splits
- * client-side instead of relying on that filter (see
- * `useGlobalSessionsStore.loadSessions`).
+ * server-side Session Index loads inclusively and splits client-side.
  */
 const UNARCHIVED_TIMESTAMP = 0
 
@@ -1200,7 +1185,6 @@ export async function unarchiveSession(sessionId: string, expectedRuntimeKey = a
     if (restored.time?.archived) {
       throw new Error("session.update failed: server kept the session archived")
     }
-    useGlobalSessionsStore.getState().upsertSession(restored)
     if (sessionDirectory) registerSessionDirectory(sessionId, sessionDirectory)
     return true
   } catch (error) {
@@ -1250,7 +1234,6 @@ export async function unarchiveSessions(
 export async function updateSessionTitle(sessionId: string, title: string): Promise<void> {
   const sessionDirectory = getSessionDirectory(sessionId)
   const session = await actionService().updateSession(sessionId, { title }, sessionDirectory)
-  useGlobalSessionsStore.getState().upsertSession(session)
   mirrorSessionIntoLiveStores(session, sessionDirectory)
 }
 
@@ -1258,7 +1241,6 @@ export async function shareSession(sessionId: string): Promise<Session | null> {
   const sessionDirectory = getSessionDirectory(sessionId)
   const result = await sdk().session.share({ sessionID: sessionId, directory: sessionDirectory })
   const session = stripSessionDiffSnapshots(assertSdkData(result, "session.share"))
-  useGlobalSessionsStore.getState().upsertSession(session)
   updateLiveSession(session, sessionDirectory)
   return session
 }
@@ -1273,7 +1255,6 @@ export async function unshareSession(sessionId: string): Promise<Session | null>
     ...stripSessionDiffSnapshots(assertSdkData(result, "session.unshare")),
     share: undefined,
   }
-  useGlobalSessionsStore.getState().upsertSession(session)
   updateLiveSession(session, sessionDirectory)
   return session
 }

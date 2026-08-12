@@ -11,7 +11,7 @@ import {
 import { compareSessionsByLifecycleOrder, getSessionLifecycleOrderValue } from '@/sync/session-ordering';
 import { formatDirectoryName, formatPathForDisplay } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
 import { getWorktreeFirstSeenAt } from '../worktreeFirstSeen';
 
 type Args = {
@@ -133,7 +133,7 @@ export const useSessionGrouping = (args: Args) => {
         // below would otherwise dump these sessions into the archived bucket.
         if (args.isVSCode) return normalizedProjectRoot ?? '__project_root__';
         const metadataPath = normalizePath(args.worktreeMetadata.get(session.id)?.path ?? null);
-        const normalizedDir = metadataPath ?? resolveGlobalSessionDirectory(session);
+        const normalizedDir = metadataPath ?? resolveSessionDirectory(session);
         if (!normalizedDir) return archivedKey;
         if (normalizedDir !== normalizedProjectRoot && worktreeByPath.has(normalizedDir)) return normalizedDir;
         if (normalizedDir === normalizedProjectRoot) return normalizedProjectRoot ?? '__project_root__';

@@ -72,7 +72,9 @@ const isSessionSummary = (value: unknown): value is WorkspaceSessionSummary => {
     && typeof summary.directory === 'string'
     && typeof summary.title === 'string'
     && typeof summary.updatedAt === 'number'
-    && typeof summary.archived === 'boolean';
+    && typeof summary.archived === 'boolean'
+    && (summary.parentID === undefined || summary.parentID === null || typeof summary.parentID === 'string')
+    && typeof summary.createdAt === 'number';
 };
 
 const parseFreshnessPatch = (value: unknown): Partial<SourceFreshness> | null => {
@@ -131,13 +133,23 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
         const base = {
           status: 'ready' as const,
           lastError: null,
-          lastAppliedRevision: snapshot.revision,
           revisionGap: false,
         };
+        // A snapshot fetched BEFORE events were applied must never roll back
+        // those events: if the snapshot's revision is at or below the last
+        // applied event revision, the in-memory state is already newer (the
+        // events are the authoritative continuation), so keep it. This is the
+        // index equivalent of the global cache's mutation-revision overlay:
+        // a stale load cannot resurrect a session deleted mid-fetch or drop a
+        // session created mid-fetch.
+        if (state.lastAppliedRevision >= snapshot.revision) {
+          return { ...base, lastAppliedRevision: state.lastAppliedRevision };
+        }
         if (!state.snapshot) {
           const { sessionKeys, sessionIndex } = indexSessions(snapshot.sessions);
           return {
             ...base,
+            lastAppliedRevision: snapshot.revision,
             snapshot,
             sessionKeys,
             sessionIndex,
@@ -158,6 +170,7 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
           const { sessionKeys, sessionIndex } = indexSessions(snapshot.sessions);
           return {
             ...base,
+            lastAppliedRevision: snapshot.revision,
             snapshot,
             sessionKeys,
             sessionIndex,
@@ -171,6 +184,7 @@ export const useWorkspaceSessionIndexStore = create<SessionIndexState>()((set, g
         const { sessionKeys, sessionIndex } = indexSessions(mergedSessions);
         return {
           ...base,
+          lastAppliedRevision: snapshot.revision,
           snapshot: { ...snapshot, sessions: mergedSessions },
           sessionKeys,
           sessionIndex,

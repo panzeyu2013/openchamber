@@ -17,7 +17,9 @@ import {
 } from '@/components/ui/dialog';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   EMPTY_SESSION_ORDER_RANKS,
@@ -94,8 +96,10 @@ export const CommandPalette: React.FC = () => {
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
 
-  const activeSessions = useGlobalSessionsStore(React.useCallback(
-    (state) => isCommandPaletteOpen ? state.activeSessions : EMPTY_SESSIONS,
+  const activeSessions = useWorkspaceSessionIndexStore(React.useCallback(
+    (state) => isCommandPaletteOpen
+      ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary)
+      : EMPTY_SESSIONS,
     [isCommandPaletteOpen],
   ));
   const pinnedSessionIds = useSessionPinnedStore(React.useCallback(
@@ -141,7 +145,7 @@ export const CommandPalette: React.FC = () => {
     const handle = setTimeout(() => {
       const seen = new Set<string>();
       for (const session of activeSessions) {
-        const dir = resolveGlobalSessionDirectory(session);
+        const dir = resolveSessionDirectory(session);
         if (!dir || seen.has(dir)) continue;
         seen.add(dir);
         void ensureGitStatus(dir, gitApi);
@@ -452,7 +456,7 @@ export const CommandPalette: React.FC = () => {
   const handleOpenSession = React.useCallback(
     (session: Session) => {
       close();
-      setCurrentSession(session.id, resolveGlobalSessionDirectory(session), activeWorkspaceId);
+      setCurrentSession(session.id, resolveSessionDirectory(session), activeWorkspaceId);
     },
     [activeWorkspaceId, close, setCurrentSession],
   );
@@ -537,7 +541,7 @@ export const CommandPalette: React.FC = () => {
                   <CommandGroup key="sessions">
                     {visibleSessions.map((session) => {
                       const title = session.title || t('commandPalette.session.untitled');
-                      const dir = resolveGlobalSessionDirectory(session);
+                      const dir = resolveSessionDirectory(session);
                       const branch = branchForSession(session.id, dir);
                       return (
                         <CommandItem

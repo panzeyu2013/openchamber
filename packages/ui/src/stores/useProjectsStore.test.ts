@@ -70,7 +70,7 @@ describe("useProjectsStore settings synchronization", () => {
     expect(state.manualProjectOrder).toEqual(['workspace-local'])
   })
 
-  test('catalog projection preserves legacy metadata while adopting workspace identity', () => {
+  test('catalog projection adopts the workspace identity without legacy metadata merge', () => {
     const legacy = { id: 'legacy-path-id', path: '/repo/local', label: 'Old label', defaultModel: 'openai/gpt-5' } as ProjectEntry
     useProjectsStore.getState().synchronizeFromSettings({
       projects: [legacy],
@@ -86,7 +86,9 @@ describe("useProjectsStore settings synchronization", () => {
     const project = useProjectsStore.getState().projects[0]
     expect(project?.id).toBe('workspace-local')
     expect(project?.label).toBe('Catalog label')
-    expect(project?.defaultModel).toBe('openai/gpt-5')
+    // The legacy metadata bridge was removed: the catalog owns the projected
+    // fields, and path-derived legacy metadata is no longer merged in.
+    expect(project?.defaultModel).toBeUndefined()
   })
 
   test('catalog-backed add reuses an existing local workspace for the same path', () => {

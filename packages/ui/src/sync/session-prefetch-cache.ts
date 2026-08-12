@@ -7,7 +7,6 @@
  * pagination state.
  */
 
-import { getRuntimeKey } from "@/lib/runtime-switch"
 
 type Meta = {
   limit: number
@@ -22,7 +21,7 @@ const compositeKey = (scopeKey: string, directory: string, sessionID: string) =>
 
 const cache = new Map<string, Meta>()
 
-export function getSessionPrefetch(directory: string, sessionID: string, scopeKey = getRuntimeKey()): Meta | undefined {
+export function getSessionPrefetch(directory: string, sessionID: string, scopeKey: string): Meta | undefined {
   const id = compositeKey(scopeKey, directory, sessionID)
   const value = cache.get(id)
   if (value) {
@@ -41,7 +40,7 @@ export function setSessionPrefetch(input: {
   at?: number
   scopeKey?: string
 }) {
-  const id = compositeKey(input.scopeKey ?? getRuntimeKey(), input.directory, input.sessionID)
+  const id = compositeKey(input.scopeKey ?? "", input.directory, input.sessionID)
   cache.delete(id)
   cache.set(id, {
     limit: input.limit,
@@ -57,7 +56,7 @@ export function setSessionPrefetch(input: {
 }
 
 /** Invalidate cache for specific sessions (e.g. after eviction). */
-export function clearSessionPrefetch(directory: string, sessionIDs: Iterable<string>, scopeKey = getRuntimeKey()) {
+export function clearSessionPrefetch(directory: string, sessionIDs: Iterable<string>, scopeKey: string) {
   for (const sessionID of sessionIDs) {
     if (!sessionID) continue
     const id = compositeKey(scopeKey, directory, sessionID)
@@ -65,7 +64,7 @@ export function clearSessionPrefetch(directory: string, sessionIDs: Iterable<str
   }
 }
 
-export function clearDirectorySessionPrefetch(directory: string, scopeKey = getRuntimeKey()) {
+export function clearDirectorySessionPrefetch(directory: string, scopeKey: string) {
   const prefix = `${scopeKey}\n${directory}\n`
   for (const id of cache.keys()) {
     if (id.startsWith(prefix)) cache.delete(id)

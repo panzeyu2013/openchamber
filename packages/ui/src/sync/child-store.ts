@@ -4,7 +4,6 @@ import { INITIAL_STATE, MAX_DIR_STORES, DIR_IDLE_TTL_MS, EVICTION_GRACE_MS } fro
 import { pickDirectoriesToEvict, canDisposeDirectory, hasPendingBlockingRequests } from "./eviction"
 import { readDirCache, persistVcs, persistProjectMeta, persistIcon, persistSessions } from "./persist-cache"
 import { normalizePath } from "@/lib/pathNormalization"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import { startSessionLoadPerformanceEvent } from "./session-load-performance"
 import { countSyncPerformance } from "./performance-diagnostics"
 import { isFilesystemError } from "@/lib/api/files-errors"
@@ -328,7 +327,7 @@ export class ChildStoreManager {
   private readonly bootstrapStates = new Map<string, DirectoryBootstrapState>()
   private readonly bootstrapFailures = new Map<string, DirectoryBootstrapFailureReason>()
 
-  constructor(scopeKey = getRuntimeKey()) {
+  constructor(scopeKey: string) {
     this.scopeKey = scopeKey
   }
 

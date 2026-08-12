@@ -121,9 +121,8 @@ export function useSync() {
   const store = useDirectoryStore()
   const childStores = useChildStoreManager()
   const messageLoader = useSessionMessageLoader()
-  // Sync scope: workspace scope key in workspace mode, the ambient runtime key
-  // otherwise (byte-identical to the old `getRuntimeKey()`-based keys in
-  // non-workspace mode). Caches keyed by it never share state across workspaces.
+  // Sync scope: the mounted workspace scope key. Caches keyed by it never
+  // share state across workspaces.
   const scopeKey = useSyncScopeKey()
 
   const keyFor = useCallback(
@@ -159,7 +158,7 @@ export function useSync() {
       for (const id of sessionIDs) {
         messageLoader.invalidateSession({ directory: dir, sessionID: id })
       }
-      clearSessionPrefetch(dir, sessionIDs)
+      clearSessionPrefetch(dir, sessionIDs, scopeKey)
     },
     [childStores, messageLoader, scopeKey],
   )

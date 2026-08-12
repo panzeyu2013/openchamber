@@ -33,7 +33,7 @@ const indexSessionIn = (
 let manager: ChildStoreManager
 
 beforeEach(() => {
-  manager = new ChildStoreManager()
+  manager = new ChildStoreManager('workspace:test')
   setSyncRefs({} as never, manager, PARENT)
   useSessionUIStore.getState().setCurrentSession(null)
 })

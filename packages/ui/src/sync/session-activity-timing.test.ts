@@ -119,8 +119,9 @@ describe('session activity timing', () => {
     observeSessionActivityTiming('ses_a', 'active');
 
     const persisted = readPersisted();
-    expect(persisted?.ses_a.start).toBe(startedAt('ses_a') as number);
-    expect(persisted?.ses_a.seen).toBeGreaterThanOrEqual(persisted?.ses_a.start as number);
+    const record = persisted?.[JSON.stringify(['', 'ses_a'])];
+    expect(record?.start).toBe(startedAt('ses_a') as number);
+    expect(record?.seen).toBeGreaterThanOrEqual(record?.start as number);
   });
 
   test('clears the persisted record when the turn ends', () => {
@@ -132,7 +133,7 @@ describe('session activity timing', () => {
 
   test('resumes a persisted start when a status snapshot reports the session active', () => {
     const record = runningUntilReload(90_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     snapshot(['ses_a'], ['ses_a']);
 
@@ -145,7 +146,7 @@ describe('session activity timing', () => {
   // started" therefore reset the counter on almost every refresh.
   test('resumes when a repeated busy event arrives before the first snapshot', () => {
     const record = runningUntilReload(90_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     observeSessionActivityTiming('ses_a', 'active');
 
@@ -154,7 +155,7 @@ describe('session activity timing', () => {
 
   test('the turn after a resumed one still counts from zero', () => {
     const record = runningUntilReload(90_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     // Reload lands mid-turn: the snapshot resumes it…
     snapshot(['ses_a'], ['ses_a']);
@@ -170,7 +171,7 @@ describe('session activity timing', () => {
 
   test('a live idle event retires the persisted record', () => {
     const record = runningUntilReload(90_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     // The turn ended while the tab was gone; the event arrives on reconnect.
     observeSessionActivityTiming('ses_a', 'settled');
@@ -187,7 +188,7 @@ describe('session activity timing', () => {
   test('resumes even when bootstrap takes most of a minute', () => {
     const loadedAgoMs = 45_000;
     const record = runningUntilReload(300_000, loadedAgoMs);
-    seedReload({ ses_a: record }, loadedAgoMs);
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record }, loadedAgoMs);
 
     snapshot(['ses_a'], ['ses_a']);
 
@@ -197,7 +198,7 @@ describe('session activity timing', () => {
   test('does not adopt a record once the adoption window has passed', () => {
     const loadedAgoMs = 5 * 60_000;
     const record = runningUntilReload(300_000, loadedAgoMs);
-    seedReload({ ses_a: record }, loadedAgoMs);
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record }, loadedAgoMs);
 
     // A turn starting this long after load is a new turn, not the one that was
     // running before the reload.
@@ -213,7 +214,7 @@ describe('session activity timing', () => {
   // moments before the real busy snapshot arrived, resetting the counter to 0s.
   test('an early snapshot that cannot see the session busy does not lose the start', () => {
     const record = runningUntilReload(120_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     applyGlobalSessionStatusSnapshot('/repo', {}, ['ses_a']);
     applyGlobalSessionStatusSnapshot('/repo', { ses_a: { type: 'busy' } }, ['ses_a']);
@@ -223,7 +224,7 @@ describe('session activity timing', () => {
 
   test('resumes through a snapshot that arrives before the session list loads', () => {
     const record = runningUntilReload(120_000);
-    seedReload({ ses_a: record });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: record });
 
     applyGlobalSessionStatusSnapshot('/repo', { ses_a: { type: 'busy' } }, []);
 
@@ -232,7 +233,7 @@ describe('session activity timing', () => {
 
   test('does not resume a record whose liveness stamp has gone quiet', () => {
     const before = Date.now();
-    seedReload({ ses_a: { start: before - 300_000, seen: before - 240_000 } });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: { start: before - 300_000, seen: before - 240_000 } });
 
     snapshot(['ses_a'], ['ses_a']);
 
@@ -241,7 +242,7 @@ describe('session activity timing', () => {
 
   test('does not resume a turn older than the maximum turn age', () => {
     const before = Date.now();
-    seedReload({ ses_a: { start: before - 48 * 60 * 60 * 1000, seen: before - 1_000 } });
+    seedReload({ [JSON.stringify(['', 'ses_a'])]: { start: before - 48 * 60 * 60 * 1000, seen: before - 1_000 } });
 
     snapshot(['ses_a'], ['ses_a']);
 
@@ -261,10 +262,10 @@ describe('session activity timing', () => {
   test('ignores entries of the wrong shape or dated in the future', () => {
     const before = Date.now();
     seedReload({
-      ses_a: before - 5_000,
-      ses_b: { start: 'nope', seen: before },
-      ses_c: { start: before + 60_000, seen: before },
-      ses_d: { start: before - 5_000, seen: before + 60_000 },
+      [JSON.stringify(['', 'ses_a'])]: before - 5_000,
+      [JSON.stringify(['', 'ses_b'])]: { start: 'nope', seen: before },
+      [JSON.stringify(['', 'ses_c'])]: { start: before + 60_000, seen: before },
+      [JSON.stringify(['', 'ses_d'])]: { start: before - 5_000, seen: before + 60_000 },
     });
 
     for (const sessionId of ['ses_a', 'ses_b', 'ses_c', 'ses_d']) {
@@ -275,12 +276,12 @@ describe('session activity timing', () => {
 
   test('a quiet record ages out of storage on the next write', () => {
     const before = Date.now();
-    seedReload({ ses_quiet: { start: before - 300_000, seen: before - 240_000 } });
+    seedReload({ [JSON.stringify(['', 'ses_quiet'])]: { start: before - 300_000, seen: before - 240_000 } });
 
     observeSessionActivityTiming('ses_a', 'active');
 
-    expect(readPersisted()?.ses_quiet).toBe(undefined);
-    expect(readPersisted()?.ses_a.start).toBeDefined();
+    expect(readPersisted()?.[JSON.stringify(['', 'ses_quiet'])]).toBe(undefined);
+    expect(readPersisted()?.[JSON.stringify(['', 'ses_a'])].start).toBeDefined();
   });
 
   test('deleting a session clears live, settled, and persisted timing', () => {

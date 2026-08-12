@@ -250,6 +250,8 @@ export const createSessionIndex = (dependencies) => {
         title: typeof session.title === 'string' && session.title.length > 0 ? session.title : session.id,
         updatedAt: Number(session.time?.updated) || 0,
         archived: Boolean(session.time?.archived),
+        parentID: typeof session.parentID === 'string' && session.parentID.length > 0 ? session.parentID : null,
+        createdAt: Number(session.time?.created) || 0,
         // Activity is event-derived; preserve the live value across refreshes.
         activity: previous?.activity ?? 'idle',
       });
@@ -268,6 +270,8 @@ export const createSessionIndex = (dependencies) => {
           || previous.directory !== session.directory
           || previous.title !== session.title
           || previous.updatedAt !== session.updatedAt
+          || previous.parentID !== session.parentID
+          || previous.createdAt !== session.createdAt
           || previous.archived !== session.archived
           || previous.activity !== session.activity;
       });
@@ -286,6 +290,8 @@ export const createSessionIndex = (dependencies) => {
             || previous.directory !== session.directory
             || previous.title !== session.title
             || previous.updatedAt !== session.updatedAt
+          || previous.parentID !== session.parentID
+          || previous.createdAt !== session.createdAt
             || previous.archived !== session.archived
             || previous.activity !== session.activity;
         })

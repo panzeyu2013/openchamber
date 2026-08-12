@@ -1,20 +1,16 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { canUseElectronDesktopIPC, invokeDesktop, isDesktopLocalOriginActive } from '@/lib/desktop';
-import { getRuntimeApiBaseUrl, getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneBaseUrl, getControlPlaneKey } from '@/lib/control-plane';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
-import { getSyncChildStores, getAllSyncSessions, getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
+import { getSyncChildStores, getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import { useGlobalSessionStatusStore, applyGlobalSessionStatusSnapshot } from '@/sync/global-session-status';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
 import { getNotificationSessionKey, useNotificationStore } from '@/sync/notification-store';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { respondToPermission } from '@/sync/session-actions';
-import {
-  useGlobalSessionsStore,
-  ensureGlobalSessionsLoaded,
-  refreshGlobalSessions,
-  resolveGlobalSessionDirectory,
-} from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { QUOTA_PROVIDERS, formatWindowLabel, formatQuotaValueLabel } from '@/lib/quota';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -250,7 +246,7 @@ const resolveInstanceName = async (): Promise<string> => {
     if (isDesktopLocalOriginActive()) return 'Local OpenChamber';
     const localOrigin = (window as unknown as { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__
       || window.location.origin;
-    const runtimeApiBaseUrl = getRuntimeApiBaseUrl();
+    const runtimeApiBaseUrl = getControlPlaneBaseUrl();
     if (runtimeApiBaseUrl && locationMatchesHost(runtimeApiBaseUrl, localOrigin)) return 'Local OpenChamber';
     const cfg = await desktopHostsGet();
     const match = cfg.hosts.find((host) =>
@@ -342,22 +338,23 @@ const collectLiveData = (): LiveData => {
 // each directory with the session ids the global list places there, so the
 // snapshot can authoritatively clear stale entries by session id.
 const collectStatusPollDirectories = (): Map<string, string[]> => {
-  const allSessions = useGlobalSessionsStore.getState().activeSessions;
-  const rootDirs = new Set<string>();
-  allSessions
+  const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+  const allSessions = selectSessionsForConnection(snapshot, 'local')
+    .map(sessionFromSummary)
     .filter((s) => s?.id && !s.parentID)
     .slice()
     .sort(compareSessionOrder)
-    .slice(0, MAX_SESSIONS)
-    .forEach((session) => {
-      const directory = resolveGlobalSessionDirectory(session);
-      if (directory) rootDirs.add(directory);
-    });
+    .slice(0, MAX_SESSIONS);
+  const rootDirs = new Set<string>();
+  allSessions.forEach((session) => {
+    const directory = resolveSessionDirectory(session);
+    if (directory) rootDirs.add(directory);
+  });
 
   const targets = new Map<string, string[]>();
   for (const session of allSessions) {
     if (!session?.id) continue;
-    const directory = resolveGlobalSessionDirectory(session);
+    const directory = resolveSessionDirectory(session);
     if (!directory || !rootDirs.has(directory)) continue;
     const ids = targets.get(directory) ?? [];
     ids.push(session.id);
@@ -370,11 +367,12 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   const live = collectLiveData();
   const notif = useNotificationStore.getState().index.session;
 
-  // The list source is the GLOBAL store — every project/worktree the backend
-  // knows about, independent of which directories this client has opened. Live
-  // status/unread/branch are merged in by id where we have them (the session's
-  // directory is synced); otherwise the row is shown as idle.
-  const allSessions = useGlobalSessionsStore.getState().activeSessions;
+  // The list source is the Session Index — every workspace session the
+  // backend knows about, independent of which directories this client has
+  // opened. Live status/unread/branch are merged in by id where we have them
+  // (the session's directory is synced); otherwise the row is shown as idle.
+  const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+  const allSessions = selectSessionsForConnection(snapshot, 'local').map(sessionFromSummary);
   const titleById = new Map<string, string>(live.titleById);
   const childrenByParent = new Map<string, string[]>();
   for (const session of allSessions) {
@@ -429,7 +427,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     .slice(0, MAX_SESSIONS)
     .map((session) => {
       const family = [session.id, ...collectDescendants(session.id)];
-      const directory = resolveGlobalSessionDirectory(session) ?? '';
+      const directory = resolveSessionDirectory(session) ?? '';
       const workspaceId = resolveWorkspaceIdForSession(session.id, directory);
       return {
         id: session.id,
@@ -460,7 +458,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   if (ui.dockBadgeEnabled) {
     for (const session of allSessions) {
       if (!session?.id || session.parentID) continue; // roots only
-      const workspaceId = resolveWorkspaceIdForSession(session.id, resolveGlobalSessionDirectory(session) ?? '');
+      const workspaceId = resolveWorkspaceIdForSession(session.id, resolveSessionDirectory(session) ?? '');
       let familyUnseen = notif.unseenCount[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
       if (familyUnseen === 0 && ui.notifyOnSubtasks) {
         familyUnseen = collectDescendants(session.id)
@@ -470,7 +468,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     }
   }
 
-  return { sessions, approvals, instanceName, runtimeKey: getRuntimeKey(), usage: buildUsage(), dockBadgeCount };
+  return { sessions, approvals, instanceName, runtimeKey: getControlPlaneKey(), usage: buildUsage(), dockBadgeCount };
 };
 
 export const useTraySync = (): void => {
@@ -571,7 +569,7 @@ export const useTraySync = (): void => {
     const unsubscribeNotif = useNotificationStore.subscribe(() => scheduleFlush());
     // The global store drives the session list. It updates instantly via SSE
     // for the active directory; subscribe so those land in the tray at once.
-    const unsubscribeGlobal = useGlobalSessionsStore.subscribe(() => scheduleFlush());
+    const unsubscribeGlobal = useWorkspaceSessionIndexStore.subscribe(() => scheduleFlush());
     // Project labels and discovered worktrees feed the "project · branch"
     // subtitle; refresh the tray when they change (deduped, so cheap).
     const unsubscribeProjects = useProjectsStore.subscribe(() => scheduleFlush());
@@ -589,8 +587,10 @@ export const useTraySync = (): void => {
     // Make the tray self-sufficient: load the full cross-project list now
     // (independent of the sidebar) and refresh it periodically so sessions from
     // directories this client never opened still show up and stay current.
-    void ensureGlobalSessionsLoaded(getAllSyncSessions());
-    const refreshInterval = window.setInterval(() => { void refreshGlobalSessions(); }, GLOBAL_REFRESH_MS);
+    void useWorkspaceSessionIndexStore.getState().refresh();
+    const refreshInterval = window.setInterval(() => {
+      void useWorkspaceSessionIndexStore.getState().refresh();
+    }, GLOBAL_REFRESH_MS);
 
     // Global busy/retry status: fetch now and poll, so unsynced sessions don't
     // sit looking idle. Synced directories stay instant via their SSE stores.

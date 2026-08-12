@@ -1,4 +1,3 @@
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { workspaceScopeKey, workspaceIdFromScopeKey } from '@/workspaces/identity';
 import { clearChatDraft, createChatDraftIdentity } from '@/lib/chatDraftPersistence';
 import { createMessageQueueTarget, useMessageQueueStore } from '@/stores/messageQueueStore';
@@ -11,26 +10,29 @@ import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
  * Clears every persisted session-scoped UI bucket (queue, todos, folders,
  * inline drafts, pins, chat draft) for one deleted session identity.
  *
- * The identity carries the SCOPE the deletion belongs to: a workspace scope
- * key when `workspaceId` is present, the ambient runtime key otherwise. The
- * guard rejects an identity whose captured scope does not match the scope it
- * claims — for ambient identities that is the current runtime key (unchanged
- * behavior); for workspace identities the captured runtime key must equal
- * `workspaceScopeKey(workspaceId)`. Equal session IDs across workspaces or
- * runtimes can therefore never clear each other's persisted state.
+ * Every mounted sync scope is a workspace scope: the identity carries the
+ * workspace scope key and the guard rejects an identity whose captured scope
+ * does not match `workspaceScopeKey(workspaceId)`. Equal session IDs across
+ * workspaces can therefore never clear each other's persisted state.
  */
 export const cleanupPersistedSessionState = (identity: {
-  /** Captured scope key: workspace scope key in workspace mode, ambient
-   * runtime key otherwise. Forwarded unchanged to the scope-keyed stores. */
+  /** Captured workspace scope key. Forwarded unchanged to the scope-keyed
+   * stores. */
   runtimeKey: string;
   workspaceId?: string;
   directory: string;
   sessionId: string;
 }): void => {
   if (!identity.directory || identity.directory === 'global' || !identity.sessionId) return;
+  // The identity either names its workspace explicitly or already carries the
+  // workspace scope key as its runtime key. Identities without a workspace
+  // (unassigned sessions) resolve to the empty scope, so their cleanup can
+  // never touch a workspace's persisted state.
   const scopeKey = identity.workspaceId
     ? workspaceScopeKey(identity.workspaceId)
-    : getRuntimeKey();
+    : workspaceIdFromScopeKey(identity.runtimeKey)
+      ? identity.runtimeKey
+      : '';
   if (identity.runtimeKey !== scopeKey) return;
 
   const queueTarget = createMessageQueueTarget(identity.sessionId, identity.directory, identity.runtimeKey);
@@ -45,21 +47,19 @@ export const cleanupPersistedSessionState = (identity: {
 
 /**
  * Resolves the deletion identity for a session: the workspace scope when the
- * session index maps the (sessionId, directory) tuple to a workspace, the
- * ambient runtime key otherwise. Falls back to `fallbackRuntimeKey` (the
- * caller's captured ambient key) for non-workspace sessions so the legacy
- * stale-runtime guard stays intact.
+ * session index maps the (sessionId, directory) tuple to a workspace. An
+ * identity without a workspace (unassigned session) carries the empty scope,
+ * so its cleanup can never touch a workspace's persisted state.
  */
 export const resolveSessionDeletionIdentity = (
   sessionId: string,
   directory: string | null | undefined,
   scopeKey: string,
-  fallbackRuntimeKey: string,
 ): { runtimeKey: string; workspaceId?: string; directory: string; sessionId: string } => {
   const workspaceId = workspaceIdFromScopeKey(scopeKey);
   const targetDirectory = directory ?? 'global';
   return {
-    runtimeKey: workspaceId ? scopeKey : fallbackRuntimeKey,
+    runtimeKey: workspaceId ? scopeKey : '',
     ...(workspaceId ? { workspaceId } : {}),
     directory: targetDirectory,
     sessionId,

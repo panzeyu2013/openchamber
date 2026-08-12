@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { normalizePath } from '@/lib/pathNormalization';
 import { getDeferredSafeStorage } from './utils/safeStorage';
@@ -31,7 +30,9 @@ const storage = getDeferredSafeStorage();
  */
 export const getPinnedSessionKey = (scopeKey: string, directory: string, sessionId: string): string | null => {
   const normalizedDirectory = normalizePath(directory);
-  if (!scopeKey || !normalizedDirectory || !sessionId) return null;
+  // The empty scope is the legitimate unscoped bucket for sessions the
+  // session index does not map to a workspace.
+  if (typeof scopeKey !== 'string' || !normalizedDirectory || !sessionId) return null;
   return JSON.stringify([scopeKey, normalizedDirectory, sessionId]);
 };
 
@@ -42,7 +43,7 @@ const parsePinnedSessionKey = (key: string): [string, string, string] | null => 
     const [scopeKey, directory, sessionId] = parsed;
     if (typeof scopeKey !== 'string' || typeof directory !== 'string' || typeof sessionId !== 'string') return null;
     const normalizedDirectory = normalizePath(directory);
-    if (!scopeKey || !normalizedDirectory || normalizedDirectory !== directory || !sessionId) return null;
+    if (!normalizedDirectory || normalizedDirectory !== directory || !sessionId) return null;
     return [scopeKey, normalizedDirectory, sessionId];
   } catch {
     return null;
@@ -60,13 +61,7 @@ const pinnedKeyForSession = (directory: string | null | undefined, sessionId: st
 export const isSessionPinned = (ids: Set<string>, directory: string | null | undefined, sessionId: string): boolean => {
   const key = pinnedKeyForSession(directory, sessionId);
   if (!key) return false;
-  if (ids.has(key)) return true;
-  // Legacy dual read: pins written before the scope migration carry the
-  // ambient runtime key in the first tuple slot.
-  const legacyKey = directory
-    ? getPinnedSessionKey(getRuntimeKey(), directory, sessionId)
-    : null;
-  return legacyKey !== null && legacyKey !== key && ids.has(legacyKey);
+  return ids.has(key);
 };
 
 const readPinned = (): PinnedSessionState => {
@@ -120,22 +115,12 @@ export const useSessionPinnedStore = create<SessionPinnedStore>((set, get) => ({
     if (!key) return;
     const ids = new Set(get().ids);
     const touchedAt = { ...get().touchedAt };
-    // Legacy runtime-keyed twin: toggling the scoped key off must not leave
-    // the pre-migration entry behind (it would still read as pinned).
-    const legacyKey = getPinnedSessionKey(getRuntimeKey(), target.directory, target.sessionId);
-    const keys = legacyKey !== null && legacyKey !== key ? [key, legacyKey] : [key];
     if (ids.has(key)) {
-      for (const candidate of keys) {
-        ids.delete(candidate);
-        delete touchedAt[candidate];
-      }
+      ids.delete(key);
+      delete touchedAt[key];
     } else {
       ids.add(key);
       touchedAt[key] = Date.now();
-      if (legacyKey !== null && legacyKey !== key) {
-        ids.delete(legacyKey);
-        delete touchedAt[legacyKey];
-      }
     }
     const pinnedState = boundPinnedState(ids, touchedAt);
     set(pinnedState);
@@ -146,16 +131,6 @@ export const useSessionPinnedStore = create<SessionPinnedStore>((set, get) => ({
     if (!key || !get().ids.has(key)) return;
     const ids = new Set(get().ids);
     ids.delete(key);
-    // When the identity carries the current runtime key (the legacy deletion
-    // path), also drop the workspace-scoped twin so runtime-captured cleanup
-    // reaches workspace-scoped pins. A non-current or workspace scope never
-    // clears another owner's entry.
-    const resolvedKey = scopeKey === getRuntimeKey()
-      ? getPinnedSessionKey(resolveSessionScopeKey(sessionId, directory), directory, sessionId)
-      : null;
-    if (resolvedKey !== null && resolvedKey !== key && ids.has(resolvedKey)) {
-      ids.delete(resolvedKey);
-    }
     get().setIds(ids);
   },
 }));

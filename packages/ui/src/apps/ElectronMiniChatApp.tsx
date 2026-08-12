@@ -7,7 +7,6 @@ import { Toaster } from '@/components/ui/sonner';
 import { MiniChatLayout } from '@/components/mini-chat/MiniChatLayout';
 import { usePushVisibilityBeacon } from '@/hooks/usePushVisibilityBeacon';
 import { useWindowTitle } from '@/hooks/useWindowTitle';
-import { opencodeClient } from '@/lib/opencode/client';
 import type { RuntimeAPIs } from '@/lib/api/types';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -343,23 +342,15 @@ export function ElectronMiniChatApp({ apis }: ElectronMiniChatAppProps) {
 
 const ElectronMiniChatRuntime: React.FC<{ config: MiniChatConfig; apis: RuntimeAPIs }> = ({ config, apis }) => {
   const { handle } = useWorkspaceRuntime();
-  const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
 
-  React.useEffect(() => {
-    if (config.workspaceId) return;
-    opencodeClient.setDirectory(currentDirectory || config.directory || undefined);
-  }, [config.directory, config.workspaceId, currentDirectory]);
-
-  if (config.workspaceId && !handle) {
+  if (!handle) {
+    // No workspace identity for this window: there is no ambient sync to
+    // fall back to, so render the explicit unavailable state.
     return <WorkspaceRuntimeGate />;
   }
 
     return (
     <SyncProvider
-      sdk={handle?.sdk ?? opencodeClient.getSdkClient()}
-      directory={config.workspaceId
-        ? config.directory || handle?.directory || ''
-        : currentDirectory || config.directory || handle?.directory || ''}
       workspaceHandle={handle}
     >
       <RuntimeAPIProvider apis={apis}>

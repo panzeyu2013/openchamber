@@ -21,12 +21,12 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { formatSessionWorktreeBadge } from '@/sync/session-worktree-contract';
-import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSessionMessagesResolved } from '@/sync/sync-context';
+import { buildSessionMessageRecordsSnapshot, useDirectoryStore, useGlobalSessionStatus, useSession, useSessionMessagesResolved } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useQuotaAutoRefresh, useQuotaStore } from '@/stores/useQuotaStore';
 import { useGitBranchLabel } from '@/stores/useGitStore';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { getAllSyncSessionMap } from '@/sync/sync-refs';
 import { streamPerfCount } from '@/stores/utils/streamDebug';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
 
@@ -78,7 +78,7 @@ import {
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
+import { subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { useShallow } from 'zustand/react/shallow';
 import type { IconName } from "@/components/icon/icons";
 import { toast } from '@/components/ui';
@@ -508,23 +508,19 @@ export const Header: React.FC<HeaderProps> = ({
   const currentSessionMessagesResolved = useSessionMessagesResolved(currentSessionId ?? '');
   const currentSessionStatus = useGlobalSessionStatus(currentSessionId ?? '');
   const isCurrentSessionMovingToWorktree = useIsSessionWorktreeMovePending(currentSessionId ?? '');
-  const currentGlobalSession = useGlobalSessionsStore(useShallow(React.useCallback(
-    (state): HeaderSessionSnapshot | null => {
-      if (!currentSessionId) return null;
-      const session = state.activeSessions.find((candidate) => candidate.id === currentSessionId);
-      if (!session) return null;
-      const record = session as typeof session & { directory?: string | null; slug?: string | null };
-      return {
-        title: session.title ?? null,
-        directory: record.directory ?? null,
-        created: session.time?.created ?? null,
-        slug: record.slug ?? null,
-        shareUrl: session.share?.url ?? null,
-        parentId: session.parentID ?? null,
-      };
-    },
-    [currentSessionId],
-  )));
+  const liveCurrentSession = useSession(currentSessionId);
+  const currentGlobalSession = React.useMemo<HeaderSessionSnapshot | null>(() => {
+    if (!currentSessionId || !liveCurrentSession) return null;
+    const record = liveCurrentSession as typeof liveCurrentSession & { directory?: string | null; slug?: string | null };
+    return {
+      title: liveCurrentSession.title ?? null,
+      directory: record.directory ?? null,
+      created: liveCurrentSession.time?.created ?? null,
+      slug: record.slug ?? null,
+      shareUrl: liveCurrentSession.share?.url ?? null,
+      parentId: liveCurrentSession.parentID ?? null,
+    };
+  }, [currentSessionId, liveCurrentSession]);
   const activeProject = useProjectsStore(useShallow((state) => {
     if (!state.activeProjectId) {
       return null;
@@ -730,7 +726,7 @@ export const Header: React.FC<HeaderProps> = ({
     void refreshCurrentInstanceLabel();
     // Switching instances does not remount the header, so without this the
     // button would keep naming the instance the window left behind.
-    return subscribeRuntimeEndpointChanged(() => {
+    return subscribeControlPlaneChanged(() => {
       void refreshCurrentInstanceLabel();
     });
   }, [refreshCurrentInstanceLabel]);
@@ -1218,7 +1214,7 @@ export const Header: React.FC<HeaderProps> = ({
   const isCurrentSessionActive = currentSessionStatus?.type === 'busy' || currentSessionStatus?.type === 'retry';
   const moveCurrentSessionToWorktree = React.useCallback(() => {
     if (!currentSessionId || !sessionDirectory || isCurrentSessionActive || isCurrentSessionMovingToWorktree) return;
-    const sessions = useGlobalSessionsStore.getState().activeSessions;
+    const sessions = [...getAllSyncSessionMap().values()];
     const root = sessions.find((session) => session.id === currentSessionId);
     if (!root) return;
 
@@ -1244,7 +1240,7 @@ export const Header: React.FC<HeaderProps> = ({
 
   const confirmHeaderRetentionAction = React.useCallback(async () => {
     if (!currentSessionId || !pendingHeaderRetentionAction) return;
-    const sessions = useGlobalSessionsStore.getState().activeSessions;
+    const sessions = [...getAllSyncSessionMap().values()];
     const ids = [currentSessionId];
     for (let index = 0; index < ids.length; index += 1) {
       const parentId = ids[index];

@@ -19,7 +19,6 @@ import type { WorktreeMetadata } from "@/types/worktree"
 import { runtimeFetch } from "@/lib/runtime-fetch"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { useProjectsStore } from "@/stores/useProjectsStore"
-import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from "@/stores/useGlobalSessionsStore"
 import { useDirectoryStore } from "@/stores/useDirectoryStore"
 import { useSessionFoldersStore, getActiveFolderScopeKey } from "@/stores/useSessionFoldersStore"
 import { useCommandsStore } from "@/stores/useCommandsStore"
@@ -83,10 +82,8 @@ import { getViewportSessionMemory, useViewportStore, viewportSessionKey } from "
 import { useSessionWorktreeStore } from "./session-worktree-store"
 import { getAttachedSessionDirectory } from "./session-worktree-contract"
 import { setSessionOpener } from "./session-navigation"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import { clearLastActiveSession, persistLastActiveSession, readLastActiveSession } from "./last-session-cache"
 import { persistWorktreeTopology, readPersistedWorktreeTopology } from "./worktree-topology-cache"
-import { rememberRuntimeLiveStatus } from "./runtime-live-memory"
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
 import { workspaceIdFromScopeKey, workspaceScopeKey } from "@/workspaces/identity"
 
@@ -320,8 +317,6 @@ export type SessionUIState = {
 
   // Actions — UI state management
   setCurrentSession: (id: string | null, directoryHint?: string | null, workspaceId?: string | null) => void
-  prepareForRuntimeSwitch: (apiBaseUrl?: string | null) => void
-  restoreForRuntimeSwitch: (apiBaseUrl?: string | null) => void
   openNewSessionDraft: (options?: Partial<NewSessionDraftState> & { automatic?: boolean }) => void
   closeNewSessionDraft: () => void
   setNewSessionDraftTarget: (target: { projectId?: string | null; selectedProjectId?: string | null; directoryOverride?: string | null }, options?: { force?: boolean }) => void
@@ -407,8 +402,8 @@ const DRAFT_TARGET_STORAGE_KEY = "oc.chatInput.lastDraftTarget"
 
 type PersistedDraftTarget = { projectId: string | null; directory: string | null }
 
-/** Scope-suffixed draft-target key; the scope is the workspace scope of the
- * session current when the draft is opened, else the ambient runtime key. */
+/** Scope-suffixed draft-target key: the workspace scope of the session that
+ * is current when the draft is opened. */
 const draftTargetStorageKey = (scopeKey: string): string => `${DRAFT_TARGET_STORAGE_KEY}.${scopeKey}`
 
 const readPersistedDraftTarget = (scopeKey: string): PersistedDraftTarget | null => {
@@ -578,7 +573,7 @@ let activeSessionScopeId: string | null = null
 let activeWorkspaceScopeId: string | null = null
 
 const runtimeMemoryKey = (value?: string | null): string => {
-  const key = (value ?? getRuntimeKey()).trim()
+  const key = (value ?? getSyncScopeKey()).trim()
   return key || "default"
 }
 
@@ -594,8 +589,8 @@ const isWorkspaceSyncScope = (workspaceId?: string | null): boolean => (
 /**
  * Scope key for session-scoped UI memory: the workspace scope when the
  * session index maps (sessionId, directory) to a workspace, otherwise the
- * ambient runtime key — byte-identical to `runtimeMemoryKey()` in
- * non-workspace mode.
+ * mounted sync scope; unassigned sessions share the unscoped "default"
+ * bucket.
  */
 const scopeMemoryKey = (
   sessionId: string | null | undefined,
@@ -786,7 +781,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 
     // Scope bucket for the current session: the workspace scope when the
     // session index maps (id, directoryHint) to a workspace, otherwise the
-    // ambient runtime key (legacy behavior, byte-identical keys).
+    // unscoped default bucket.
     const key = scopeMemoryKey(id, directoryHint, resolvedWorkspaceId)
     activeSessionByRuntime.set(key, id)
     // The session folders store keys its persisted buckets by the same
@@ -891,61 +886,6 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       if (targetScopeIsMounted) {
         setActiveSession(resolvedDir ?? "", id)
       }
-    }
-  },
-
-  prepareForRuntimeSwitch: (apiBaseUrl?: string | null) => {
-    const key = runtimeMemoryKey(apiBaseUrl)
-    const directory = useDirectoryStore.getState().currentDirectory || null
-    const currentSessionId = get().currentSessionId
-    const directorySnapshot = directory ? getDirectoryState(directory) : null
-    rememberRuntimeLiveStatus({
-      scopeKey: key,
-      directory,
-      sessionId: currentSessionId,
-      status: currentSessionId ? directorySnapshot?.session_status?.[currentSessionId] : null,
-    })
-    activeSessionByRuntime.set(key, get().currentSessionId)
-    writeRuntimeSessionMemory(key, {
-      sessionId: currentSessionId,
-      directory,
-      draft: cloneDraft(get().newSessionDraft),
-      worktreeMetadata: new Map(get().worktreeMetadata),
-      availableWorktreesByProject: new Map(get().availableWorktreesByProject),
-    })
-  },
-
-  restoreForRuntimeSwitch: (apiBaseUrl?: string | null) => {
-    const key = runtimeMemoryKey(apiBaseUrl)
-    const memory = runtimeSessionMemory.get(key)
-    const restoredSessionId = memory?.sessionId ?? activeSessionByRuntime.get(key) ?? null
-    const restoredDraft = memory?.draft ? cloneDraft(memory.draft) : { ...DEFAULT_DRAFT }
-    const restoredDirectory = memory?.directory ?? null
-    const availableWorktreesByProject = memory?.availableWorktreesByProject
-      ?? readPersistedWorktreeTopology(key)
-    if (restoredDirectory) {
-      useDirectoryStore.getState().setDirectory(restoredDirectory, { showOverlay: false })
-    }
-    activeSessionScopeId = restoredSessionId
-    activeWorkspaceScopeId = null
-    set({
-      currentSessionId: restoredSessionId,
-      currentSessionDirectory: restoredSessionId ? restoredDirectory : null,
-      currentWorkspaceId: null,
-      newSessionDraft: restoredSessionId ? { ...DEFAULT_DRAFT } : restoredDraft,
-      abortPromptSessionId: null,
-      abortPromptExpiresAt: null,
-      error: null,
-      worktreeMetadata: memory?.worktreeMetadata ?? new Map(),
-      availableWorktrees: flattenWorktreeMap(availableWorktreesByProject),
-      availableWorktreesByProject,
-      sessionAbortFlags: new Map(),
-      pendingChangesBarDismissed: new Map(),
-    })
-    if (restoredSessionId) {
-      setActiveSession(restoredDirectory ?? getSyncOpencodeService().getDirectory() ?? "", restoredSessionId)
-    } else {
-      setActiveSession("", "")
     }
   },
 
@@ -1867,11 +1807,11 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       selected,
     )
     if (resolved) return resolved
-    const globalStore = useGlobalSessionsStore.getState()
-    const globalSession = [...globalStore.activeSessions, ...globalStore.archivedSessions]
-      .find((s) => s.id === sessionId)
-    if (globalSession) return resolveGlobalSessionDirectory(globalSession)
-    return null
+    // Cold-session directory fallback: the session index carries the
+    // canonical directory of every mapped session.
+    const indexSnapshot = useWorkspaceSessionIndexStore.getState().snapshot
+    const indexed = indexSnapshot?.sessions.find((s) => s.upstreamSessionId === sessionId)
+    return indexed?.directory ?? null
   },
 
   getLastUserChoice: (sessionId) => {

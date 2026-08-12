@@ -66,15 +66,16 @@ describe('useFilesViewTabsStore', () => {
     expect(state?.expandedPaths).toEqual(['/repo/src', '/repo/other']);
   });
 
-  test('restores independent active projections across runtime switches', () => {
+  test('restores independent active projections across workspace scope switches', () => {
+    setWorkspaceSession('ws-a');
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/a.ts');
-    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-b');
+    setWorkspaceSession('ws-b');
     expect(useFilesViewTabsStore.getState().byRoot).toEqual({});
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/b.ts');
 
-    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-a');
+    setWorkspaceSession('ws-a');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
-    useFilesViewTabsStore.getState().resetForRuntimeSwitch('runtime-b');
+    setWorkspaceSession('ws-b');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/b.ts']);
   });
 });
@@ -92,6 +93,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
       title: 'title',
       updatedAt: 1,
       archived: false,
+    createdAt: 1,
     }],
     freshnessByConnection: {},
   };

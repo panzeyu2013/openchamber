@@ -7,7 +7,6 @@
 
 import type { Config, OpencodeClient } from "@opencode-ai/sdk/v2/client"
 import { opencodeClient, type OpencodeService } from "@/lib/opencode/client"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import type { ChildStoreManager } from "./child-store"
 import { getSessionMaterializationStatus } from "./materialization"
 import type { State } from "./types"
@@ -34,7 +33,7 @@ export function setSyncRefs(
 ) {
   _sdk = sdk
   _service = service ?? opencodeClient
-  _scopeKey = scopeKey ?? getRuntimeKey()
+  _scopeKey = scopeKey ?? ""
   _childStores = childStores
   if (cachedSessionManager !== childStores) {
     cachedSessionManager = null
@@ -60,7 +59,7 @@ export function getSyncSdk(): OpencodeClient | null {
 
 /** Scope identity of the currently mounted sync provider. */
 export function getSyncScopeKey(): string {
-  return _scopeKey ?? getRuntimeKey()
+  return _scopeKey ?? ""
 }
 
 /**

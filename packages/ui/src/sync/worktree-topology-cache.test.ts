@@ -28,12 +28,11 @@ describe("worktree topology persistence", () => {
     expect(readPersistedWorktreeTopology("runtime-b", storage).get("/repo")?.[0]?.path).toBe("/repo/b")
   })
 
-  test("claims the legacy topology for only the first runtime", () => {
+  test("never reads the legacy unscoped topology bucket", () => {
     storage.setItem("oc.worktreeMap", JSON.stringify([["/repo", [worktree("/repo/legacy")]]]))
 
-    expect(readPersistedWorktreeTopology("runtime-a", storage).get("/repo")?.[0]?.path).toBe("/repo/legacy")
+    expect(readPersistedWorktreeTopology("runtime-a", storage).size).toBe(0)
     expect(readPersistedWorktreeTopology("runtime-b", storage).size).toBe(0)
-    expect(storage.getItem("oc.worktreeMap")).toBeNull()
   })
 
   test("bounds retained runtime namespaces", () => {

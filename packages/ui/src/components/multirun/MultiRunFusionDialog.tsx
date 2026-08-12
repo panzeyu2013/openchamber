@@ -8,7 +8,9 @@ import { Icon } from '@/components/icon/Icon';
 import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useI18n } from '@/lib/i18n';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
 import { getSyncMessages, getSyncOpencodeService, getSyncParts, getSyncScopeKey } from '@/sync/sync-refs';
@@ -76,8 +78,12 @@ export function MultiRunFusionDialog({
   const { t } = useI18n();
   const activeWorkspaceId = useActiveWorkspaceId();
   const liveSessions = useAllLiveSessions();
-  const activeSessions = useGlobalSessionsStore((state) => state.activeSessions);
-  const archivedSessions = useGlobalSessionsStore((state) => state.archivedSessions);
+  const activeSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
+  );
+  const archivedSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary),
+  );
   const providers = useConfigStore((state) => state.providers);
   const currentProviderId = useConfigStore((state) => state.currentProviderId);
   const currentModelId = useConfigStore((state) => state.currentModelId);
@@ -115,7 +121,7 @@ export function MultiRunFusionDialog({
         if (!candidateParsed || candidateParsed.groupSlug !== parsed.groupSlug || candidateParsed.fusion) return null;
         if ((candidateParsed.runGroup ?? null) !== (parsed.runGroup ?? null)) return null;
         const directory = useSessionUIStore.getState().getDirectoryForSession(candidate.id)
-          ?? resolveGlobalSessionDirectory(candidate);
+          ?? resolveSessionDirectory(candidate);
         const projectDirectory = getSessionProjectDirectory(candidate.id, directory);
         if (currentProjectDirectory && projectDirectory && currentProjectDirectory !== projectDirectory) return null;
         return { session: candidate, directory, projectDirectory };

@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { cleanupPersistedSessionState } from '@/sync/session-deletion-cleanup';
+import { getSyncScopeKey } from '@/sync/sync-refs';
 import {
   buildAuthoritativeSessionIdentityMap,
   findRemovedAuthoritativeSessions,
@@ -21,7 +21,7 @@ export const useAuthoritativeSessionCleanup = (args: {
   React.useEffect(() => {
     if (!enabled || !hasAuthoritativeGlobalSessions) return;
 
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = getSyncScopeKey();
     const current = buildAuthoritativeSessionIdentityMap(sessions);
     const previous = baselineRef.current?.runtimeKey === runtimeKey
       ? baselineRef.current.identities

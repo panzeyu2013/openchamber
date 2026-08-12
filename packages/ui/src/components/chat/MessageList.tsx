@@ -18,7 +18,8 @@ import { FadeInDisabledProvider } from './message/FadeInOnReveal';
 import { hasPendingUserSendAnimation, consumePendingUserSendAnimation } from '@/lib/userSendAnimation';
 import { streamPerfCount, streamPerfMark, streamPerfMeasure } from '@/stores/utils/streamDebug';
 import type { StreamPhase } from './message/types';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useSession } from '@/sync/sync-context';
+import { getReviewTransferDirection } from '@/lib/reviewFlow';
 import { useSessionParts } from '@/sync/sync-context';
 import { isMobileSurfaceRuntime } from '@/lib/runtimeSurface';
 import type { ReviewTransferDirection } from '@/lib/reviewFlow';
@@ -1272,9 +1273,11 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     const activityRenderMode = useUIStore((state) => state.activityRenderMode);
     const showTurnChangedFiles = useUIStore((state) => state.showTurnChangedFiles);
     const defaultActivityExpanded = activityRenderMode === 'summary';
-    const reviewTransferDirection = useGlobalSessionsStore((state) => {
-        return state.reviewTransferBySessionId.get(sessionKey) ?? null;
-    });
+    const session = useSession(sessionKey);
+    const reviewTransferDirection = React.useMemo(
+        () => getReviewTransferDirection(session),
+        [session],
+    );
     const [turnUiStates, setTurnUiStates] = React.useState<Map<string, TurnUiState>>(() => new Map());
     const userAnimationRef = React.useRef<{
         sessionKey: string | undefined;

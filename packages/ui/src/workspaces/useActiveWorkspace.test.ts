@@ -12,6 +12,7 @@ const makeSession = (workspaceId: string, sessionId: string, directory: string):
   title: `Session ${sessionId}`,
   updatedAt: 1000,
   archived: false,
+  createdAt: 1000,
 });
 
 const makeConnection = (id: string, terminal: boolean, overrides: Partial<ConnectionProfileSummary> = {}): ConnectionProfileSummary => ({

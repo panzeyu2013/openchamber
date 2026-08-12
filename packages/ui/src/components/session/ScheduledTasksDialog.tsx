@@ -12,7 +12,7 @@ import type { TimeFormatPreference } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { refreshGlobalSessions } from '@/stores/useGlobalSessionsStore';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -387,7 +387,7 @@ export function ScheduledTasksDialog() {
       const { sessionId } = await runScheduledTaskNow(selectedProjectID, task.id);
       await Promise.all([
         reloadTasks(selectedProjectID, { silent: true }),
-        refreshGlobalSessions(),
+        useWorkspaceSessionIndexStore.getState().refresh(),
       ]);
       toast.success(t('sessions.scheduledTasks.dialog.toast.started'));
       if (sessionId) {

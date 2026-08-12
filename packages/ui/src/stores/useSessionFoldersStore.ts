@@ -3,7 +3,6 @@ import { devtools } from 'zustand/middleware';
 import { getDeferredSafeStorage, getSafeStorage } from './utils/safeStorage';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
 
 // --- Types ---
@@ -39,8 +38,6 @@ interface SessionFoldersActions {
   /** Switches the active persisted bucket to the given scope key (workspace
    * scope for workspace sessions, ambient runtime key otherwise). */
   activateScope: (scopeKey: string) => void;
-  /** Legacy runtime-switch entrypoint; delegates to activateScope. */
-  resetForRuntimeSwitch: (runtimeKey: string) => void;
 }
 
 type SessionFoldersStore = SessionFoldersState & SessionFoldersActions;
@@ -63,18 +60,17 @@ let persistCollapsedTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingFoldersMap: SessionFoldersMap | null = null;
 let pendingCollapsedIds: Set<string> | null = null;
 let pendingBrowserScopeKey: string | null = null;
-let activeFolderScopeKey = getRuntimeKey();
+let activeFolderScopeKey = '';
 let folderRuntimeGeneration = 0;
 let folderMutationRevision = 0;
 const lastDiskUpdatedAtByScope = new Map<string, number>();
 
-/** Active persisted bucket for the folders store: the workspace scope when a
- * workspace session is current, the ambient runtime key otherwise. */
+/** Active persisted bucket for the folders store: the workspace scope of the
+ * current session. */
 export const getActiveFolderScopeKey = (): string => activeFolderScopeKey;
 
 type FolderStorageIndex = {
   version: 2;
-  legacyClaimed: boolean;
   runtimes: Array<{ runtimeKey: string; updatedAt: number }>;
 };
 
@@ -83,10 +79,10 @@ const readStorageIndex = (): FolderStorageIndex => {
   try {
     const parsed = JSON.parse(safeStorage.getItem(STORAGE_INDEX_KEY) ?? '') as Partial<FolderStorageIndex>;
     return parsed.version === 2 && Array.isArray(parsed.runtimes)
-      ? { version: 2, legacyClaimed: Boolean(parsed.legacyClaimed), runtimes: parsed.runtimes }
-      : { version: 2, legacyClaimed: false, runtimes: [] };
+      ? { version: 2, runtimes: parsed.runtimes }
+      : { version: 2, runtimes: [] };
   } catch {
-    return { version: 2, legacyClaimed: false, runtimes: [] };
+    return { version: 2, runtimes: [] };
   }
 };
 
@@ -96,23 +92,7 @@ const touchRuntimeStorage = (scopeKey: string, updatedAt = Date.now(), targetSto
     { runtimeKey: scopeKey, updatedAt },
     ...index.runtimes.filter((entry) => entry.runtimeKey !== scopeKey),
   ];
-  targetStorage.setItem(STORAGE_INDEX_KEY, JSON.stringify({ version: 2, legacyClaimed: index.legacyClaimed, runtimes }));
-};
-
-const claimLegacyStorage = (scopeKey: string): void => {
-  const index = readStorageIndex();
-  if (index.legacyClaimed) return;
-  const legacyFolders = safeStorage.getItem(FOLDERS_STORAGE_KEY);
-  const legacyCollapsed = safeStorage.getItem(COLLAPSED_STORAGE_KEY);
-  if (legacyFolders) safeStorage.setItem(runtimeStorageKey(FOLDERS_STORAGE_KEY, scopeKey), legacyFolders);
-  if (legacyCollapsed) safeStorage.setItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, scopeKey), legacyCollapsed);
-  const next = { ...index, legacyClaimed: true };
-  safeStorage.setItem(STORAGE_INDEX_KEY, JSON.stringify(next));
-  if (safeStorage.getItem(STORAGE_INDEX_KEY) === JSON.stringify(next)) {
-    safeStorage.removeItem(FOLDERS_STORAGE_KEY);
-    safeStorage.removeItem(COLLAPSED_STORAGE_KEY);
-  }
-  touchRuntimeStorage(scopeKey, 0);
+  targetStorage.setItem(STORAGE_INDEX_KEY, JSON.stringify({ version: 2, runtimes }));
 };
 
 const isVSCodeWebview = (): boolean => {
@@ -166,9 +146,7 @@ const schedulePersistToDisk = (foldersMap: SessionFoldersMap, collapsedFolderIds
 
 const readPersistedFolders = (scopeKey = activeFolderScopeKey): SessionFoldersMap => {
   try {
-    claimLegacyStorage(scopeKey);
-    const parsed = readFoldersBucket(runtimeStorageKey(FOLDERS_STORAGE_KEY, scopeKey))
-      ?? readFoldersBucket(runtimeStorageKey(FOLDERS_STORAGE_KEY, getRuntimeKey()));
+    const parsed = readFoldersBucket(runtimeStorageKey(FOLDERS_STORAGE_KEY, scopeKey));
     return parsed ?? {};
   } catch {
     return {};
@@ -212,9 +190,7 @@ const readFoldersBucket = (storageKey: string): SessionFoldersMap | null => {
 
 const readPersistedCollapsed = (scopeKey = activeFolderScopeKey): Set<string> => {
   try {
-    claimLegacyStorage(scopeKey);
-    const raw = safeStorage.getItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, scopeKey))
-      ?? safeStorage.getItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, getRuntimeKey()));
+    const raw = safeStorage.getItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, scopeKey));
     if (!raw) {
       return new Set();
     }
@@ -363,10 +339,6 @@ export const useSessionFoldersStore = create<SessionFoldersStore>()(
           collapsedFolderIds: readPersistedCollapsed(scopeKey),
         });
         queueMicrotask(() => void hydrateSessionFoldersFromDisk());
-      },
-
-      resetForRuntimeSwitch: (runtimeKey: string): void => {
-        get().activateScope(runtimeKey);
       },
 
       getFoldersForScope: (scopeKey: string): SessionFolder[] => {

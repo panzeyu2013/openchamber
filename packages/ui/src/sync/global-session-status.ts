@@ -11,7 +11,6 @@ import {
   reconcileSessionActivityTiming,
   removeSessionActivityTiming,
 } from './session-activity-timing';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 // Shared live busy/retry index for every directory. Global events update it
 // incrementally and authoritative directory snapshots reconcile it, so each
@@ -33,17 +32,14 @@ type GlobalSessionStatusState = {
 
 const scopeStatus = new Map<string, Map<string, GlobalSessionStatusEntry>>();
 
-const normalizeScopeKey = (scopeKey?: string): string => {
-  const normalized = scopeKey?.trim();
-  return normalized || getRuntimeKey();
-};
+const normalizeScopeKey = (scopeKey: string): string => scopeKey.trim();
 
 const readScopeStatus = (scopeKey: string): Map<string, GlobalSessionStatusEntry> => (
   scopeStatus.get(scopeKey) ?? new Map()
 );
 
 export const useGlobalSessionStatusStore = create<GlobalSessionStatusState>((set, get) => {
-  const scopeKey = getRuntimeKey();
+  const scopeKey = "";
   const statusById = readScopeStatus(scopeKey);
   scopeStatus.set(scopeKey, statusById);
 

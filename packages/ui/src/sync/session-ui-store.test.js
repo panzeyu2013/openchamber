@@ -9,7 +9,7 @@ import { clearSyncRefs, setSyncRefs } from './sync-refs';
 import { useSkillsStore } from '@/stores/useSkillsStore';
 import { useCommandsStore } from '@/stores/useCommandsStore';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getSyncScopeKey } from './sync-refs';
 
 /**
  * Unit tests for session worktree routing through the authoritative store.
@@ -320,23 +320,24 @@ describe('sendMessage captured target', () => {
   );
 
   test('uses the target captured before the active session changes', async () => {
+    const mountedScope = getSyncScopeKey();
     await sendToTarget({
-      scopeKey: getRuntimeKey(),
+      scopeKey: mountedScope,
       sessionId: 'session-captured',
       directory: '/captured/project',
     });
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].runtimeKey).toBe(getRuntimeKey());
+    expect(calls[0].runtimeKey).toBe(mountedScope);
     expect(calls[0].id).toBe('session-captured');
     expect(calls[0].directory).toBe('/captured/project');
   });
 
-  test('does not send a captured target through a different runtime', async () => {
+  test('does not send a captured target through a different scope', async () => {
     let error = null;
     try {
       await sendToTarget({
-        scopeKey: `${getRuntimeKey()}-stale`,
+        scopeKey: `${getSyncScopeKey()}-stale`,
         sessionId: 'session-captured',
         directory: '/captured/project',
       });
@@ -372,24 +373,6 @@ describe('slash-command goal objectives', () => {
       name: 'review',
       template: 'Review the requested scope.',
     }])).toBe('Review the requested scope.\n\nauth module');
-  });
-});
-
-describe('runtime worktree topology', () => {
-  test('restores independent in-memory maps across A -> B -> A', () => {
-    const topologyA = new Map([['/repo', [{ path: '/repo/a', branch: 'a' }]]]);
-    const topologyB = new Map([['/repo', [{ path: '/repo/b', branch: 'b' }]]]);
-
-    useSessionUIStore.setState({ availableWorktreesByProject: topologyA, availableWorktrees: topologyA.get('/repo') });
-    useSessionUIStore.getState().prepareForRuntimeSwitch('runtime-a');
-    useSessionUIStore.setState({ availableWorktreesByProject: topologyB, availableWorktrees: topologyB.get('/repo') });
-    useSessionUIStore.getState().prepareForRuntimeSwitch('runtime-b');
-
-    useSessionUIStore.getState().restoreForRuntimeSwitch('runtime-a');
-    expect(useSessionUIStore.getState().availableWorktreesByProject.get('/repo')?.[0]?.path).toBe('/repo/a');
-
-    useSessionUIStore.getState().restoreForRuntimeSwitch('runtime-b');
-    expect(useSessionUIStore.getState().availableWorktreesByProject.get('/repo')?.[0]?.path).toBe('/repo/b');
   });
 });
 

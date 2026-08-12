@@ -1,5 +1,5 @@
 import type { Session } from '@opencode-ai/sdk/v2';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
 
 type AuthoritativeSessionIdentity = {
   directory: string;
@@ -11,7 +11,7 @@ export const buildAuthoritativeSessionIdentityMap = (
 ): Map<string, AuthoritativeSessionIdentity> => {
   const identities = new Map<string, AuthoritativeSessionIdentity>();
   for (const session of sessions) {
-    const directory = resolveGlobalSessionDirectory(session);
+    const directory = resolveSessionDirectory(session);
     if (!directory) continue;
     identities.set(session.id, { directory, sessionId: session.id });
   }

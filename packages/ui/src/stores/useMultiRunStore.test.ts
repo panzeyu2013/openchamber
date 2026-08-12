@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
 
-const upsertedSessions: Session[] = [];
 const registeredDirectories: Array<{ sessionID: string; directory: string }> = [];
 const ensureChildCalls: Array<{ directory: string; bootstrap?: boolean }> = [];
 const worktreeMetadataCalls: Array<{ sessionId: string; path: string }> = [];
@@ -116,16 +115,6 @@ mock.module('./useSnippetsStore', () => ({
   },
 }));
 
-mock.module('./useGlobalSessionsStore', () => ({
-  useGlobalSessionsStore: {
-    getState: () => ({
-      upsertSession: (session: Session) => {
-        upsertedSessions.push(session);
-      },
-    }),
-  },
-}));
-
 mock.module('@/sync/sync-refs', () => ({
   getSyncOpencodeService: () => ({
     createSession: async (params?: { title?: string }, directory?: string | null): Promise<Session> => {
@@ -163,7 +152,6 @@ const { useMultiRunStore } = await import('./useMultiRunStore');
 
 describe('useMultiRunStore', () => {
   beforeEach(() => {
-    upsertedSessions.length = 0;
     registeredDirectories.length = 0;
     ensureChildCalls.length = 0;
     worktreeMetadataCalls.length = 0;
@@ -190,7 +178,6 @@ describe('useMultiRunStore', () => {
     });
 
     expect(result?.sessionIds).toEqual(['ses_multirun']);
-    expect(upsertedSessions.map((session) => session.id)).toEqual(['ses_multirun']);
     expect(registeredDirectories).toEqual([{ sessionID: 'ses_multirun', directory: '/repo' }]);
     expect(ensureChildCalls).toEqual([{ directory: '/repo', bootstrap: false }]);
     expect(childState.session.map((session) => session.id)).toEqual(['ses_multirun']);

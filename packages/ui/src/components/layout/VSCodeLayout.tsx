@@ -7,7 +7,9 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync, useSessionMessages, useSessionMessagesResolved } from '@/sync/sync-context';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { ContextUsageDisplay } from '@/components/ui/ContextUsageDisplay';
 import { McpDropdown } from '@/components/mcp/McpDropdown';
 import { ArchiveAllDropdown } from '@/components/session/ArchiveAllDropdown';
@@ -121,8 +123,12 @@ export const VSCodeLayout: React.FC = () => {
   const expandedSidebarResizePointerIdRef = React.useRef<number | null>(null);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const sessions = useSessions();
-  const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
-  const globalArchivedSessions = useGlobalSessionsStore((state) => state.archivedSessions);
+  const globalActiveSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
+  );
+  const globalArchivedSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary),
+  );
   const projects = useProjectsStore((state) => state.projects);
   const activeProjectId = useProjectsStore((state) => state.activeProjectId);
 
@@ -260,7 +266,7 @@ export const VSCodeLayout: React.FC = () => {
       return false;
     }
 
-    const sessionDirectory = resolveGlobalSessionDirectory(session);
+    const sessionDirectory = resolveSessionDirectory(session);
     if (sessionDirectory) {
       return sessionDirectory.toLowerCase() === activeWorkspacePath.toLowerCase();
     }

@@ -1,7 +1,9 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 
-import { useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useGitAllBranches } from '@/stores/useGitStore';
@@ -45,7 +47,9 @@ const formatProjectLabel = (project: { label?: string | null; path: string } | n
 
 export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions = {}): SwitcherItem[] => {
   const { scopeProjectId = null, maxParents = MAX_PARENT_SESSIONS } = options;
-  const activeSessions = useGlobalSessionsStore((state) => state.activeSessions);
+  const activeSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
+  );
   const projects = useProjectsStore((state) => state.projects);
   const pinnedSessionIds = useSessionPinnedStore((state) => state.ids);
   const sessionOrderRanks = useSessionOrderingStore((state) => state.rankById);
@@ -117,7 +121,7 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
       .filter((session) => !(session as Session & { parentID?: string | null }).parentID)
       .filter((session) => {
         if (!scopeProjectId) return true;
-        const directory = resolveGlobalSessionDirectory(session);
+        const directory = resolveSessionDirectory(session);
         return findProjectForDirectory(directory)?.id === scopeProjectId;
       })
       .sort((a, b) => compareSessionsByLifecycleOrder(a, b, pinnedSessionIds, sessionOrderRanks))
@@ -133,7 +137,7 @@ export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions
     };
 
     return parents.map((session) => {
-      const directory = resolveGlobalSessionDirectory(session);
+      const directory = resolveSessionDirectory(session);
       const matchedProject = findProjectForDirectory(directory);
       const projectLabel = formatProjectLabel(matchedProject);
       // Live git branch when available; the discovered worktree branch fills

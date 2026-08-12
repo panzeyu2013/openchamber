@@ -9,7 +9,8 @@ import { cn } from '@/lib/utils';
 import { getWorktreeStatus } from '@/lib/worktrees/worktreeStatus';
 import { removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
 import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
@@ -47,7 +48,9 @@ export const MobileDeleteWorktreeDialog: React.FC<MobileDeleteWorktreeDialogProp
 }) => {
   const { t } = useI18n();
   const liveSessions = useAllLiveSessions();
-  const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
+  const globalActiveSessions = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
+  );
   const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
 

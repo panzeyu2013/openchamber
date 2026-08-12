@@ -21,7 +21,6 @@ import { runtimeFetch } from "@/lib/runtime-fetch";
 import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
 import { getSyncConfig, getSyncOpencodeService, getSyncScopeKey, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
-import { getRuntimeKey } from "@/lib/runtime-switch";
 import { workspaceIdFromScopeKey } from "@/workspaces/identity";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
@@ -726,26 +725,24 @@ const resolveInitialDirectoryKey = (): string => {
 // project synchronously at init time. worktree→project is effectively immutable,
 // so a cached entry is safe to trust.
 const WORKTREE_PROJECT_MAP_KEY = 'oc.worktreeProjectMap.v2';
-const LEGACY_WORKTREE_PROJECT_MAP_KEY = 'oc.worktreeProjectMap';
 const MAX_WORKTREE_PROJECT_RUNTIME_MAPS = 8;
 type WorktreeProjectMapEnvelope = {
     version: 2;
-    legacyClaimed: boolean;
     runtimes: Record<string, { updatedAt: number; entries: Record<string, string> }>;
 };
 const _worktreeProjectMaps = new Map<string, Record<string, string>>();
-const getWorktreeProjectScopeKey = (): string => getSyncScopeKey() || getRuntimeKey() || 'default';
+const getWorktreeProjectScopeKey = (): string => getSyncScopeKey() || 'default';
 const readWorktreeProjectEnvelope = (): WorktreeProjectMapEnvelope => {
     try {
         const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(WORKTREE_PROJECT_MAP_KEY) : null;
-        if (!raw) return { version: 2, legacyClaimed: false, runtimes: {} };
+        if (!raw) return { version: 2, runtimes: {} };
         const parsed = JSON.parse(raw) as Partial<WorktreeProjectMapEnvelope>;
         if (parsed.version !== 2 || !parsed.runtimes || typeof parsed.runtimes !== 'object') {
-            return { version: 2, legacyClaimed: false, runtimes: {} };
+            return { version: 2, runtimes: {} };
         }
-        return { version: 2, legacyClaimed: parsed.legacyClaimed === true, runtimes: parsed.runtimes };
+        return { version: 2, runtimes: parsed.runtimes };
     } catch {
-        return { version: 2, legacyClaimed: false, runtimes: {} };
+        return { version: 2, runtimes: {} };
     }
 };
 const writeWorktreeProjectEnvelope = (envelope: WorktreeProjectMapEnvelope): void => {
@@ -761,19 +758,7 @@ const getWorktreeProjectMap = (): Record<string, string> => {
     const existing = _worktreeProjectMaps.get(scopeKey);
     if (existing) return existing;
     const envelope = readWorktreeProjectEnvelope();
-    let map = envelope.runtimes[scopeKey]?.entries ?? null;
-    if (!map && !envelope.legacyClaimed) {
-        try {
-            const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LEGACY_WORKTREE_PROJECT_MAP_KEY) : null;
-            map = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-            envelope.legacyClaimed = true;
-            envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: map };
-            writeWorktreeProjectEnvelope(envelope);
-            localStorage.removeItem(LEGACY_WORKTREE_PROJECT_MAP_KEY);
-        } catch {
-            map = {};
-        }
-    }
+    const map = envelope.runtimes[scopeKey]?.entries ?? null;
     const result = map ?? {};
     _worktreeProjectMaps.set(scopeKey, result);
     return result;
@@ -786,10 +771,8 @@ const rememberWorktreeProject = (worktree: string, project: string): void => {
     try {
         const scopeKey = getWorktreeProjectScopeKey();
         const envelope = readWorktreeProjectEnvelope();
-        envelope.legacyClaimed = true;
         envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: map };
         writeWorktreeProjectEnvelope(envelope);
-        localStorage.removeItem(LEGACY_WORKTREE_PROJECT_MAP_KEY);
     } catch {
         // localStorage quota exceeded — ignore; live resolution still works.
     }
@@ -1448,7 +1431,7 @@ export const useConfigStore = create<ConfigStore>()(
                     return 500;
                 })(),
                 bindScope: (scopeKey) => {
-                    const nextScopeKey = scopeKey.trim() || getRuntimeKey();
+                    const nextScopeKey = scopeKey.trim();
                     if (get().scopeKey === nextScopeKey) return;
 
                     const currentState = get();

@@ -7,7 +7,8 @@ import { useSwitcherItems } from '@/components/session/sidebar/hooks/useSwitcher
 import { useTabletLayout } from '@/lib/device';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-import { refreshGlobalSessions, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
@@ -142,8 +143,8 @@ export const MobileSessionSwitcher: React.FC<{
   React.useEffect(() => {
     if (open) {
       // Fresh authoritative snapshot on open — updated stamps re-sort recents
-      // (see raiseSessionOrderingBaselines) while the cached list shows first.
-      void refreshGlobalSessions();
+      // while the cached list shows first.
+      void useWorkspaceSessionIndexStore.getState().refresh();
       setShouldRender(true);
       setIsExiting(false);
       return;
@@ -182,7 +183,7 @@ export const MobileSessionSwitcher: React.FC<{
   }, [anchorRef, onClose, open]);
 
   const handleSelect = React.useCallback((session: Session) => {
-    void setCurrentSession(session.id, resolveGlobalSessionDirectory(session), activeWorkspaceId);
+    void setCurrentSession(session.id, resolveSessionDirectory(session), activeWorkspaceId);
     onClose();
   }, [activeWorkspaceId, onClose, setCurrentSession]);
 

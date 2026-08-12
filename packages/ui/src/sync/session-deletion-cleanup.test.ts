@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
 import type { Todo } from '@opencode-ai/sdk/v2/client';
 
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { createChatDraftIdentity, readChatDraft, writeChatDraft } from '@/lib/chatDraftPersistence';
 import { createMessageQueueTarget, useMessageQueueStore } from '@/stores/messageQueueStore';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
@@ -9,6 +8,8 @@ import { useTodosPersistStore } from '@/stores/useTodosPersistStore';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
 import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { cleanupPersistedSessionState } from './session-deletion-cleanup';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { workspaceSessionKey } from '@/workspaces/identity';
 
 const todo: Todo = { content: 'persisted', status: 'pending', priority: 'medium' };
 
@@ -22,7 +23,28 @@ describe('cleanupPersistedSessionState', () => {
   });
 
   test('clears queue and todos only for the deleted composite session', () => {
-    const runtimeKey = getRuntimeKey();
+    const runtimeKey = 'workspace:ws-a';
+    // Map the session to workspace ws-a so the scope-resolved persisted keys
+    // land in the same bucket the cleanup identity targets.
+    useWorkspaceSessionIndexStore.setState({
+      snapshot: {
+        revision: 1,
+        sessions: [
+          {
+            key: workspaceSessionKey('ws-a', 'session-1'),
+            workspaceId: 'ws-a',
+            connectionId: 'conn-1',
+            upstreamSessionId: 'session-1',
+            directory: '/repo-a',
+            title: 'Session 1',
+            updatedAt: 1,
+            archived: false,
+            createdAt: 1,
+          },
+        ],
+        freshnessByConnection: {},
+      },
+    });
     const deleted = createMessageQueueTarget('session-1', '/repo-a', runtimeKey)!;
     const retained = createMessageQueueTarget('session-1', '/repo-b', runtimeKey)!;
     useMessageQueueStore.getState().addToQueue(deleted, { content: 'delete' });
@@ -46,6 +68,7 @@ describe('cleanupPersistedSessionState', () => {
     useInlineCommentDraftStore.getState().addDraft({ directory: '/repo-b', sessionKey: 'session-1' }, inlineDraft);
     useSessionPinnedStore.getState().toggle({ directory: '/repo-a', sessionId: 'session-1' });
     useSessionPinnedStore.getState().toggle({ directory: '/repo-b', sessionId: 'session-1' });
+    useSessionFoldersStore.getState().activateScope(runtimeKey);
     const folder = useSessionFoldersStore.getState().createFolder('/repo-a', 'Active');
     useSessionFoldersStore.getState().addSessionToFolder('/repo-a', folder.id, 'session-1');
     const archivedFolder = useSessionFoldersStore.getState().createFolder('__archived__:/repo-a', 'Archived');
@@ -67,8 +90,8 @@ describe('cleanupPersistedSessionState', () => {
     expect(useSessionFoldersStore.getState().getSessionFolderId('__archived__:/repo-a', 'session-1')).toBeNull();
   });
 
-  test('rejects stale runtime cleanup', () => {
-    const runtimeKey = getRuntimeKey();
+  test('rejects cleanup for an identity that does not match its workspace scope', () => {
+    const runtimeKey = 'workspace:ws-a';
     useTodosPersistStore.getState().setSessionTodos('/repo', 'session-1', [todo]);
 
     cleanupPersistedSessionState({ runtimeKey: `${runtimeKey}-stale`, directory: '/repo', sessionId: 'session-1' });

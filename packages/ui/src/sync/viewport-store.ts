@@ -2,11 +2,9 @@
  * Viewport Store — per-session scroll anchors, streaming state, memory.
  * Extracted from session-ui-store for subscription isolation.
  *
- * Memory is keyed by session scope (`${scopeKey}\n${sessionId}`), where the
- * scope key is the workspace scope for workspace sessions and the ambient
- * runtime key otherwise — byte-identical to the pre-migration key format in
- * non-workspace mode. Bare session IDs (pre-scope legacy) remain readable as
- * a fallback; writes only ever use the scoped key.
+ * Memory is keyed by session scope (`${scopeKey}\n${sessionId}`): the
+ * workspace scope for workspace sessions, the unscoped bucket otherwise.
+ * Bare session-ID legacy entries are not read.
  */
 
 import { create } from "zustand"
@@ -48,7 +46,7 @@ export const viewportSessionKey = (sessionId: string, scopeKey?: string): string
 
 export const getViewportSessionMemory = (sessionId: string): SessionMemoryState | undefined => {
   const state = useViewportStore.getState()
-  return state.sessionMemoryState.get(viewportSessionKey(sessionId)) ?? state.sessionMemoryState.get(sessionId)
+  return state.sessionMemoryState.get(viewportSessionKey(sessionId))
 }
 
 export const useViewportStore = create<ViewportState>()((set) => ({
@@ -59,7 +57,7 @@ export const useViewportStore = create<ViewportState>()((set) => ({
     set((s) => {
       const map = new Map(s.sessionMemoryState)
       const key = viewportSessionKey(sessionId)
-      const existing = map.get(key) ?? map.get(sessionId) ?? {
+      const existing = map.get(key) ?? {
         viewportAnchor: 0,
         isStreaming: false,
         lastAccessedAt: Date.now(),

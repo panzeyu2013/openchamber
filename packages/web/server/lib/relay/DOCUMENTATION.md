@@ -98,7 +98,7 @@ The E2EE and framing logic exists twice: TypeScript in `packages/ui/src/lib/rela
 
 ## Runtime integration (client)
 
-Relay mode plugs into the existing client transport layer rather than a parallel path: `runtime-switch` activates the tunnel singleton, `runtime-fetch` routes runtime requests through it, `runtime-url`/`runtime-socket` yield tunnel-backed URLs and sockets, and `runtime-auth` mints the URL-scoped token through the tunnel. Direct-URL connections and the Electron realtime-proxy path are unaffected.
+Relay mode plugs into the existing client transport layer rather than a parallel path: `lib/control-plane.ts` (the control-plane module) activates the tunnel singleton, `runtime-fetch` routes runtime requests through it, `runtime-url`/`runtime-socket` yield tunnel-backed URLs and sockets, and `runtime-auth` mints the URL-scoped token through the tunnel. Direct-URL connections and the Electron realtime-proxy path are unaffected.
 
 ## Design invariants (do not regress)
 

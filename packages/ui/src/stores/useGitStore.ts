@@ -8,7 +8,6 @@ import type {
   GitIdentitySummary,
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -17,7 +16,7 @@ export const resolveActiveWorkspaceScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
 const LOG_STALE_THRESHOLD = 10000;
@@ -90,7 +89,6 @@ interface GitStore {
   setLogMaxCount: (directory: string, maxCount: number) => void;
 
   refresh: (git: GitAPI, options?: { force?: boolean }) => Promise<void>;
-  resetForRuntimeSwitch: (runtimeKey: string) => void;
 }
 
 interface GitFileDiffResponse {
@@ -582,27 +580,6 @@ export const useGitStore = create<GitStore>()(
       directories: seedDirectoriesFromBranchCache(initialGitScopeKey),
       directoriesByScope: {},
       activeDirectory: null,
-
-      resetForRuntimeSwitch: () => {
-        gitRuntimeGeneration += 1;
-        const nextScopeKey = resolveActiveWorkspaceScopeKey();
-        requestGenerationByChannel.clear();
-        statusMutationRevisionByDirectory.clear();
-        inFlightStatusFetches.clear();
-        inFlightEnsureAllByDirectory.clear();
-        inFlightDiffFetchesByDirectory.clear();
-        diffFetchGenerationByDirectory.clear();
-        set((state) => ({
-          scopeKey: nextScopeKey,
-          directories: state.scopeKey === nextScopeKey
-            ? state.directories
-            : (state.directoriesByScope[nextScopeKey] ?? seedDirectoriesFromBranchCache(nextScopeKey)),
-          directoriesByScope: state.scopeKey === nextScopeKey
-            ? state.directoriesByScope
-            : saveCurrentGitScope(state.scopeKey, state.directories, state.directoriesByScope, nextScopeKey),
-          activeDirectory: null,
-        }));
-      },
 
       setActiveDirectory: (directory) => {
         const { activeDirectory, directories } = get();
@@ -1263,7 +1240,6 @@ const installGitScopeSubscription = (): void => {
     };
     useSessionUIStore?.subscribe?.(check);
     useWorkspaceSessionIndexStore?.subscribe?.(check);
-    subscribeRuntimeEndpointChanged(check);
   });
 };
 installGitScopeSubscription();

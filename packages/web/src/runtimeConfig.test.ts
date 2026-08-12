@@ -9,11 +9,9 @@ vi.mock('@openchamber/ui/lib/runtime-auth', () => ({
   setRuntimeExtraHeaders: vi.fn(),
 }));
 vi.mock('@openchamber/ui/lib/runtime-fetch', () => ({ installRuntimeFetchBridge: vi.fn() }));
-vi.mock('@openchamber/ui/lib/runtime-switch', () => ({
-  getRuntimeApiBaseUrl: vi.fn(() => ''),
-  getRuntimeKey: vi.fn(() => 'local'),
-  initializeRuntimeEndpoint: vi.fn(),
-  switchRuntimeEndpoint: vi.fn(),
+vi.mock('@openchamber/ui/lib/control-plane', () => ({
+  initializeControlPlane: vi.fn(),
+  setControlPlane: vi.fn(),
 }));
 vi.mock('@openchamber/ui/lib/desktopRelayRestore', () => ({ restoreDesktopRelayRuntime: vi.fn(() => Promise.resolve()) }));
 vi.mock('@openchamber/ui/lib/runtime-url', () => ({ configureRuntimeUrlResolver: vi.fn(() => ({})) }));
@@ -21,7 +19,7 @@ vi.mock('@openchamber/ui/lib/opencode/client', () => ({ opencodeClient: { reconn
 vi.mock('./api', () => ({ createWebAPIs: vi.fn() }));
 
 import { setRuntimeBearerToken, setRuntimeExtraHeaders } from '@openchamber/ui/lib/runtime-auth';
-import { initializeRuntimeEndpoint, switchRuntimeEndpoint } from '@openchamber/ui/lib/runtime-switch';
+import { initializeControlPlane, setControlPlane } from '@openchamber/ui/lib/control-plane';
 import { restoreDesktopRelayRuntime } from '@openchamber/ui/lib/desktopRelayRestore';
 import { opencodeClient } from '@openchamber/ui/lib/opencode/client';
 import { createConfiguredWebAPIs, readRuntimeBootstrapConfig } from './runtimeConfig';
@@ -106,7 +104,7 @@ describe('createConfiguredWebAPIs', () => {
 
     createConfiguredWebAPIs(bootstrap);
 
-    expect(initializeRuntimeEndpoint).toHaveBeenCalledWith({
+    expect(initializeControlPlane).toHaveBeenCalledWith({
       apiBaseUrl: bootstrap.apiBaseUrl,
       runtimeKey: null,
     });
@@ -132,7 +130,7 @@ describe('createConfiguredWebAPIs', () => {
 
     createConfiguredWebAPIs(bootstrap);
 
-    expect(switchRuntimeEndpoint).toHaveBeenCalledWith({
+    expect(setControlPlane).toHaveBeenCalledWith({
       apiBaseUrl: bootstrap.apiBaseUrl,
       clientToken: bootstrap.clientToken,
       requestHeaders: null,

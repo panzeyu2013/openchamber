@@ -27,6 +27,7 @@ const makeSession = (workspaceId: string, sessionId: string, overrides: Partial<
   title: `Session ${sessionId}`,
   updatedAt: 1000,
   archived: false,
+  createdAt: 1000,
   ...overrides,
 });
 
@@ -295,6 +296,62 @@ describe('workspace session index store', () => {
     expect(state.sessionKeys.has('ws-1\0ses-2')).toBe(false);
     expect(state.sessionKeys.has('ws-1\0ses-1')).toBe(true);
     expect(state.snapshot?.freshnessByConnection).toBe(before?.freshnessByConnection);
+  });
+
+  describe('refresh/event reconciliation (ported from the retired global sessions store)', () => {
+    test('a snapshot fetched before applied events never rolls them back', async () => {
+      fetchSnapshotImpl = async () => makeSnapshot(10, [makeSession('ws-1', 'ses-old')], { 'conn-1': makeFreshness() });
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      // An event lands while the NEXT snapshot fetch is in flight: the new
+      // session is created (revision 11) and an old one deleted (revision 12).
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(11, 'session.upserted', makeSession('ws-1', 'ses-new', { updatedAt: 2000 }), { sessionId: 'ses-new' }));
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(12, 'session.removed', null, { workspaceId: 'ws-1', sessionId: 'ses-old' }));
+
+      // The in-flight snapshot was captured at revision 10 (before the
+      // events): committing it must not resurrect ses-old or drop ses-new.
+      fetchSnapshotImpl = async () => makeSnapshot(10, [makeSession('ws-1', 'ses-old')], { 'conn-1': makeFreshness() });
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.status).toBe('ready');
+      expect(state.lastAppliedRevision).toBe(12);
+      const keys = new Set(state.snapshot?.sessions.map((session) => session.key));
+      expect(keys.has('ws-1\0ses-new')).toBe(true);
+      expect(keys.has('ws-1\0ses-old')).toBe(false);
+    });
+
+    test('a snapshot newer than applied events commits normally', async () => {
+      fetchSnapshotImpl = async () => makeSnapshot(10, [makeSession('ws-1', 'ses-a')], { 'conn-1': makeFreshness() });
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(11, 'session.upserted', makeSession('ws-1', 'ses-b', { updatedAt: 2000 }), { sessionId: 'ses-b' }));
+
+      fetchSnapshotImpl = async () => makeSnapshot(12, [makeSession('ws-1', 'ses-b', { updatedAt: 3000 })], { 'conn-1': makeFreshness() });
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.lastAppliedRevision).toBe(12);
+      expect(state.snapshot?.sessions.map((session) => session.key)).toEqual(['ws-1\0ses-b']);
+    });
+
+    test('a failed refresh keeps commit-time state (failure is not empty)', async () => {
+      fetchSnapshotImpl = async () => makeSnapshot(10, [makeSession('ws-1', 'ses-a')], { 'conn-1': makeFreshness() });
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      useWorkspaceSessionIndexStore.getState().applyEvent(makeEvent(11, 'session.upserted', makeSession('ws-1', 'ses-b', { updatedAt: 2000 }), { sessionId: 'ses-b' }));
+
+      fetchSnapshotImpl = async () => {
+        throw new CatalogClientError('Index down', 503, 'session_index_http_error');
+      };
+      await useWorkspaceSessionIndexStore.getState().refresh();
+
+      const state = useWorkspaceSessionIndexStore.getState();
+      expect(state.status).toBe('error');
+      expect(state.lastAppliedRevision).toBe(11);
+      const keys = new Set(state.snapshot?.sessions.map((session) => session.key));
+      expect(keys.has('ws-1\0ses-b')).toBe(true);
+    });
   });
 
   test('selectSessionsForWorkspace filters by workspaceId and tolerates a null snapshot', () => {

@@ -1,9 +1,7 @@
 import type { WorktreeMetadata } from "@/types/worktree"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 
 const STORAGE_KEY = "oc.worktreeMap.v2"
-const LEGACY_STORAGE_KEY = "oc.worktreeMap"
 const MAX_RUNTIME_TOPOLOGIES = 8
 
 type PersistedTopology = {
@@ -13,11 +11,10 @@ type PersistedTopology = {
 
 type PersistedTopologyEnvelope = {
   version: 2
-  legacyClaimed: boolean
   runtimes: Record<string, PersistedTopology>
 }
 
-const emptyEnvelope = (): PersistedTopologyEnvelope => ({ version: 2, legacyClaimed: false, runtimes: {} })
+const emptyEnvelope = (): PersistedTopologyEnvelope => ({ version: 2, runtimes: {} })
 
 const parseEntries = (value: unknown): Array<[string, WorktreeMetadata[]]> => {
   if (!Array.isArray(value)) return []
@@ -43,7 +40,7 @@ const readEnvelope = (storage: Storage): PersistedTopologyEnvelope => {
         entries,
       }
     }
-    return { version: 2, legacyClaimed: parsed.legacyClaimed === true, runtimes }
+    return { version: 2, runtimes }
   } catch {
     return emptyEnvelope()
   }
@@ -61,24 +58,9 @@ export function readPersistedWorktreeTopology(
   storage: Storage = getDeferredSafeStorage(),
 ): Map<string, WorktreeMetadata[]> {
   const envelope = readEnvelope(storage)
-  // Dual read: the scope key (workspace scope for workspace sessions) wins,
-  // the ambient runtime key remains readable as the legacy pre-scope bucket.
-  const topology = envelope.runtimes[scopeKey] ?? envelope.runtimes[getRuntimeKey()]
+  const topology = envelope.runtimes[scopeKey]
   if (topology) return new Map(topology.entries)
-  if (envelope.legacyClaimed) return new Map()
-
-  try {
-    const legacyEntries = parseEntries(JSON.parse(storage.getItem(LEGACY_STORAGE_KEY) ?? "[]"))
-    envelope.legacyClaimed = true
-    if (legacyEntries.length > 0) {
-      envelope.runtimes[scopeKey] = { updatedAt: Date.now(), entries: legacyEntries }
-    }
-    writeEnvelope(storage, envelope)
-    storage.removeItem(LEGACY_STORAGE_KEY)
-    return new Map(legacyEntries)
-  } catch {
-    return new Map()
-  }
+  return new Map()
 }
 
 export function persistWorktreeTopology(
@@ -89,13 +71,11 @@ export function persistWorktreeTopology(
   if (!scopeKey) return
   try {
     const envelope = readEnvelope(storage)
-    envelope.legacyClaimed = true
     envelope.runtimes[scopeKey] = {
       updatedAt: Date.now(),
       entries: [...topology.entries()],
     }
     writeEnvelope(storage, envelope)
-    storage.removeItem(LEGACY_STORAGE_KEY)
   } catch {
     // Discovery remains authoritative in memory when persistence is unavailable.
   }

@@ -680,7 +680,12 @@ describe('useConfigStore provider persistence', () => {
 
   test('worktree sync config applies to the project-scoped snapshot', () => {
     const worktree = '/workspace/project-worktree';
-    storage.set('oc.worktreeProjectMap', JSON.stringify({ [worktree]: DIRECTORY }));
+    storage.set('oc.worktreeProjectMap.v2', JSON.stringify({
+      version: 2,
+      runtimes: {
+        default: { updatedAt: 1, entries: { [worktree]: DIRECTORY } },
+      },
+    }));
     useConfigStore.setState({
       activeDirectoryKey: DIRECTORY,
       providers: [provider('openai', 'gpt-5.5')],
@@ -962,7 +967,12 @@ describe('useConfigStore provider persistence', () => {
 
   test('project loadAgents preserves defaults previously applied from a worktree config event', async () => {
     const worktree = '/workspace/project-worktree';
-    storage.set('oc.worktreeProjectMap', JSON.stringify({ [worktree]: DIRECTORY }));
+    storage.set('oc.worktreeProjectMap.v2', JSON.stringify({
+      version: 2,
+      runtimes: {
+        default: { updatedAt: 1, entries: { [worktree]: DIRECTORY } },
+      },
+    }));
     useConfigStore.setState({
       activeDirectoryKey: DIRECTORY,
       providers: [provider('openai', 'gpt-5.5')],

@@ -1,8 +1,10 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { ensureGlobalSessionsLoaded, useGlobalSessionsStore, resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { getAllSyncSessions, getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
+import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import { useUIStore } from '@/stores/useUIStore';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -77,17 +79,19 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
   const autoDeleteLastRunAt = useUIStore((state) => state.autoDeleteLastRunAt);
   const setAutoDeleteLastRunAt = useUIStore((state) => state.setAutoDeleteLastRunAt);
   const needsGlobalSessions = enabled && (!autoRun || autoDeleteEnabled);
-  const globalSessions = useGlobalSessionsStore(React.useCallback(
-    (state) => needsGlobalSessions ? state.activeSessions : EMPTY_SESSIONS,
+  const globalSessions = useWorkspaceSessionIndexStore(React.useCallback(
+    (state) => needsGlobalSessions
+      ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary)
+      : EMPTY_SESSIONS,
     [needsGlobalSessions],
   ));
-  const hasLoadedGlobalSessions = useGlobalSessionsStore((state) => state.hasLoaded);
+  const hasLoadedGlobalSessions = useWorkspaceSessionIndexStore((state) => state.status === 'ready');
 
   const [isRunning, setIsRunning] = React.useState(false);
   const runningRef = React.useRef(false);
 
   React.useEffect(() => {
-    void ensureGlobalSessionsLoaded(getAllSyncSessions());
+    void useWorkspaceSessionIndexStore.getState().refresh();
   }, []);
 
   const candidates = React.useMemo(() => {
@@ -123,10 +127,14 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
       }
 
       const operationScopeKey = getSyncScopeKey();
-      const { activeSessions: sessions } = await ensureGlobalSessionsLoaded(getAllSyncSessions());
+      await useWorkspaceSessionIndexStore.getState().refresh();
       if (getSyncScopeKey() !== operationScopeKey) {
         return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'scope-changed' };
       }
+      const indexSnapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+      const sessions = selectSessionsForConnection(indexSnapshot, 'local')
+        .filter((s) => !s.archived)
+        .map(sessionFromSummary);
 
       if (sessions.length === 0) {
         return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'no-candidates' };
@@ -157,7 +165,7 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
             return { completedIds, failedIds, action: sessionRetentionAction, skippedReason: 'scope-changed' };
           }
           const session = sessionMap.get(id);
-          const directory = session ? resolveGlobalSessionDirectory(session) : null;
+          const directory = session ? resolveSessionDirectory(session) : null;
           if (!directory) {
             failedIds.push(id);
             continue;
@@ -178,11 +186,8 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
         if (getSyncScopeKey() !== operationScopeKey) {
           return { completedIds, failedIds, action: sessionRetentionAction, skippedReason: 'scope-changed' };
         }
-        if (sessionRetentionAction === 'archive') {
-          useGlobalSessionsStore.getState().archiveSessions(completedIds);
-        } else {
-          useGlobalSessionsStore.getState().removeSessions(completedIds);
-        }
+        // The Session Index event stream reconciles the archived/deleted
+        // sessions; no client-side list mutation is needed.
         return { completedIds, failedIds, action: sessionRetentionAction };
       } finally {
         runningRef.current = false;

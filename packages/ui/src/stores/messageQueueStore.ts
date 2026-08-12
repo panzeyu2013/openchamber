@@ -3,7 +3,6 @@ import { devtools, persist } from 'zustand/middleware';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import type { AttachedFile } from './types/sessionTypes';
 import { updateDesktopSettings } from '@/lib/persistence';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { normalizePath } from '@/lib/pathNormalization';
 
@@ -254,20 +253,10 @@ export const useMessageQueueStore = create<MessageQueueStore>()(
                 },
 
                 clearQueue: (target) => {
-                    // Dual-clean when the target carries the current runtime
-                    // key (legacy deletion path): also clear the
-                    // workspace-scoped twin so runtime-captured identities
-                    // still reach workspace-scoped queues. A non-current or
-                    // workspace scope never clears another owner's queue.
+                    // Clearing drops what is still queued, never a message
+                    // already handed to the server: that send will resolve
                     const key = getMessageQueueKey(target);
-                    const legacyKey = target.scopeKey === getRuntimeKey()
-                        ? getMessageQueueKey({
-                            scopeKey: resolveSessionScopeKey(target.sessionId, target.directory),
-                            directory: target.directory,
-                            sessionId: target.sessionId,
-                        })
-                        : key;
-                    const keysToClear = legacyKey === key ? [key] : [key, legacyKey];
+                    const keysToClear = [key];
                     set((state) => {
                         let next = state.queuedMessages;
                         for (const candidate of keysToClear) {

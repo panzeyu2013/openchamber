@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
@@ -16,6 +15,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
     title: workspaceId,
     updatedAt: 1,
     archived: false,
+    createdAt: 1,
   }],
   freshnessByConnection: {},
 });
@@ -37,7 +37,7 @@ describe('useUIStore context panel workspace scope', () => {
   beforeEach(() => {
     clearWorkspaceSession();
     useUIStore.setState({
-      contextPanelScopeKey: getRuntimeKey(),
+      contextPanelScopeKey: '',
       contextPanelByDirectory: {},
       contextPanelByScope: {},
     });
@@ -46,7 +46,7 @@ describe('useUIStore context panel workspace scope', () => {
   afterEach(() => {
     clearWorkspaceSession();
     useUIStore.setState({
-      contextPanelScopeKey: getRuntimeKey(),
+      contextPanelScopeKey: '',
       contextPanelByDirectory: {},
       contextPanelByScope: {},
     });

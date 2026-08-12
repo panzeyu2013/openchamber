@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { isSessionPinned } from '@/stores/useSessionPinnedStore';
 import { normalizePath } from '@/lib/pathNormalization';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type SessionActivityPhase = 'active' | 'settled';
 
@@ -23,10 +22,7 @@ export const EMPTY_SESSION_ORDER_RANKS: ReadonlyMap<string, number> = new Map();
 const scopeStates = new Map<string, SessionOrderingScope>();
 let lastRank = 0;
 
-const normalizeScopeKey = (scopeKey?: string): string => {
-  const normalized = scopeKey?.trim();
-  return normalized || getRuntimeKey();
-};
+const normalizeScopeKey = (scopeKey: string): string => scopeKey.trim();
 
 const createScopeState = (): SessionOrderingScope => ({
   phaseById: new Map(),
@@ -43,7 +39,7 @@ const readScopeState = (scopeKey: string): SessionOrderingScope => {
 };
 
 export const useSessionOrderingStore = create<SessionOrderingState>((set, get) => {
-  const scopeKey = getRuntimeKey();
+  const scopeKey = "";
   const scope = readScopeState(scopeKey);
 
   return {

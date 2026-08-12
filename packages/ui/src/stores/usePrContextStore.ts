@@ -1,5 +1,4 @@
 import { create } from 'zustand';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -16,7 +15,7 @@ const resolveActiveWorkspaceScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
 // JSON tuple key: scope-scoped (workspace scope when a workspace session is

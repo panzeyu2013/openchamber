@@ -1,14 +1,11 @@
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 
-// Persisted "last active session" per scope (workspace scope key for
-// workspace sessions, ambient runtime key otherwise), so a cold app launch
-// can reopen the session the user had open the last time this instance was
-// connected. This is startup-continuity context ONLY — callers must confirm
-// the session still exists against an authoritative snapshot before opening
-// it (see the MobileApp restore effect). Entries written before the scope
-// migration (keyed by raw runtime key) stay readable as a fallback; writes
-// always use the caller-provided scope key.
+// Persisted "last active session" per workspace scope key, so a cold app
+// launch can reopen the session the user had open the last time this instance
+// was connected. This is startup-continuity context ONLY — callers must
+// confirm the session still exists against an authoritative snapshot before
+// opening it (see the MobileApp restore effect). Writes always use the
+// caller-provided scope key.
 const STORAGE_KEY = "oc.lastSession.v1"
 const MAX_RUNTIME_ENTRIES = 8
 
@@ -71,10 +68,6 @@ export function persistLastActiveSession(
   // or retention trimming would evict an arbitrary scope.
   const maxExisting = Object.values(envelope.runtimes).reduce((max, existing) => Math.max(max, existing.updatedAt), 0)
   envelope.runtimes[scopeKey] = { ...entry, updatedAt: Math.max(Date.now(), maxExisting + 1) }
-  // A scoped write supersedes the legacy runtime-keyed entry for the same
-  // session context; drop it so a stale read cannot resurrect it.
-  const legacyRuntimeKey = getRuntimeKey()
-  if (scopeKey !== legacyRuntimeKey) delete envelope.runtimes[legacyRuntimeKey]
   writeEnvelope(storage, envelope)
 }
 
@@ -84,7 +77,7 @@ export function readLastActiveSession(
 ): PersistedLastSession | null {
   if (!scopeKey) return null
   const envelope = readEnvelope(storage)
-  const entry = envelope.runtimes[scopeKey] ?? envelope.runtimes[getRuntimeKey()]
+  const entry = envelope.runtimes[scopeKey]
   return entry ? { sessionId: entry.sessionId, directory: entry.directory } : null
 }
 
@@ -94,13 +87,7 @@ export function clearLastActiveSession(
 ): void {
   if (!scopeKey) return
   const envelope = readEnvelope(storage)
-  const keys = [scopeKey, getRuntimeKey()]
-  let changed = false
-  for (const key of keys) {
-    if (!envelope.runtimes[key]) continue
-    delete envelope.runtimes[key]
-    changed = true
-  }
-  if (!changed) return
+  if (!envelope.runtimes[scopeKey]) return
+  delete envelope.runtimes[scopeKey]
   writeEnvelope(storage, envelope)
 }

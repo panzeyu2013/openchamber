@@ -19,6 +19,7 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
     title: workspaceId,
     updatedAt: 1,
     archived: false,
+    createdAt: 1,
   }],
   freshnessByConnection: {},
 });

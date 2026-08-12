@@ -1,5 +1,4 @@
 import React from 'react';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 import { toast } from '@/components/ui';
 import {
@@ -431,7 +430,7 @@ export const SidebarFilesTree: React.FC = () => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
   const { handle } = useWorkspaceRuntime();
-  const scopeKey = handle?.scopeKey ?? getRuntimeKey();
+  const scopeKey = handle?.scopeKey ?? '';
   const isBrowserClient = isBrowserClientRuntime(runtime.platform);
   const currentDirectory = useEffectiveDirectory() ?? '';
   const root = normalizePath(currentDirectory.trim());

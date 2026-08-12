@@ -1,7 +1,7 @@
 // Module-level singleton holding the active relay tunnel client, if the runtime
-// is in relay mode. Kept in its own module so runtime-switch, runtime-fetch,
+// is in relay mode. Kept in its own module so control-plane, runtime-fetch,
 // runtime-url, and the event pipeline can all read it without an import cycle
-// (runtime-switch <-> runtime-url).
+// (control-plane <-> runtime-url).
 
 import { createRelayTunnelClient, type RelayTunnelClient } from './tunnel-client';
 

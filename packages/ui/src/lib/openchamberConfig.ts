@@ -1,7 +1,6 @@
 /**
  * OpenChamber project-level configuration service.
- * Stores per-project settings in ~/.config/openchamber/<projectId>.json.
- * Migrates from legacy <project>/.openchamber/openchamber.json.
+ * Stores per-project settings in ~/.config/openchamber/projects/<configId>.json.
  */
 
 import type { FilesAPI } from './api/types';
@@ -9,15 +8,36 @@ import { getRegisteredRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { getDesktopHomeDirectory } from './desktop';
 import { isVSCodeRuntime } from './desktop';
 import { sanitizeStarterRefs, type DraftStarterRef } from './draftStarters';
-import { createProjectIdFromPath } from './projectId';
 import { runtimeFetch } from './runtime-fetch';
 
 type ProjectRef = { id: string; path: string };
 
-const CONFIG_FILENAME = 'openchamber.json';
-// LEGACY_PROJECT_CONFIG: legacy per-project config root inside repo.
-const LEGACY_CONFIG_DIR = '.openchamber';
 const USER_PROJECTS_DIR_SEGMENTS = ['.config', 'openchamber', 'projects'];
+
+/**
+ * Filesystem key for the per-project config file. This is a STORAGE KEY, not
+ * an identity: it is derived from the project path so the config file stays
+ * readable across restarts and mirrors the pre-catalog file layout. The
+ * workspace catalog / session index never use path-derived identities.
+ */
+const configProjectIdFromPath = (projectPath: string): string => {
+  const normalized = projectPath.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const data = new TextEncoder().encode(normalized);
+  let binary = '';
+  for (const byte of data) {
+    binary += String.fromCharCode(byte);
+  }
+
+  const encoded = typeof btoa === 'function'
+    ? btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    : normalized.replace(/[^A-Za-z0-9._-]+/g, '_');
+
+  return `path_${encoded}`;
+};
 
 /**
  * Get the runtime Files API if available (Desktop/VSCode).
@@ -112,10 +132,6 @@ const joinPath = (base: string, segment: string): string => {
     return `/${cleanSegment}`;
   }
   return `${normalizedBase}/${cleanSegment}`;
-};
-
-const getLegacyConfigPath = (projectDirectory: string): string => {
-  return joinPath(joinPath(projectDirectory, LEGACY_CONFIG_DIR), CONFIG_FILENAME);
 };
 
 const getBaseUrl = (): string => {
@@ -249,7 +265,7 @@ const resolveConfigProjectId = (project: ProjectRef): string | null => {
   const projectDirectory = typeof project?.path === 'string' ? project.path.trim() : '';
   const normalizedProject = projectDirectory ? normalize(projectDirectory) : '';
   if (!normalizedProject) return null;
-  return createProjectIdFromPath(normalizedProject) || null;
+  return configProjectIdFromPath(normalizedProject) || null;
 };
 
 const getUserConfigPath = async (project: ProjectRef): Promise<string | null> => {
@@ -596,25 +612,10 @@ async function readOpenChamberConfig(project: ProjectRef): Promise<OpenChamberCo
     }
   }
 
-  // 2) Migrate legacy <project>/.openchamber/openchamber.json.
-  // LEGACY_PROJECT_CONFIG: migrate project-local openchamber.json -> ~/.config/openchamber/projects/<projectId>.json
-  const legacyPath = getLegacyConfigPath(projectDirectory);
-  const legacyConfig = parseConfig(await readText(legacyPath));
-  if (!legacyConfig) {
-    return null;
-  }
-
-  // Best-effort write + delete legacy.
-  try {
-    const wrote = await writeOpenChamberConfig(project, legacyConfig);
-    if (wrote) {
-      await deleteLegacyOpenChamberConfig(projectDirectory);
-    }
-  } catch {
-    // Ignore migration failures; still return legacy content.
-  }
-
-  return legacyConfig;
+  // The legacy <project>/.openchamber/openchamber.json migration was removed
+  // with the path-derived project identity; the per-user config is the only
+  // config surface.
+  return null;
 }
 
 /**
@@ -926,26 +927,6 @@ export function substituteCommandVariables(
     // Legacy
     .replace(/\$ROOT_WORKTREE_PATH/g, variables.rootWorktreePath)
     .replace(/\$\{ROOT_WORKTREE_PATH\}/g, variables.rootWorktreePath);
-}
-
-async function deleteLegacyOpenChamberConfig(projectDirectory: string): Promise<void> {
-  const legacyPath = getLegacyConfigPath(projectDirectory);
-  const runtimeFiles = getRuntimeFilesAPI();
-
-  if (runtimeFiles?.delete) {
-    try {
-      await runtimeFiles.delete(legacyPath);
-      return;
-    } catch {
-      // fall through
-    }
-  }
-
-  try {
-    await postJson(`${getBaseUrl()}/fs/delete`, { path: legacyPath });
-  } catch {
-    // ignored
-  }
 }
 
 export type { ProjectRef };

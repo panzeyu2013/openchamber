@@ -3,7 +3,6 @@ import { persist } from 'zustand/middleware';
 import type { GitHubPullRequestStatus, RuntimeAPIs } from '@/lib/api/types';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -12,7 +11,7 @@ const resolveActiveWorkspaceScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
 const PR_REVALIDATE_TTL_MS = 90_000;
@@ -107,14 +106,12 @@ type GitHubPrStatusStore = {
   refresh: (key: string, options?: RefreshOptions) => Promise<void>;
   refreshTargets: (targets: PrTrackingTarget[], options?: RefreshOptions) => Promise<void>;
   updateStatus: (key: string, updater: (prev: GitHubPullRequestStatus | null) => GitHubPullRequestStatus | null) => void;
-  resetForRuntimeSwitch: (scopeKeys?: string | string[]) => void;
 };
 
 const timers = new Map<string, number>();
 const bootstrapTimers = new Map<string, number[]>();
 const inFlightBySignature = new Map<string, symbol>();
 const lastRefreshBySignature = new Map<string, number>();
-let prRuntimeGeneration = 0;
 
 // Global concurrency gate for PR-status network requests.
 //
@@ -393,50 +390,12 @@ const boundEntries = (entries: Record<string, PrStatusEntry>): Record<string, Pr
     .slice(0, PR_MAX_ENTRIES));
 };
 
-const entryScopeKey = (key: string, entry: PrStatusEntry): string | null => {
-  const parsed = parseStatusKey(key);
-  if (parsed?.runtimeKey) return parsed.runtimeKey;
-  return entry.params?.runtimeKey ?? entry.identity?.runtimeKey ?? null;
-};
-
 export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
   persist(
     (set, get) => ({
       entries: {},
       activeRequestCount: 0,
       totalRequestCount: 0,
-
-      resetForRuntimeSwitch: (scopeKeys) => {
-        const targets = new Set(
-          (Array.isArray(scopeKeys) ? scopeKeys : [scopeKeys ?? resolveActiveWorkspaceScopeKey()])
-            .filter((scopeKey): scopeKey is string => typeof scopeKey === 'string' && scopeKey.length > 0),
-        );
-        prRuntimeGeneration += 1;
-        for (const timerId of timers.values()) window.clearInterval(timerId);
-        for (const timerIds of bootstrapTimers.values()) timerIds.forEach((timerId) => window.clearTimeout(timerId));
-        timers.clear();
-        bootstrapTimers.clear();
-        inFlightBySignature.clear();
-        lastRefreshBySignature.clear();
-        set((state) => ({
-          activeRequestCount: 0,
-          entries: Object.fromEntries(Object.entries(state.entries).map(([key, entry]) => {
-            const scopeKey = entryScopeKey(key, entry);
-            const shouldReset = scopeKey !== null && targets.has(scopeKey);
-            return [key, {
-              ...entry,
-              isLoading: false,
-              ...(shouldReset
-                ? {
-                    watchers: 0,
-                    params: null,
-                    paramsRevision: entry.paramsRevision + 1,
-                  }
-                : {}),
-            }];
-          })),
-        }));
-      },
 
       ensureEntry: (key) => {
         set((state) => {
@@ -630,12 +589,10 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
         }
 
         const requestToken = Symbol(signature);
-        const runtimeGeneration = prRuntimeGeneration;
         const paramsRevision = entry.paramsRevision;
         const runtimeKey = entry.params?.runtimeKey ?? entry.identity?.runtimeKey ?? resolveActiveWorkspaceScopeKey();
         const isCurrent = () => (
-          runtimeGeneration === prRuntimeGeneration
-          && runtimeKey === resolveActiveWorkspaceScopeKey()
+          runtimeKey === resolveActiveWorkspaceScopeKey()
           && inFlightBySignature.get(signature) === requestToken
           && get().entries[key]?.paramsRevision === paramsRevision
         );
@@ -826,9 +783,7 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
           });
         } finally {
           if (inFlightBySignature.get(signature) === requestToken) inFlightBySignature.delete(signature);
-          if (runtimeGeneration === prRuntimeGeneration) {
-            set((prev) => ({ ...prev, activeRequestCount: Math.max(0, prev.activeRequestCount - 1) }));
-          }
+          set((prev) => ({ ...prev, activeRequestCount: Math.max(0, prev.activeRequestCount - 1) }));
         }
       },
 

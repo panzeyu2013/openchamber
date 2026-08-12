@@ -2,7 +2,7 @@ import { createOpencodeServiceForSdk, createWorkspaceOpencodeClient } from '@/li
 import { openRuntimeWebSocket } from '@/lib/relay/runtime-socket';
 import { TerminalTransport } from '@/lib/terminalApi';
 import { withRuntimeUrlAuthToken } from '@/lib/runtime-url';
-import { createControlPlaneFetch, getControlPlaneBaseUrl } from './control-plane-fetch';
+import { createControlPlaneFetch, getPinnedControlPlaneBaseUrl } from './control-plane-fetch';
 import { workspaceScopeKey } from './identity';
 import { rewriteRuntimePathToWorkspace, workspaceRuntimePrefix, workspaceSdkBaseUrl } from './workspace-runtime-fetch';
 import type { WorkspaceDescriptor, WorkspaceId } from './types';
@@ -369,7 +369,7 @@ type WorkspaceTerminalApiBundle = {
 
 const createWorkspaceTerminalSocketUrl = (workspaceId: WorkspaceId, token: string): string => {
   const path = `${workspaceRuntimePrefix(workspaceId)}/api/terminal/ws`;
-  const controlPlaneBase = getControlPlaneBaseUrl();
+  const controlPlaneBase = getPinnedControlPlaneBaseUrl();
   const fallbackBase = typeof window !== 'undefined' ? window.location.href : 'http://openchamber.local';
   const rawUrl = controlPlaneBase
     ? `${controlPlaneBase.replace(/\/+$/, '')}${path}`

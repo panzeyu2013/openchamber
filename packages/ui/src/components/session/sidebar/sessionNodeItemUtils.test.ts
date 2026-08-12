@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { getPinnedSessionKey } from '@/stores/useSessionPinnedStore';
 import { computeNodeStructureKey, nodeHasPinnedMembershipChange, selectFolderRootNodes, selectQuestionBadgeSessionScopes } from './sessionNodeItemUtils';
 import type { SessionNode } from './types';
@@ -74,7 +73,7 @@ describe('nodeHasPinnedMembershipChange', () => {
       children: [],
       worktree: null,
     };
-    const pinnedKey = getPinnedSessionKey(getRuntimeKey(), '/repo', 'root');
+    const pinnedKey = getPinnedSessionKey('', '/repo', 'root');
 
     expect(pinnedKey).not.toBeNull();
     expect(nodeHasPinnedMembershipChange(
@@ -93,7 +92,7 @@ describe('nodeHasPinnedMembershipChange', () => {
       children: [],
       worktree: null,
     };
-    const pinnedKey = getPinnedSessionKey(getRuntimeKey(), '/other-repo', 'root');
+    const pinnedKey = getPinnedSessionKey('', '/other-repo', 'root');
 
     expect(pinnedKey).not.toBeNull();
     expect(nodeHasPinnedMembershipChange(

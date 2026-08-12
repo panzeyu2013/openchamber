@@ -4,7 +4,6 @@ import type { ProjectEntry } from "@/lib/api/types"
 import type { WorktreeMetadata } from "@/types/worktree"
 import { resolveProjectForSessionDirectory } from "@/lib/projectResolution"
 import { useConfigStore } from "@/stores/useConfigStore"
-import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useSessionUIStore } from "../session-ui-store"
 import { clearSyncRefs, setSyncRefs } from "../sync-refs"
 import { setActionRefs, createSession } from "../session-actions"
@@ -12,7 +11,6 @@ import { setActionRefs, createSession } from "../session-actions"
 // Recorded call info
 const setCurrentSessionCalls: Array<{ id: string | null; directoryHint: string | null | undefined }> = []
 const registerSessionDirectoryCalls: Array<{ sessionID: string; directory: string }> = []
-const upsertSessionCalls: Session[] = []
 const markSessionAsOpenChamberCreatedCalls: string[] = []
 
 // Configurable service.createSession — set per test. The service is injected
@@ -35,13 +33,11 @@ const mockService = {
 
 // Real store members captured once so per-test recorders can be restored.
 const realSessionUIState = useSessionUIStore.getState()
-const realGlobalState = useGlobalSessionsStore.getState()
 const initialConfigState = useConfigStore.getState()
 
 beforeEach(() => {
   setCurrentSessionCalls.length = 0
   registerSessionDirectoryCalls.length = 0
-  upsertSessionCalls.length = 0
   markSessionAsOpenChamberCreatedCalls.length = 0
   nextCreateSessionCalls = []
   nextCreateSessionResponse = { id: "ses_default", time: { created: 1 } } as Session
@@ -54,11 +50,6 @@ beforeEach(() => {
     },
     markSessionAsOpenChamberCreated: (sessionId: string) => {
       markSessionAsOpenChamberCreatedCalls.push(sessionId)
-    },
-  })
-  useGlobalSessionsStore.setState({
-    upsertSession: (session: Session) => {
-      upsertSessionCalls.push(session)
     },
   })
   setSyncRefs(
@@ -92,7 +83,6 @@ afterAll(() => {
     setCurrentSession: realSessionUIState.setCurrentSession,
     markSessionAsOpenChamberCreated: realSessionUIState.markSessionAsOpenChamberCreated,
   })
-  useGlobalSessionsStore.setState({ upsertSession: realGlobalState.upsertSession })
   clearSyncRefs()
 })
 

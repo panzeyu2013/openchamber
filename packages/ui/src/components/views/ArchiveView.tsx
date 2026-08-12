@@ -9,7 +9,9 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { useUIStore } from '@/stores/useUIStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { formatSessionDateLabel, normalizePath } from '@/components/session/sidebar/utils';
 import { useShallow } from 'zustand/react/shallow';
 import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
@@ -33,7 +35,9 @@ export function ArchiveView(): React.ReactNode {
   const activeWorkspaceId = useActiveWorkspaceId();
   const unarchiveSession = useSessionUIStore((state) => state.unarchiveSession);
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
-  const archivedSessions = useGlobalSessionsStore(useShallow((state) => open ? state.archivedSessions : []));
+  const archivedSessions = useWorkspaceSessionIndexStore(useShallow(
+    (state) => open ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary) : [],
+  ));
   const [query, setQuery] = React.useState('');
   const [selectedDirectory, setSelectedDirectory] = React.useState<string | null>(null);
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
@@ -48,7 +52,7 @@ export function ArchiveView(): React.ReactNode {
   const buckets = React.useMemo<DirectoryBucket[]>(() => {
     const byDirectory = new Map<string, DirectoryBucket>();
     for (const session of sortedSessions) {
-      const directory = normalizePath(resolveGlobalSessionDirectory(session)) ?? '';
+      const directory = normalizePath(resolveSessionDirectory(session)) ?? '';
       const existing = byDirectory.get(directory);
       if (existing) {
         existing.sessions.push(session);
@@ -85,7 +89,7 @@ export function ArchiveView(): React.ReactNode {
   }, []);
 
   const openSession = React.useCallback((session: Session) => {
-    const directory = normalizePath(resolveGlobalSessionDirectory(session));
+    const directory = normalizePath(resolveSessionDirectory(session));
     setCurrentSession(session.id, directory ?? undefined, activeWorkspaceId);
     setActiveMainTab('chat');
     setOpen(false);
@@ -203,7 +207,7 @@ export function ArchiveView(): React.ReactNode {
                   </p>
                 </div>
               ) : visibleSessions.map((session) => {
-                const sessionDirectory = normalizePath(resolveGlobalSessionDirectory(session)) ?? '';
+                const sessionDirectory = normalizePath(resolveSessionDirectory(session)) ?? '';
                 const directoryLabel = sessionDirectory
                   ? (formatDirectoryName(sessionDirectory, homeDirectory) || sessionDirectory)
                   : null;

@@ -8,9 +8,9 @@ import {
   type InlineCommentSource,
 } from '@/stores/useInlineCommentDraftStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
+import { resolveSessionScopeKey } from '@/sync/selection-store';
 import { useI18n } from '@/lib/i18n';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type LineRangeBase = {
   start: number;
@@ -83,7 +83,7 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
     return { directory: draftDirectory, sessionKey };
   }, [draftDirectory, sessionKey]);
   const targetKey = target
-    ? getInlineCommentDraftKey(getRuntimeKey(), target.directory, target.sessionKey)
+    ? getInlineCommentDraftKey(resolveSessionScopeKey(target.sessionKey, target.directory), target.directory, target.sessionKey)
     : null;
   const sessionDrafts = useInlineCommentDraftStore(
     React.useCallback(

@@ -50,7 +50,8 @@ import {
   partitionWorktreesByRegisteredProject,
 } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { mergeLiveSessionWithGlobalSession, refreshGlobalSessions, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { mergeLiveSessionWithSummary, selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
 import { useMobileSessionTreeStore } from '@/stores/useMobileSessionTreeStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -856,7 +857,13 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const liveSessions = useAllLiveSessions();
-  const globalActiveSessions = useGlobalSessionsStore((state) => state.activeSessions);
+  const globalActiveSummaries = useWorkspaceSessionIndexStore(
+    (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived),
+  );
+  const globalActiveSessions = React.useMemo(
+    () => globalActiveSummaries.map(sessionFromSummary),
+    [globalActiveSummaries],
+  );
   const pinnedSessionIds = useSessionPinnedStore(React.useCallback(
     (state) => open || variant === 'sidebar' ? state.ids : EMPTY_PINNED_SESSION_IDS,
     [open, variant],
@@ -945,9 +952,8 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       setConfirmingRemoveProjectId(null);
       return;
     }
-    void refreshGlobalSessions(liveSessions);
+    void useWorkspaceSessionIndexStore.getState().refresh();
     // intentionally only on open transition — live overlay handles updates after that
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   React.useEffect(() => {
@@ -1013,9 +1019,11 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
    */
   const sessions = React.useMemo(() => {
     const liveById = new Map(liveSessions.map((session) => [session.id, session]));
+    const summaryById = new Map(globalActiveSummaries.map((summary) => [summary.upstreamSessionId, summary]));
     const merged = globalActiveSessions.map((session) => {
       const liveSession = liveById.get(session.id);
-      return liveSession ? mergeLiveSessionWithGlobalSession(liveSession, session) : session;
+      const summary = summaryById.get(session.id);
+      return liveSession && summary ? mergeLiveSessionWithSummary(liveSession, summary) : session;
     });
     const seenIds = new Set(merged.map((session) => session.id));
     for (const session of liveSessions) {
@@ -1025,7 +1033,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     // overlay can carry them for the active directory, and they'd otherwise
     // surface in search and then "disappear" once the overlay refreshes.
     return merged.filter((session) => !session.time?.archived);
-  }, [globalActiveSessions, liveSessions]);
+  }, [globalActiveSummaries, globalActiveSessions, liveSessions]);
 
   const normalizedQuery = query.trim().toLowerCase();
 

@@ -2,12 +2,13 @@ import type { Session } from '@opencode-ai/sdk/v2';
 
 import type { ProjectEntry } from '@/lib/api/types';
 import { useUIStore } from '@/stores/useUIStore';
-import { resolveGlobalSessionDirectory, useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { getNotificationSessionKey, useNotificationStore } from '@/sync/notification-store';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
-import { getRuntimeKey } from '@/lib/runtime-switch';
+import { getControlPlaneKey } from '@/lib/control-plane';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 
 /**
@@ -72,9 +73,9 @@ const projectLabelForDirectory = (directory: string | null, projects: ProjectEnt
 };
 
 export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
-  const sessions = useGlobalSessionsStore.getState().activeSessions;
+  const indexedSessions = useWorkspaceSessionIndexStore.getState().snapshot;
+  const sessions = selectSessionsForConnection(indexedSessions, 'local').map(sessionFromSummary);
   const unseenBySession = useNotificationStore.getState().index.session.unseenCount;
-  const indexedSessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const notifyOnSubtasks = useUIStore.getState().notifyOnSubtasks;
   const projects = useProjectsStore.getState().projects;
   const pinnedSessionIds = useSessionPinnedStore.getState().ids;
@@ -86,9 +87,9 @@ export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
   for (const session of sessions) {
     const isSubtask = parentIdOf(session) !== null;
     const workspaceId = resolveActiveWorkspaceId(
-      indexedSessions,
+      indexedSessions?.sessions,
       session.id,
-      resolveGlobalSessionDirectory(session),
+      resolveSessionDirectory(session),
     );
     const unseenCount = unseenBySession[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
     const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
@@ -99,7 +100,7 @@ export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
       topLevel.push({
         session,
         unread: needsAttention,
-        project: projectLabelForDirectory(resolveGlobalSessionDirectory(session), projects),
+        project: projectLabelForDirectory(resolveSessionDirectory(session), projects),
       });
     }
   }
@@ -109,7 +110,7 @@ export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
     .slice(0, RECENT_LIMIT)
     .map(({ session, unread, project }) => ({ id: session.id, title: session.title ?? '', unread, project }));
 
-  return { runtimeKey: getRuntimeKey(), attentionCount, recentSessions };
+  return { runtimeKey: getControlPlaneKey(), attentionCount, recentSessions };
 };
 
 const SNAPSHOT_GLOBAL_KEY = '__OPENCHAMBER_WIDGET_SNAPSHOT__';

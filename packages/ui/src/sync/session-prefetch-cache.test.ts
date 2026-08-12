@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { getRuntimeKey } from "@/lib/runtime-switch"
 import {
   clearDirectorySessionPrefetch,
   clearRuntimeSessionPrefetch,
@@ -35,15 +34,14 @@ describe("session prefetch cache", () => {
     expect(getSessionPrefetch("/repo", "session", "workspace:ws-b")?.limit).toBe(20)
   })
 
-  test("non-workspace mode keeps byte-identical keys: the default scope is the ambient runtime key", () => {
-    // Explicit ambient-scope writes are readable through the default
-    // scopeKey fallback (getRuntimeKey()), so pre-migration persisted data
-    // stays readable.
-    const runtimeKey = getRuntimeKey()
-    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 30, complete: true, scopeKey: runtimeKey })
-    expect(getSessionPrefetch("/repo", "session")?.limit).toBe(30)
-    clearRuntimeSessionPrefetch(runtimeKey)
-    expect(getSessionPrefetch("/repo", "session")).toBe(undefined)
+  test("prefetch reads are keyed by the explicit scope only (no ambient fallback)", () => {
+    clearRuntimeSessionPrefetch("workspace:ws-a")
+    clearRuntimeSessionPrefetch("workspace:ws-b")
+    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 30, complete: true, scopeKey: "workspace:ws-a" })
+    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")?.limit).toBe(30)
+    expect(getSessionPrefetch("/repo", "session", "workspace:ws-b")).toBe(undefined)
+    clearRuntimeSessionPrefetch("workspace:ws-a")
+    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")).toBe(undefined)
   })
 
   test("clears only the owning runtime and directory", () => {

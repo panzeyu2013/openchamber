@@ -12,7 +12,7 @@ import { checkIsGitRepository } from '@/lib/gitApi';
 import { useDirectoryStore } from './useDirectoryStore';
 import { useProjectsStore } from './useProjectsStore';
 import { useSnippetsStore } from './useSnippetsStore';
-import { useGlobalSessionsStore } from './useGlobalSessionsStore';
+
 import { getMultiRunSessionTitle } from '@/lib/multirun/title';
 import { getSyncChildStores, getSyncOpencodeService, getSyncScopeKey, registerSessionDirectory } from '@/sync/sync-refs';
 import { workspaceIdFromScopeKey } from '@/workspaces/identity';
@@ -52,7 +52,6 @@ const registerCreatedSession = (session: Session, directory: string): Session =>
 
   registerSessionDirectory(session.id, normalizedDirectory);
   useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id);
-  useGlobalSessionsStore.getState().upsertSession(sessionWithDirectory);
 
   try {
     const store = getSyncChildStores().ensureChild(normalizedDirectory, { bootstrap: false });

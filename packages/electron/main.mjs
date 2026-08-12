@@ -5147,7 +5147,7 @@ const resolveTraySurface = () => {
   return null;
 };
 
-// Mirrors the renderer's normalizeRuntimeUrlKey (runtime-switch.ts): a bare
+// Mirrors the renderer's normalizeRuntimeUrlKey (lib/control-plane.ts): a bare
 // origin key with trailing slashes stripped, and 'local' for the local UI
 // origin. Used to derive a window's runtime identity from its API base when no
 // explicit runtimeKey was ever recorded.

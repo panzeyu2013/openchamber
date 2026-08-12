@@ -1,5 +1,5 @@
 import { normalizePath } from '@/lib/pathNormalization';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
 import { getPinnedSessionKey } from '@/stores/useSessionPinnedStore';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
 import type { SessionNode } from './types';
@@ -92,7 +92,7 @@ export const selectQuestionBadgeSessionScopes = (
 ): QuestionBadgeSessionScope[] => {
   const sessionIDsByDirectory = new Map<string, string[]>();
   const visit = (current: SessionNode): void => {
-    const directory = resolveGlobalSessionDirectory(current.session)
+    const directory = resolveSessionDirectory(current.session)
       ?? normalizePath(current.worktree?.path)
       ?? fallbackDirectory;
     if (directory) {

@@ -4,7 +4,6 @@ import type { McpStatus } from '@opencode-ai/sdk/v2';
 import type { OpencodeService } from '@/lib/opencode/client';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -41,7 +40,7 @@ const resolveMcpScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
 type McpTransport = Pick<OpencodeService, 'getApiClient' | 'getScopedApiClient'> & {

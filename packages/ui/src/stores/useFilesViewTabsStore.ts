@@ -2,7 +2,6 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -11,7 +10,7 @@ const resolveActiveWorkspaceScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 
 type RootTabsState = {
@@ -38,7 +37,6 @@ type FilesViewTabsActions = {
   collapseAllExpandedPaths: (root: string) => void;
   expandPath: (root: string, path: string) => void;
   expandPaths: (root: string, paths: string[]) => void;
-  resetForRuntimeSwitch: (runtimeKey: string) => void;
 };
 
 export type FilesViewTabsStore = FilesViewTabsState & FilesViewTabsActions;
@@ -188,22 +186,8 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
     persist(
       (set, get) => ({
         byRoot: {},
-        activeRuntimeKey: getRuntimeKey(),
+        activeRuntimeKey: '',
         runtimeSnapshots: {},
-
-        resetForRuntimeSwitch: (runtimeKey) => {
-          set((state) => {
-            const runtimeSnapshots = {
-              ...state.runtimeSnapshots,
-              [state.activeRuntimeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
-            };
-            return {
-              activeRuntimeKey: runtimeKey,
-              runtimeSnapshots,
-              byRoot: sanitizeByRoot(runtimeSnapshots[runtimeKey]?.byRoot),
-            };
-          });
-        },
 
         addOpenPath: (root, path, options) => {
           const normalizedRoot = normalizePath((root || '').trim());
@@ -588,7 +572,6 @@ const installScopeSubscription = (): void => {
     };
     useSessionUIStore?.subscribe?.(check);
     useWorkspaceSessionIndexStore?.subscribe?.(check);
-    subscribeRuntimeEndpointChanged(check);
   });
 };
 installScopeSubscription();

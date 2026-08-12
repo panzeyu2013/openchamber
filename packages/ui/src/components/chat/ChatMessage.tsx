@@ -32,7 +32,7 @@ import { areOptionalRenderRelevantMessagesEqual, areRenderRelevantMessagesEqual,
 import type { ReviewTransferDirection } from '@/lib/reviewFlow';
 import { toast } from 'sonner';
 import { useI18n } from '@/lib/i18n';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useSession } from '@/sync/sync-context';
 import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
 import { setContextObligatoryMessage } from '@/sync/session-actions';
 import { isVSCodeRuntime } from '@/lib/desktop';
@@ -406,11 +406,11 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         const timeInfo = message.info.time as { created?: number } | undefined;
         return typeof timeInfo?.created === 'number' ? timeInfo.created : null;
     }, [message.info.time]);
-    const isPinnedIntoContext = useGlobalSessionsStore((state) => {
-        const session = state.activeSessions.find((candidate) => candidate.id === sessionId)
-            ?? state.archivedSessions.find((candidate) => candidate.id === sessionId);
-        return getContextObligatoryMessages(session).some((entry) => entry.id === message.info.id);
-    });
+    const session = useSession(sessionId);
+    const isPinnedIntoContext = React.useMemo(
+        () => getContextObligatoryMessages(session).some((entry) => entry.id === message.info.id),
+        [message.info.id, session],
+    );
     const [pinPending, setPinPending] = React.useState(false);
     const handleToggleContextPin = React.useCallback(async () => {
         if (!sessionId || !messageCreatedAt || pinPending) return;

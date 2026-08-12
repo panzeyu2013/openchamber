@@ -10,7 +10,8 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessions } from '@/sync/sync-context';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
+import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
 import { useDeviceInfo } from '@/lib/device';
 import { checkIsGitRepository } from '@/lib/gitApi';
 import {
@@ -289,10 +290,8 @@ export const WorktreeSectionContent: React.FC<WorktreeSectionContentProps> = ({ 
 
     const directSessionIds = new Set(directSessions.map((s) => s.id));
 
-    const allKnownSessions = [
-      ...useGlobalSessionsStore.getState().activeSessions,
-      ...useGlobalSessionsStore.getState().archivedSessions,
-    ];
+    const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+    const allKnownSessions = selectSessionsForConnection(snapshot, 'local').map(sessionFromSummary);
 
     const findSubsessions = (parentIds: Set<string>): Session[] => {
       const subsessions = allKnownSessions.filter((session) => {

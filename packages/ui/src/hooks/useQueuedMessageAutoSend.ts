@@ -7,7 +7,6 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { parseAgentMentions } from '@/lib/messages/agentMentions';
 import { getDirectoryState } from '@/sync/sync-refs';
 import { useDirectorySync, useSyncDirectory } from '@/sync/sync-context';
-import { getRuntimeKey } from '@/lib/runtime-switch';
 
 type SessionStatusType = 'idle' | 'busy' | 'retry';
 
@@ -327,14 +326,11 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     queueEntries.forEach(([key, queue]) => {
       const target = parseMessageQueueKey(key);
       // Scope guard: the queued target must belong to the session's current
-      // scope (workspace scope for workspace sessions, ambient runtime key
-      // otherwise — byte-identical legacy behavior). A capture on the current
-      // runtime key stays valid when the session gained a workspace binding
-      // after queueing; any other mismatch means the runtime or workspace
-      // changed.
+      // The capture must match the session's resolved scope (workspace scope
+      // for workspace sessions, the unscoped bucket otherwise). Any mismatch
+      // means the workspace changed after queueing.
       if (!target || (
         target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory, currentWorkspaceId)
-        && target.scopeKey !== getRuntimeKey()
       ) || target.directory !== currentDirectory) return;
       const { sessionId } = target;
       const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);

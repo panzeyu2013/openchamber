@@ -74,6 +74,13 @@ export interface WorkspaceSessionSummary {
   updatedAt: number;
   archived: boolean;
   activity?: 'idle' | 'busy' | 'waiting';
+  /** Parent session (subagent delegation) of the upstream session, when the
+   * server reports one. Kept so sidebar trees can group child sessions
+   * without holding full Session objects. */
+  parentID?: string | null;
+  /** Upstream `time.created` (epoch ms). Ordering baselines freeze on
+   * creation time for pinned sessions, so summaries must carry it. */
+  createdAt: number;
 }
 
 export interface SourceFreshness {

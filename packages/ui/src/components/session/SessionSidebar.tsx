@@ -85,13 +85,8 @@ import {
   useSessionOrderingStore,
 } from '@/sync/session-ordering';
 import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
-import {
-  refreshGlobalSessions,
-  refreshGlobalSessionsForDirectories,
-  getSessionStructuralSignature,
-  resolveGlobalSessionDirectory,
-  useGlobalSessionsStore,
-} from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
+import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useNotificationStore } from '@/sync/notification-store';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
@@ -143,7 +138,7 @@ const isKnownActiveSessionDirectory = (
   options?: { allowUnknownDirectory?: boolean; allowEmptyDirectorySet?: boolean },
 ): boolean => {
   if (session.time?.archived) return true;
-  const directory = normalizePath(resolveGlobalSessionDirectory(session))?.toLowerCase();
+  const directory = normalizePath(resolveSessionDirectory(session))?.toLowerCase();
   if (!directory) return options?.allowUnknownDirectory ?? true;
   if (knownDirectories.size === 0) return options?.allowEmptyDirectorySet ?? true;
   return knownDirectories.has(directory);
@@ -504,16 +499,29 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   const liveSessionIndex = getAllSyncSessionMap();
   const liveSessions = React.useMemo(() => Array.from(liveSessionIndex.values()), [liveSessionIndex]);
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
-  const hasAuthoritativeGlobalSessions = useGlobalSessionsStore((state) => state.status === 'ready');
-  const activeSessionStructure = useGlobalSessionsStore(useShallow(
-    (state) => state.activeSessions.map(getSessionStructuralSignature).sort(),
-  ));
-  const archivedSessionStructure = useGlobalSessionsStore(useShallow(
-    (state) => state.archivedSessions.map(getSessionStructuralSignature).sort(),
-  ));
-  const globalSessionSnapshot = useGlobalSessionsStore.getState();
-  const globalActiveSessions = globalSessionSnapshot.activeSessions;
-  const archivedSessions = globalSessionSnapshot.archivedSessions;
+  // The Session Index is the sidebar's cold-session authority: summaries for
+  // the local connection projected into the Session shape the tree renders,
+  // merged with the live child-store sessions below. The index store is
+  // clone-on-write, so the snapshot reference doubles as the structural
+  // change signal for render-source attribution.
+  const sessionIndexSnapshot = useWorkspaceSessionIndexStore(useShallow((state) => state.snapshot));
+  const hasAuthoritativeGlobalSessions = useWorkspaceSessionIndexStore((state) => state.status === 'ready');
+  const activeSessionStructure = React.useMemo(
+    () => sessionIndexSnapshot?.sessions.filter((s) => !s.archived).map((s) => s.upstreamSessionId).sort().join('|') ?? '',
+    [sessionIndexSnapshot],
+  );
+  const archivedSessionStructure = React.useMemo(
+    () => sessionIndexSnapshot?.sessions.filter((s) => s.archived).map((s) => s.upstreamSessionId).sort().join('|') ?? '',
+    [sessionIndexSnapshot],
+  );
+  const globalActiveSessions = React.useMemo(
+    () => selectSessionsForConnection(sessionIndexSnapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
+    [sessionIndexSnapshot],
+  );
+  const archivedSessions = React.useMemo(
+    () => selectSessionsForConnection(sessionIndexSnapshot, 'local').filter((s) => s.archived).map(sessionFromSummary),
+    [sessionIndexSnapshot],
+  );
   const liveFallbackCacheRef = React.useRef<{ signature: string; sessions: Session[] }>({
     signature: '',
     sessions: [],
@@ -524,7 +532,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
   );
   const liveFallbackSessions = (() => {
     const candidates = liveSessions.filter((session) => !globalActiveSessionIds.has(session.id));
-    const signature = candidates.map(getSessionStructuralSignature).sort().join('\n');
+    const signature = candidates.map((session) => session.id).sort().join('\n');
     if (liveFallbackCacheRef.current.signature === signature) {
       return liveFallbackCacheRef.current.sessions;
     }
@@ -592,11 +600,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     [archivedSessions, globalActiveSessions],
   );
 
-  const syncSessionsSnapshotRef = React.useRef<Session[]>(liveSessions);
-  React.useEffect(() => {
-    syncSessionsSnapshotRef.current = liveSessions;
-  }, [liveSessions]);
-
   const scopeKey = getSyncScopeKey();
   const projectWorktreeDiscoveryKey = React.useMemo(
     () => `${scopeKey}|${projects
@@ -621,7 +624,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       return;
     }
     initialGlobalSessionsRefreshStartedRef.current = true;
-    void refreshGlobalSessions(syncSessionsSnapshotRef.current);
+    void useWorkspaceSessionIndexStore.getState().refresh();
   }, [activeWorkspaceId]);
 
   React.useEffect(() => {
@@ -735,16 +738,9 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       }
       refreshTimeout = setTimeout(() => {
         refreshTimeout = null;
-        if (needsGlobalRefresh) {
-          needsGlobalRefresh = false;
+        if (needsGlobalRefresh || sessionDirectories.size > 0) {
           sessionDirectories.clear();
-          void refreshGlobalSessions(syncSessionsSnapshotRef.current);
-          return;
-        }
-        const directories = [...sessionDirectories];
-        sessionDirectories.clear();
-        if (directories.length > 0) {
-          void refreshGlobalSessionsForDirectories(directories, syncSessionsSnapshotRef.current);
+          void useWorkspaceSessionIndexStore.getState().refresh();
         }
       }, 500);
     });
@@ -1147,7 +1143,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     knownProjectSessionDirectoriesRef.current = nextDirectories;
     if (!previousDirectories) {
       if (isVSCode && projectSessionDirectories.length > 0) {
-        void refreshGlobalSessionsForDirectories(projectSessionDirectories, syncSessionsSnapshotRef.current);
+        void useWorkspaceSessionIndexStore.getState().refresh();
       }
       return;
     }
@@ -1157,7 +1153,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
       return;
     }
 
-    void refreshGlobalSessionsForDirectories(addedDirectories, syncSessionsSnapshotRef.current);
+    void useWorkspaceSessionIndexStore.getState().refresh();
   }, [activeWorkspaceId, isVSCode, projectSessionDirectories]);
 
   const { github } = useRuntimeAPIs();
@@ -1770,7 +1766,6 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
     [
       hasSessionSearchQuery,
       normalizedSessionSearchQuery,
-      workspaceCatalogEnabled,
       groupSearchDataByGroup,
       visibleSessionCountByGroup,
       collapsedGroups,
@@ -1828,7 +1823,7 @@ const SessionSidebarComponent: React.FC<SessionSidebarProps> = ({
         ) : null}
       </>
     ),
-    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, normalizedSessionSearchQuery, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection],
+    [activitySections, editingId, hasSessionSearchQuery, isDesktopShellRuntime, isVSCode, normalizedSessionSearchQuery, openSidebarMenuKey, recentExpandedParents, renderSessionNode, showRecentSection, workspaceCatalogEnabled],
   );
   const isInlineEditing = Boolean(renamingFolderId || editingId || editingProjectDialogId);
 

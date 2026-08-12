@@ -37,7 +37,6 @@ import { clearActionRefs, setActionRefs } from "./session-actions"
 import { clearSyncRefs, setSyncRefs, getAllSyncSessions, getSyncOpencodeService, getSyncSdk } from "./sync-refs"
 import { useSessionUIStore } from "./session-ui-store"
 import { stripSessionDiffSnapshots } from "./sanitize"
-import { applySessionEventToGlobalSessions } from "./session-event-router"
 import { syncDebug } from "./debug"
 import { getReconnectCandidateSessionIds, mergeBootstrapSessions } from "./reconnect-recovery"
 import { opencodeClient } from "@/lib/opencode/client"
@@ -67,12 +66,11 @@ import {
 import { openSessionFromToast } from "./session-navigation"
 import { getPermissionToastKey, showPermissionNeededToast } from "./permission-toast"
 import { getRuntimeLiveStatusSeed, LIVE_STATUS_TTL_MS } from "./runtime-live-memory"
-import { getRuntimeKey } from "@/lib/runtime-switch"
+import { getControlPlaneKey } from "@/lib/control-plane"
 import { workspaceIdFromScopeKey } from "@/workspaces/identity"
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { isFilesystemError } from "@/lib/api/files-errors"
 import { listGlobalSessionPages } from "@/stores/globalSessions"
-import { useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { areRequestArraysReferentiallyEqual, collectScopedBlockingRequests } from "./scoped-blocking-requests"
 import { EMPTY_USER_MESSAGE_HISTORY_SNAPSHOT, buildUserMessageHistorySnapshot, type UserMessageHistorySnapshot } from "./user-message-history"
 import { cleanupPersistedSessionState, resolveSessionDeletionIdentity } from "./session-deletion-cleanup"
@@ -91,8 +89,7 @@ import {
 type SyncSystem = {
   childStores: ChildStoreManager
   messageLoader: SessionMessageLoader
-  /** Sync scope: workspace scope key in workspace mode, ambient runtime key
-   * otherwise (byte-identical to `getRuntimeKey()` in non-workspace mode). */
+  /** Sync scope: the workspace scope key of the mounted workspace handle. */
   scopeKey: string
   sdk: OpencodeClient
   directory: string
@@ -289,7 +286,6 @@ function haveEquivalentSyncSnapshots(left: unknown, right: unknown): boolean {
 
 type PendingSessionMaterialization = {
   scopeKey: string
-  isWorkspaceScoped: boolean
   sessionID: string
   directory: string
   enqueuedAt: number
@@ -306,13 +302,10 @@ type PendingSessionMaterialization = {
 const SESSION_MATERIALIZATION_COOLDOWN_MS = 5_000
 const pendingSessionMaterializations = new Map<string, PendingSessionMaterialization>()
 
-const resolveFallbackSdk = (scopeKey: string): OpencodeClient | null => {
-  const boundSdk = getSyncSdk()
-  if (boundSdk) return boundSdk
+const resolveFallbackSdk = (): OpencodeClient | null => {
   // A workspace scope must never borrow the process-wide SDK while its
-  // provider is between unmount and mount. Legacy runtime scopes retain the
-  // compatibility fallback for non-workspace surfaces.
-  return workspaceIdFromScopeKey(scopeKey) ? null : opencodeClient.getSdkClient?.() ?? null
+  // provider is between unmount and mount.
+  return getSyncSdk()
 }
 
 function enqueueSessionMaterialization(
@@ -320,10 +313,9 @@ function enqueueSessionMaterialization(
   sessionID: string,
   childStores: ChildStoreManager,
   request: SessionMaterializationRequest,
-  scopeKey = getRuntimeKey(),
+  scopeKey: string,
 ) {
   if (!directory || directory === "global" || !sessionID) return
-  const isWorkspaceScoped = workspaceIdFromScopeKey(scopeKey) !== null
   const k = getSessionMaterializationRequestKey(scopeKey, directory, sessionID)
   const existing = pendingSessionMaterializations.get(k)
   if (existing && Date.now() - existing.enqueuedAt < SESSION_MATERIALIZATION_COOLDOWN_MS) {
@@ -334,11 +326,10 @@ function enqueueSessionMaterialization(
 
   const loader = getImperativeSessionMessageLoader()
   if (!loader) return
-  const sdk = resolveFallbackSdk(scopeKey)
+  const sdk = resolveFallbackSdk()
   if (!sdk) return
   const pending: PendingSessionMaterialization = {
     scopeKey,
-    isWorkspaceScoped,
     sessionID,
     directory,
     enqueuedAt: Date.now(),
@@ -359,11 +350,7 @@ function enqueueSessionMaterialization(
   }
 
   const run = async () => {
-    if (
-      (pending.isWorkspaceScoped
-        ? getImperativeSessionMessageLoader() !== pending.loader
-        : pending.scopeKey !== getRuntimeKey())
-    ) {
+    if (getImperativeSessionMessageLoader() !== pending.loader) {
       if (pendingSessionMaterializations.get(k) === pending) {
         pendingSessionMaterializations.delete(k)
       }
@@ -386,10 +373,10 @@ function enqueueSessionMaterialization(
         directory,
         sessionID,
         store,
+        pending.scopeKey,
         request,
         pending.loader,
         pending.sdk,
-        pending.scopeKey,
       )
     } catch {
       // Transient failure — next SSE event or reconnect will catch up.
@@ -418,10 +405,10 @@ async function materializeSessionFromServer(
   directory: string,
   sessionID: string,
   store: StoreApi<DirectoryStore>,
+  capturedScopeKey: string,
   options?: SessionMaterializationRequest & { isStale?: () => boolean },
   capturedLoader?: SessionMessageLoader,
   capturedSdk?: OpencodeClient,
-  capturedScopeKey = getRuntimeKey(),
 ) {
   const statusBeforeMaterialization = store.getState().session_status?.[sessionID]
   syncDebug.recovery.materializing({
@@ -444,7 +431,7 @@ async function materializeSessionFromServer(
       store,
       [sessionID],
       "authoritative",
-      capturedSdk ?? resolveFallbackSdk(capturedScopeKey),
+      capturedSdk ?? resolveFallbackSdk(),
       capturedScopeKey,
     )
   }
@@ -507,7 +494,7 @@ const asOptionalString = (value: unknown): string | undefined => {
 const handleUiNotificationEvent = (
   payload: Event,
   fallbackDirectory: string,
-  scopeKey = getRuntimeKey(),
+  scopeKey: string,
 ): boolean => {
   if ((payload as { type?: unknown }).type !== "openchamber:notification") {
     return false
@@ -525,7 +512,7 @@ const handleUiNotificationEvent = (
   if (
     (notification.desktopNotificationDelivered === true || notification.desktopStdoutActive === true)
     && !notificationWorkspaceId
-    && getRuntimeKey() === "local"
+    && getControlPlaneKey() === "local"
   ) {
     return true
   }
@@ -714,9 +701,9 @@ async function resyncDirectorySessionStatuses(
   candidateSessionIds: string[],
   mode: StatusSnapshotMode,
   sdk: OpencodeClient | null | undefined,
-  scopeKey = getRuntimeKey(),
+  scopeKey: string,
 ): Promise<DirectorySessionStatusSnapshot | null> {
-  const resolvedSdk = sdk ?? resolveFallbackSdk(scopeKey)
+  const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) return null
   const nextStatuses = await getDirectorySessionStatuses(resolvedSdk, directory)
   // null = fetch failed; preserve existing state. {} or populated = a snapshot
@@ -1283,14 +1270,10 @@ const updateRoutingIndexFromEvent = (
 async function listPendingQuestionsFor(
   sdk: OpencodeClient | undefined,
   directories: string[],
-  scopeKey = getRuntimeKey(),
 ): Promise<QuestionRequest[]> {
-  const resolvedSdk = sdk ?? resolveFallbackSdk(scopeKey)
+  const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) {
-    if (workspaceIdFromScopeKey(scopeKey)) {
-      throw new Error("Workspace SDK is unavailable for question recovery")
-    }
-    return opencodeClient.listPendingQuestions({ directories })
+    throw new Error("Workspace SDK is unavailable for question recovery")
   }
   const results = await Promise.all([null, ...directories].map(async (directory) => {
     const result = await resolvedSdk.question.list(directory ? { directory } : undefined)
@@ -1316,14 +1299,10 @@ async function listPendingQuestionsFor(
 async function listPendingPermissionsFor(
   sdk: OpencodeClient | undefined,
   directories: string[],
-  scopeKey = getRuntimeKey(),
 ): Promise<PermissionRequest[]> {
-  const resolvedSdk = sdk ?? resolveFallbackSdk(scopeKey)
+  const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) {
-    if (workspaceIdFromScopeKey(scopeKey)) {
-      throw new Error("Workspace SDK is unavailable for permission recovery")
-    }
-    return opencodeClient.listPendingPermissions({ directories })
+    throw new Error("Workspace SDK is unavailable for permission recovery")
   }
   const results = await Promise.all([null, ...directories].map(async (directory) => {
     const result = await resolvedSdk.permission.list(directory ? { directory } : undefined)
@@ -1347,9 +1326,9 @@ async function listPendingPermissionsFor(
 export async function resyncBlockingRequestsForDirectory(
   directory: string,
   store: StoreApi<DirectoryStore>,
+  scopeKey: string,
   candidateSessionIds?: string[],
   sdk?: OpencodeClient,
-  scopeKey = getRuntimeKey(),
 ) {
   const before = store.getState()
   const knownSessionIds = new Set<string>([
@@ -1368,7 +1347,7 @@ export async function resyncBlockingRequestsForDirectory(
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.question[sessionId])]),
     )
-    const pendingQuestions = await listPendingQuestionsFor(sdk, [directory], scopeKey)
+    const pendingQuestions = await listPendingQuestionsFor(sdk, [directory])
     const grouped: Record<string, QuestionRequest[]> = {}
     for (const q of pendingQuestions) {
       if (!q?.id || !q.sessionID) continue
@@ -1427,7 +1406,7 @@ export async function resyncBlockingRequestsForDirectory(
     const beforeSignatures = new Map(
       candidates.map((sessionId) => [sessionId, requestSignature(before.permission[sessionId])]),
     )
-    const pendingPermissions = await listPendingPermissionsFor(sdk, [directory], scopeKey)
+    const pendingPermissions = await listPendingPermissionsFor(sdk, [directory])
     const grouped: Record<string, PermissionRequest[]> = {}
     for (const permission of pendingPermissions) {
       if (!permission?.id || !permission.sessionID) continue
@@ -1502,9 +1481,9 @@ async function resyncDirectoryAfterReconnect(
   routingIndex: EventRoutingIndex,
   reason: SessionMaterializationReason,
   sdk: OpencodeClient | undefined,
-  scopeKey = getRuntimeKey(),
+  scopeKey: string,
 ) {
-  const resolvedSdk = sdk ?? resolveFallbackSdk(scopeKey)
+  const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) return
   const current = store.getState()
   const candidateSessionIds = getActiveSessionCandidateIds(directory, current)
@@ -1561,7 +1540,7 @@ async function resyncDirectoryAfterReconnect(
     setIndexedSessionMessages(routingIndex, sessionId, directory, store.getState().message[sessionId] ?? [])
   }))
 
-  await resyncBlockingRequestsForDirectory(directory, store, candidateSessionIds, resolvedSdk, scopeKey)
+  await resyncBlockingRequestsForDirectory(directory, store, scopeKey, candidateSessionIds, resolvedSdk)
 
   ingestDirectoryStateIntoRoutingIndex(routingIndex, directory, store.getState())
 }
@@ -1595,14 +1574,11 @@ export function handleEvent(
   if (payload.type === "session.deleted") {
     const sessionID = getSessionIdFromPayload(payload)
     if (sessionID && directory && directory !== "global") {
-      // Scope-aware deletion cleanup: workspace-scoped identities always
-      // commit (their keys are collision-free per workspace); ambient
-      // identities still reject a stale runtime, exactly like the old guard.
-      const identity = resolveSessionDeletionIdentity(sessionID, directory, expectedScopeKey, expectedScopeKey)
-      const currentScope = workspaceIdFromScopeKey(expectedScopeKey) ? expectedScopeKey : getRuntimeKey()
-      if (identity.runtimeKey === currentScope) {
-        cleanupPersistedSessionState(identity)
-      }
+      // Scope-aware deletion cleanup: every mounted sync scope is a workspace
+      // scope, whose composite keys are collision-free per workspace, so the
+      // identity always commits (there is no ambient runtime to guard).
+      const identity = resolveSessionDeletionIdentity(sessionID, directory, expectedScopeKey)
+      cleanupPersistedSessionState(identity)
     }
   }
 
@@ -1610,11 +1586,11 @@ export function handleEvent(
     return
   }
 
-  applySessionEventToGlobalSessions(payload, expectedScopeKey)
-  // Keep the cross-project status map current for ALL directories (mirrors the
-  // global-session handling above). Child stores remain the primary source for
-  // synced directories; this map covers sessions a child store doesn't list
-  // (unopened directories, or list/status races for just-created sessions).
+  // Keep the cross-project status map current for ALL directories. Child
+  // stores remain the primary source for synced directories; this map covers
+  // sessions a child store doesn't list (unopened directories, or
+  // list/status races for just-created sessions). Session list membership
+  // itself is owned by the server-side Session Index, not mirrored here.
   applyGlobalSessionStatusEvent(directory, payload, expectedScopeKey)
 
   // Global events
@@ -1699,10 +1675,8 @@ export function handleEvent(
       const completePermissionCheck = (accepted: boolean) => {
         if (eventKey && pendingVSCodePermissionEvents.get(eventKey) !== eventToken) return
         if (eventKey) pendingVSCodePermissionEvents.delete(eventKey)
-        // Ambient-scoped permission events only complete while their runtime
-        // is still active; workspace-scoped events always complete (the keys
-        // are collision-free per workspace).
-        if (!workspaceIdFromScopeKey(expectedScopeKey) && expectedScopeKey !== getRuntimeKey()) return
+        // Workspace-scoped keys are collision-free per workspace, so the
+        // completion always commits.
         if (!accepted) handleEvent(rawDirectory, payload, childStores, routingIndex, expectedScopeKey, true, streamingDirectory)
       }
       void processVSCodePermissionAutoAccept(permission, resolvedDirectory).then(
@@ -2075,16 +2049,15 @@ const dispatchOpenCodeUpdateAvailable = (payload: { version: string }) => {
 }
 
 export function SyncProvider(props: {
-  sdk: OpencodeClient
-  directory: string
-  /** Optional workspace-bound handle: when present, the sync runs against the
-   * handle's workspace-scoped SDK and directory (the CURRENT control plane
-   * through the workspace runtime proxy), so opening a workspace session
-   * never touches the global runtime endpoint and never reads another
-   * workspace's state. The SDK identity changes per workspace, which forces
-   * the message loader to rebuild — stale in-flight responses from a previous
-   * workspace cannot land in the new one. */
-  workspaceHandle?: import('@/workspaces/workspace-runtime-registry').WorkspaceRuntimeHandle | null
+  /** Workspace-bound handle: the sync runs against the handle's
+   * workspace-scoped SDK and directory (the CURRENT control plane through the
+   * workspace runtime proxy), keyed by the handle's workspace scope key. There
+   * is no ambient fallback: mounting sync without a workspace handle is a
+   * programming error, and callers that cannot resolve a handle must render
+   * an explicit unavailable state instead. The SDK identity changes per
+   * workspace, which forces the message loader to rebuild — stale in-flight
+   * responses from a previous workspace cannot land in the new one. */
+  workspaceHandle: import('@/workspaces/workspace-runtime-registry').WorkspaceRuntimeHandle
   children: React.ReactNode
 }) {
   // Capacitor apps were previously locked to SSE because Android WebSocket
@@ -2094,34 +2067,23 @@ export function SyncProvider(props: {
   // 403. With the origin allowlisted, mobile uses the same transport
   // selection as everywhere else ('auto' falls back to SSE on WS failure).
   const messageStreamTransport = useConfigStore((state) => state.settingsMessageStreamTransport)
-  const boundSdk = props.workspaceHandle?.sdk ?? props.sdk
-  const boundService = props.workspaceHandle?.service ?? opencodeClient
-  const boundDirectory = props.workspaceHandle?.directory ?? props.directory
-  // Sync scope: the workspace scope key when a workspace-bound handle is
-  // active, the ambient runtime key otherwise (byte-identical keys in
-  // non-workspace mode, so existing persisted data stays readable).
-  //
-  // The ambient fallback is retained deliberately: not every SyncProvider
-  // entry point carries a workspace. VSCodeApp.tsx mounts SyncProvider with
-  // no workspaceHandle, and the legacy non-workspace paths in App.tsx
-  // (WorkspaceSyncMount / EmbeddedSessionChatRuntime), ElectronMiniChatApp
-  // and MobileApp pass workspaceHandle={null} to keep the ambient runtime
-  // scope. Every workspace-targeted entry point passes the handle's explicit
-  // scope key (plan §12.2); the fallback only serves genuinely non-workspace
-  // surfaces, where it is byte-identical to the ambient runtime key.
-  const scopeKey = props.workspaceHandle?.scopeKey ?? getRuntimeKey()
+  const boundSdk = props.workspaceHandle.sdk
+  const boundService = props.workspaceHandle.service
+  const boundDirectory = props.workspaceHandle.directory
+  // Sync scope: the workspace scope key of the bound handle. Every cache keyed
+  // by it (persisted storage, prefetch cache, loader entries, child-store
+  // identities) is isolated per workspace: equal directory paths and equal
+  // session IDs on different workspaces never share state.
+  const scopeKey = props.workspaceHandle.scopeKey
 
-  // The legacy full-session facade is now partitioned by the same explicit
-  // scope as SyncProvider. Bind it before child effects (sidebar refreshes,
-  // event routing, and session actions) can issue a load, so switching
-  // workspaces preserves the prior partition instead of clearing or
-  // overwriting it.
+  // Bind the scope-partitioned sync stores before child effects can issue a
+  // load, so switching workspaces preserves the prior partition instead of
+  // clearing or overwriting it.
   React.useLayoutEffect(() => {
-    useGlobalSessionsStore.getState().bindScope(scopeKey, boundSdk)
     useGlobalSessionStatusStore.getState().bindScope(scopeKey)
     useSessionOrderingStore.getState().bindScope(scopeKey)
     useSessionActivityTimingStore.getState().bindScope(scopeKey)
-  }, [boundSdk, scopeKey])
+  }, [scopeKey])
 
   const childStoresRef = useRef<ChildStoreManager | null>(null)
   if (!childStoresRef.current) childStoresRef.current = new ChildStoreManager(scopeKey)
@@ -2367,7 +2329,7 @@ export function SyncProvider(props: {
     const pipeline = createEventPipeline({
       sdk: boundSdk,
       transport: messageStreamTransport,
-      forceSse: Boolean(props.workspaceHandle),
+      forceSse: true,
       routeDirectory: (directory, payload) => {
         return resolveDirectoryFromRoutingIndex(routingIndex, directory, payload, childStores)
       },
@@ -2446,7 +2408,7 @@ export function SyncProvider(props: {
       }
       pipeline.cleanup()
     }
-  }, [boundSdk, childStores, props.workspaceHandle, routingIndex, messageStreamTransport, scopeKey, triggerDirectoryResync])
+  }, [boundSdk, childStores, routingIndex, messageStreamTransport, scopeKey, triggerDirectoryResync])
 
   useEffect(() => {
     let stopped = false
@@ -2741,9 +2703,9 @@ export function useSessionMessageLoadState(sessionID: string, directory?: string
   )
 }
 
-/** The active sync scope (workspace scope key, or the ambient runtime key in
- * non-workspace mode). Consumers keying caches by sync identity must use this
- * instead of `getRuntimeKey()` so equal session IDs/directories in different
+/** The active sync scope (the mounted workspace handle's scope key).
+ * Consumers keying caches by sync identity must use this
+ * instead of `getControlPlaneKey()` so equal session IDs/directories in different
  * workspaces never share state. */
 export function useSyncScopeKey(): string {
   return useSyncSystem().scopeKey
@@ -3544,10 +3506,10 @@ export function useEnsureSessionMessages(sessionID: string, directory?: string, 
           resolvedDirectory,
           sessionID,
           store,
+          scopeKey,
           { reason: "ensure-session-messages", isStale },
           undefined,
           sdk,
-          scopeKey,
         )
       } catch {
         // Transient failure — next navigation or reconnect will retry

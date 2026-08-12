@@ -3,7 +3,6 @@ import { devtools, persist, createJSONStorage } from 'zustand/middleware';
 import type { PersistStorage } from 'zustand/middleware';
 
 import { getSafeSessionStorage } from '@/stores/utils/safeStorage';
-import { getRuntimeKey, subscribeRuntimeEndpointChanged } from '@/lib/runtime-switch';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
 import { workspaceScopeKey } from '@/workspaces/identity';
@@ -14,7 +13,7 @@ const resolveTerminalScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
   const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
   const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : getRuntimeKey();
+  return workspaceId ? workspaceScopeKey(workspaceId) : '';
 };
 const initialTerminalScopeKey = resolveTerminalScopeKey();
 
@@ -106,7 +105,6 @@ interface TerminalStore {
   removeProjectActionRun: (runKey: string) => void;
 
   removeDirectory: (directory: string) => void;
-  resetForRuntimeSwitch: () => void;
   clearAll: () => void;
 }
 
@@ -786,39 +784,6 @@ export const useTerminalStore = create<TerminalStore>()(
           });
         },
 
-        resetForRuntimeSwitch: () => {
-          const nextScopeKey = resolveTerminalScopeKey();
-          set((state) => {
-            const sessionsByScope = { ...state.sessionsByScope };
-            const buffersByScope = { ...state.buffersByScope };
-            const projectActionRunsByScope = { ...state.projectActionRunsByScope };
-
-            if (state.scopeKey === nextScopeKey) {
-              delete sessionsByScope[nextScopeKey];
-              delete buffersByScope[nextScopeKey];
-              delete projectActionRunsByScope[nextScopeKey];
-            } else {
-              sessionsByScope[state.scopeKey] = state.sessions;
-              buffersByScope[state.scopeKey] = state.buffers;
-              projectActionRunsByScope[state.scopeKey] = state.projectActionRuns;
-              delete sessionsByScope[nextScopeKey];
-              delete buffersByScope[nextScopeKey];
-              delete projectActionRunsByScope[nextScopeKey];
-            }
-
-            return {
-              scopeKey: nextScopeKey,
-              sessions: new Map(),
-              sessionsByScope,
-              buffers: new Map(),
-              buffersByScope,
-              projectActionRuns: {},
-              projectActionRunsByScope,
-              nextChunkId: 1,
-            };
-          });
-        },
-
         clearAll: () => {
           set({
             scopeKey: resolveTerminalScopeKey(),
@@ -1012,7 +977,6 @@ const installTerminalScopeSubscription = (): void => {
     };
     useSessionUIStore?.subscribe?.(check);
     useWorkspaceSessionIndexStore?.subscribe?.(check);
-    subscribeRuntimeEndpointChanged(check);
   });
 };
 installTerminalScopeSubscription();

@@ -13,7 +13,7 @@ import { useGlobalSessionStatus } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useSwitcherItems, type SwitcherItem } from '@/components/session/sidebar/hooks/useSwitcherItems';
 import { useUIStore } from '@/stores/useUIStore';
-import { resolveGlobalSessionDirectory } from '@/stores/useGlobalSessionsStore';
+import { resolveSessionDirectory } from '@/lib/sessionDirectory';
 import { formatSessionCompactDateLabel } from './sidebar/utils';
 import type { SessionNode } from './sidebar/types';
 import { useI18n } from '@/lib/i18n';
@@ -216,7 +216,7 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
       closeDropdown();
       return;
     }
-    const directory = resolveGlobalSessionDirectory(session);
+    const directory = resolveSessionDirectory(session);
     setCurrentSession(session.id, directory ?? null, activeWorkspaceId);
     closeDropdown();
   }, [activeWorkspaceId, closeDropdown, isActive, session, setCurrentSession]);
