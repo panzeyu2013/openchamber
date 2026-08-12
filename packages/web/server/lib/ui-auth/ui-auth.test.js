@@ -259,6 +259,8 @@ describe('ui auth client credential seam', () => {
     // surfaces may only hold a token)...
     for (const tokenPath of [
       '/api/workspaces',
+      '/api/workspaces/capabilities',
+      '/api/workspaces/diagnostics',
       `/api/workspaces/${'ws-1'}/children?path=%2Ftmp`,
       '/api/connections',
     ]) {

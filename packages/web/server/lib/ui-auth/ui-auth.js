@@ -305,6 +305,8 @@ const isUrlAuthReadableHttpPath = (pathname) => {
     // Workspace catalog read paths: GET-only, no secrets in responses, and
     // used by mini-chat/tray surfaces that may only hold a URL token.
     || pathname === '/api/workspaces'
+    || pathname === '/api/workspaces/capabilities'
+    || pathname === '/api/workspaces/diagnostics'
     || /^\/api\/workspaces\/[^/]+\/children$/.test(pathname)
     || pathname === '/api/connections'
     || pathname === '/api/workspace-sessions/snapshot'

@@ -35,12 +35,14 @@ Pairing v2 is implemented by `packages/web/server/lib/client-auth/pairing.js`. I
 Short-lived URL tokens (`oc_url_`, minted via `POST /auth/url-token`) are
 capability-scoped: GET-only (plus allowlisted WebSocket upgrades) on a fixed
 path allowlist. The workspace catalog read paths are token-readable
-(`/api/workspaces`, `/api/workspaces/:id/children`, `/api/connections`,
-`/api/workspace-sessions/snapshot`, `/api/workspace-sessions/events`) so
-mini-chat/tray surfaces that may only hold a token can render the unified
-tree. Read-only workspace runtime SDK/Files/Git/permission/question/event
-paths are also token-readable for cookie-less mobile/tray HTTP and SSE
-clients; runtime mutations and control-plane namespaces remain excluded.
+(`/api/workspaces`, `/api/workspaces/capabilities`,
+`/api/workspaces/diagnostics`, `/api/workspaces/:id/children`,
+`/api/connections`, `/api/workspace-sessions/snapshot`,
+`/api/workspace-sessions/events`) so mini-chat/tray surfaces that may only
+hold a token can render the unified tree. Read-only workspace runtime
+SDK/Files/Git/permission/question/event paths are also token-readable for
+cookie-less mobile/tray HTTP and SSE clients; runtime mutations and
+control-plane namespaces remain excluded.
 Catalog and session-index MUTATIONS are never token-usable; the security tests
 in `ui-auth.test.js` pin both sides of that contract.
 WebSocket upgrades are token-readable only on the socket allowlist
