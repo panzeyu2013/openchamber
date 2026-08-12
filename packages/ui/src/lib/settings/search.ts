@@ -568,7 +568,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'remote-instances',
     titleKey: 'settings.remoteInstances.clientAuth.title',
     descriptionKey: 'settings.remoteInstances.clientAuth.description',
-    keywords: ['pairing link', 'client token', 'connect desktop', 'remote access', 'relay', 'devices', 'connect from anywhere'],
+    keywords: ['pairing link', 'client token', 'connect desktop', 'remote access', 'server', 'server connections', 'relay', 'devices', 'connect from anywhere'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
@@ -576,7 +576,7 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'remote-instances',
     titleKey: 'settings.remoteInstances.direct.title',
     descriptionKey: 'settings.remoteInstances.direct.description',
-    keywords: ['server url', 'connection token', 'import link', 'host switcher', 'additional headers', 'request headers', 'cloudflare access', 'service token'],
+    keywords: ['server url', 'connection token', 'import link', 'host switcher', 'additional headers', 'request headers', 'cloudflare access', 'service token', 'server', 'server connections', 'connection profiles'],
     isAvailable: (ctx) => ctx.isDesktop,
   },
   {

@@ -75,10 +75,10 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
   },
   {
     slug: 'remote-instances',
-    title: 'Remote Instances',
+    title: 'Servers',
     group: 'projects',
     kind: 'single',
-    keywords: ['ssh', 'remote', 'instances', 'tunnels', 'forwarding', 'connection'],
+    keywords: ['server', 'servers', 'server connections', 'connection', 'connection profiles', 'ssh', 'remote', 'instances', 'tunnels', 'forwarding'],
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
