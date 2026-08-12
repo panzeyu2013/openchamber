@@ -126,5 +126,6 @@ Rendering, focus, keyboard behavior, IME and WKWebView are **not covered by
 tests** and are verified by hand. Do not report a change to them as validated
 on the strength of type-check and unit tests.
 
-Run tests per file (`bun test <path>`): `mock.module` is process-global, so
-suites that install module mocks are order-dependent.
+Run tests via `bun test --isolate` (the ui package `test` script; `--isolate`
+runs each file in a fresh global object so mocked modules and stubbed globals
+cannot leak across files).

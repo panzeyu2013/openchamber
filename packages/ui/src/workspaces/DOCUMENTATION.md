@@ -225,8 +225,11 @@ Session-scoped stores key exclusively on explicit workspace scope keys
 The shared resolver is `resolveSessionScopeKey` in
 `packages/ui/src/sync/selection-store.ts`.
 
-Scope-ized (workspace scope only; legacy ambient dual-reads and
-`resetForRuntimeSwitch` were removed):
+Scope-ized (writes are workspace-scope only; legacy ambient dual-reads and
+`resetForRuntimeSwitch` were removed, with two intentional compatibility
+reads kept: selection-store's in-memory legacy maps for bare session-ID
+version-1 data, and session-ui-store's one-time promotion of the unscoped
+draft-target key):
 
 - `sync/selection-store.ts` (per-session model/agent/variant selections)
 - `sync/viewport-store.ts` (scroll/memory state)

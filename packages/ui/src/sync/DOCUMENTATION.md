@@ -95,8 +95,9 @@ Wiring (all in `sync-context.tsx`):
 - `ChildStoreManager` is constructed and configured with the scope key;
   `child-store.ts` keys its children by `scopeKey\nnormalizedDirectory`
   composite keys and every manager method accepts an explicit `scopeKey`
-  (defaulting to the manager's own scope — the ambient runtime key in
-  non-workspace mode). Consumers iterating child stores must use
+  (defaulting to the manager's own scope — always the bound workspace scope
+  key in the current product, since mounting sync without a workspace handle
+  is a programming error). Consumers iterating child stores must use
   `manager.entries()` (real directories), never the raw `children` map.
 - `SessionMessageLoader` is configured with `{ sdk, scopeKey }`; entry keys,
   `invalidateDirectory` and prefetch keys use it, and its
@@ -214,7 +215,7 @@ Starts are persisted so a reload resumes the same count, but a persisted start i
 
 That leaves the case with no observable answer: a turn that ended, and another that began, entirely while the tab was gone. Two bounds stand in for the evidence the client cannot have. A liveness stamp sits beside the start — refreshed while the session is observed active, at most every 15s, and stamped precisely as the page hides (`pagehide`/`visibilitychange`/`freeze`, written immediately rather than through deferred storage so it cannot lose that race) — and is compared against this page's `performance.timeOrigin`, so the measure is how long the app was absent rather than how long bootstrap took; a 20-second startup must not spend the allowance. Records may only be adopted within 90s of load, after which they are discarded — a backstop for a runtime whose event stream is down and where snapshots are therefore the only signal. A runtime switch resets the currently active compatibility scope, while other workspace timing partitions remain isolated.
 
-Reconciliation walks the running turns and asks the snapshot whether it covers each one, rather than being handed everything the snapshot covers. Only a live start can settle, and there are a handful of those against a directory's hundreds of sessions, so the pass stays proportional to the timing work and allocates nothing per poll. Malformed, wrong-shaped, over-age, and future-dated entries are rejected on read. Legacy ambient records remain readable during migration. New workspace records use a serialized `[scopeKey, sessionId]` storage key, while the initial ambient scope keeps the old bare-session key for compatibility; a workspace never claims an ambiguous legacy record.
+Reconciliation walks the running turns and asks the snapshot whether it covers each one, rather than being handed everything the snapshot covers. Only a live start can settle, and there are a handful of those against a directory's hundreds of sessions, so the pass stays proportional to the timing work and allocates nothing per poll. Malformed, wrong-shaped, over-age, and future-dated entries are rejected on read. Workspace records use a serialized `[scopeKey, sessionId]` storage key; pre-scope bare-session keys are no longer read (retired together with the ambient sync-scope fallback) and are only skipped as undecodable during persist.
 
 **Only the stamp expires a persisted start.** A snapshot that covers a session without reporting it busy is not proof the turn ended: bootstrap fetches status and sessions in parallel and directory scopes resolve at different times, so a snapshot legitimately arrives before it can see a running session. Treating one of those as a settle deleted the start moments before the real busy snapshot arrived, which reset every counter to zero on reload. Settles therefore act only on sessions that already have a live start in this page session.
 

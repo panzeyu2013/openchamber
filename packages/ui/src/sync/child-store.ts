@@ -253,8 +253,9 @@ type ManualBootstrapDemand = {
  * Composite child-store identity: (scopeKey, normalized directory). Two
  * workspaces sharing a directory path therefore never collide in the children
  * map, bootstrap scheduler, pins, or lifecycle state, even if one manager
- * were ever shared across scopes. In non-workspace mode the scopeKey is the
- * ambient runtime key, so entries are isolated per runtime exactly as before.
+ * were ever shared across scopes. The scopeKey is the bound workspace scope
+ * key (the current product always mounts sync with a workspace handle), so
+ * entries are isolated per runtime exactly as before.
  */
 const compositeChildKey = (scopeKey: string, directory: string): string => `${scopeKey}\n${directory}`
 
@@ -303,14 +304,14 @@ function createDirectoryStore(scopeKey: string, directory: string): StoreApi<Dir
 }
 
 export class ChildStoreManager {
-  /** Children keyed by `scopeKey\nnormalizedDirectory` (see
+  /** Children keyed by `scopeKey\normalizedDirectory` (see
    * `compositeChildKey`), so equal directory paths across workspaces stay
    * isolated. One manager instance serves one scope by default; every method
    * also accepts an explicit `scopeKey` (defaulting to the manager's own
-   * scope, which is the ambient runtime key in non-workspace mode). */
+   * scope, the bound workspace scope key). */
   readonly children = new Map<string, StoreApi<DirectoryStore>>()
-  /** Sync scope this manager belongs to: a workspace scope key, or the
-   * ambient runtime key in non-workspace mode. All persistence and prefetch
+  /** Sync scope this manager belongs to: the bound workspace scope key. All
+   * persistence and prefetch
    * work of the child stores is keyed by it, so equal directory paths across
    * workspaces stay isolated. One manager instance serves one scope. */
   scopeKey: string

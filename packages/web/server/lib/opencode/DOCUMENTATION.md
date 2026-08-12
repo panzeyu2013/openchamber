@@ -287,9 +287,12 @@ Transport-triggered health checks share the periodic monitor's failure accountin
   - `POST /api/config/reload` — applies accumulated deferred OpenCode config changes. Managed OpenCode restarts and returns `requiresReload: true`. External OpenCode returns `requiresManualRestart: true` (changes are already on disk; the connected server must be restarted outside OpenChamber).
 - `registerCommonRequestMiddleware(app, dependencies)`: registers shared request middleware stack:
   - conditional JSON body parser behavior for `/api/*` vs non-API requests. The
-    parsed-prefix allowlist includes the workspace catalog/connection/session
-    paths (`/api/workspaces`, `/api/connections`, `/api/workspace-sessions/*`)
-    so their JSON bodies are parsed before the routes see them.
+    parsed-prefix allowlist includes the workspace catalog and connection paths
+    (`/api/workspaces`, `/api/connections`) so their JSON bodies are parsed
+    before the routes see them; the workspace-session mutation routes live
+    under `/api/workspaces/:id/sessions*` (covered by the `/api/workspaces`
+    prefix), while `/api/workspace-sessions/*` carries only GET snapshot/SSE
+    reads that need no body parsing.
   - URL-encoded parser setup
   - request logging middleware
 

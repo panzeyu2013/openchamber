@@ -43,7 +43,7 @@ These stores coordinate visible app state, navigation, selected tabs, dialogs, a
 `useUIStore` keeps context-panel tabs path-keyed inside the active scope for
 compatibility with existing consumers. The active scope is
 `workspace:<workspaceId>` when the selected session resolves through the
-Workspace Session Index, otherwise the ambient runtime key. Workspace/runtime
+Workspace Session Index, otherwise the unscoped bucket (`''`). Workspace/runtime
 switches move the current directory map into a bounded set of scope snapshots
 and activate only the target snapshot; legacy `ui-store` data without a scope
 key is read as the old runtime bucket during migration.
@@ -76,9 +76,8 @@ stores. New code must not add runtime/path-scoped persistence for workspace
 or session identity — use workspace scope keys from
 `packages/ui/src/workspaces/identity.ts`.
 
-`useConfigStore`'s persisted worktree-to-project lookup follows the current
-SyncProvider scope when one exists, with the ambient runtime key retained for
-legacy bootstrap/VS Code mounts. Provider/agent reads capture that same scope
+`useConfigStore`'s persisted worktree-to-project lookup is keyed by the
+current sync scope (`getSyncScopeKey() || 'default'`). Provider/agent reads capture that same scope
 and bound `OpencodeService`; workspace roots may load directly even when they
 are not present in the legacy project tree, and late results are discarded
 after a scope switch. OpenChamber settings and provider/agent CRUD remain on
@@ -172,7 +171,8 @@ scoped structure.
 
 Scope resolution is centralized in `resolveSessionScopeKey(sessionId, directory?)`
 (`packages/ui/src/sync/selection-store.ts`), which reads the workspace session
-index and falls back to the ambient runtime key. Twin-cleanup on deletion
+index and falls back to the unscoped bucket (`''`) for sessions the index does
+not map. Twin-cleanup on deletion
 identities is gated on the explicit key being the current runtime key, so a
 stale or foreign scope never clears another owner's data. The session folders
 store's inner scope key remains the caller-provided directory string

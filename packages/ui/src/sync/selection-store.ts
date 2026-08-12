@@ -3,10 +3,9 @@
  * Extracted from session-ui-store for subscription isolation.
  *
  * Keys are session-scoped: a session that belongs to a workspace is keyed by
- * `${workspaceScopeKey(workspaceId)}\n${sessionId}`, while legacy
- * (non-workspace) sessions fall back to the ambient runtime key, so the
- * persisted/in-memory key is byte-identical to the pre-migration format in
- * non-workspace mode. Persisted version 1 data (bare session IDs) is kept
+ * `${workspaceScopeKey(workspaceId)}\n${sessionId}`, while unassigned
+ * (non-workspace) sessions fall back to the unscoped bucket (`''`). Persisted
+ * version 1 data (bare session IDs) is kept
  * readable through in-memory legacy maps until a scoped write replaces it.
  */
 
