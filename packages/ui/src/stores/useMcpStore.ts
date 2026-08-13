@@ -5,9 +5,9 @@ import type { OpencodeService } from '@/lib/opencode/client';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export type McpStatusMap = Record<string, McpStatus>;
 type McpRuntimeDiagnostic = {
@@ -38,9 +38,9 @@ const toKey = (directory: string | null | undefined): string => normalizeDirecto
 
 const resolveMcpScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 
 type McpTransport = Pick<OpencodeService, 'getApiClient' | 'getScopedApiClient'> & {
@@ -67,13 +67,13 @@ const getMcpApiClient = (directory: string | null | undefined, service: McpTrans
 };
 
 const getDefaultMcpDirectory = (service?: McpTransport): string | null => {
-  if (!isWorkspaceRuntimeActive()) {
+  if (!isProjectRuntimeActive()) {
     return useDirectoryStore.getState().currentDirectory;
   }
 
   // MCP status/actions are already SDK-backed, but an omitted directory used
   // to fall back to the legacy DirectoryStore. Prefer the mounted service's
-  // directory so same-path workspaces cannot borrow one another's state.
+  // directory so same-path projects cannot borrow one another's state.
   return service?.getDirectory?.() ?? getSyncOpencodeService().getDirectory() ?? null;
 };
 

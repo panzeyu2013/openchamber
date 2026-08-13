@@ -21,24 +21,24 @@ afterEach(() => {
   clearSyncRefs()
 })
 
-describe("workspace-bound sync refs", () => {
+describe("project-bound sync refs", () => {
   test("binds the service, SDK, and scope together", () => {
-    setSyncRefs(sdkA, childStoresA, "/repo", undefined, serviceA, "workspace:ws-a")
+    setSyncRefs(sdkA, childStoresA, "/repo", undefined, serviceA, "project:ws-a")
 
     expect(getSyncSdk()).toBe(sdkA)
     expect(getSyncOpencodeService()).toBe(serviceA)
-    expect(getSyncScopeKey()).toBe("workspace:ws-a")
+    expect(getSyncScopeKey()).toBe("project:ws-a")
   })
 
-  test("an old provider cleanup cannot clear refs owned by a newer workspace", () => {
-    setSyncRefs(sdkA, childStoresA, "/repo", undefined, serviceA, "workspace:ws-a")
-    setSyncRefs(sdkB, childStoresB, "/repo", undefined, serviceB, "workspace:ws-b")
+  test("an old provider cleanup cannot clear refs owned by a newer project", () => {
+    setSyncRefs(sdkA, childStoresA, "/repo", undefined, serviceA, "project:ws-a")
+    setSyncRefs(sdkB, childStoresB, "/repo", undefined, serviceB, "project:ws-b")
 
     clearSyncRefs(sdkA, childStoresA)
 
     expect(getSyncSdk()).toBe(sdkB)
     expect(getSyncOpencodeService()).toBe(serviceB)
-    expect(getSyncScopeKey()).toBe("workspace:ws-b")
+    expect(getSyncScopeKey()).toBe("project:ws-b")
 
     clearSyncRefs(sdkB, childStoresB)
     expect(getSyncSdk()).toBeNull()

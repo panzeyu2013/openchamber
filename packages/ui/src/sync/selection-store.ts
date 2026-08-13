@@ -2,9 +2,9 @@
  * Selection Store — per-session model, agent, and variant selections.
  * Extracted from session-ui-store for subscription isolation.
  *
- * Keys are session-scoped: a session that belongs to a workspace is keyed by
- * `${workspaceScopeKey(workspaceId)}\n${sessionId}`, while unassigned
- * (non-workspace) sessions fall back to the unscoped bucket (`''`). Persisted
+ * Keys are session-scoped: a session that belongs to a project is keyed by
+ * `${projectScopeKey(projectId)}\n${sessionId}`, while unassigned
+ * (non-project) sessions fall back to the unscoped bucket (`''`). Persisted
  * version 1 data (bare session IDs) is kept
  * readable through in-memory legacy maps until a scoped write replaces it.
  */
@@ -12,28 +12,41 @@
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 import { createDeferredSafeJSONStorage } from "@/stores/utils/safeStorage"
-import { workspaceScopeKey } from "@/workspaces/identity"
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from "@/workspaces/session-index-store"
+import { LEGACY_WORKSPACE_SCOPE_PREFIX, PROJECT_SCOPE_PREFIX, projectIdFromScopeKey, projectScopeKey } from "@/projects/identity"
+import { resolveActiveProjectId, useProjectSessionIndexStore } from "@/projects/session-index-store"
+import { getActiveSyncScopeKey } from "./active-scope"
 
 /**
- * Resolves the scope key for a session: the workspace scope when the session
- * index maps (sessionId, directory) to a workspace. A caller that already has
- * the authoritative workspace target may pass `workspaceId` to avoid ambiguity
+ * Resolves the scope key for a session: the project scope when the session
+ * index maps (sessionId, directory) to a project. A caller that already has
+ * the authoritative project target may pass `projectId` to avoid ambiguity
  * when two connections expose the same upstream session ID and directory.
- * Sessions the index does not map (unassigned) have no sync scope and key
- * their state under the empty string.
+ * The currently mounted project scope is the tie-breaker: with no directory
+ * the index matches the first entry (arbitrary under ID collisions), and a
+ * freshly created session is not indexed yet — in both cases the mounted
+ * scope is the only authoritative signal. Sessions the index does not map
+ * (unassigned) have no sync scope and key their state under the empty string.
  */
 export const resolveSessionScopeKey = (
   sessionId: string | null | undefined,
   directory?: string | null,
-  workspaceId?: string | null,
+  projectId?: string | null,
 ): string => {
-  const explicitWorkspaceId = typeof workspaceId === 'string' ? workspaceId.trim() : ''
-  if (explicitWorkspaceId) return workspaceScopeKey(explicitWorkspaceId)
-  const snapshot = useWorkspaceSessionIndexStore.getState().snapshot
+  const explicitProjectId = typeof projectId === 'string' ? projectId.trim() : ''
+  if (explicitProjectId) return projectScopeKey(explicitProjectId)
+  const mountedScopeKey = getActiveSyncScopeKey()
+  const mountedProjectId = projectIdFromScopeKey(mountedScopeKey)
+  const snapshot = useProjectSessionIndexStore.getState().snapshot
   const sessions = snapshot?.sessions
-  const inferredWorkspaceId = resolveActiveWorkspaceId(sessions, sessionId ?? null, directory ?? null)
-  return inferredWorkspaceId ? workspaceScopeKey(inferredWorkspaceId) : ''
+  const inferredProjectId = resolveActiveProjectId(sessions, sessionId ?? null, directory ?? null)
+  if (inferredProjectId && inferredProjectId !== mountedProjectId && directory) {
+    // The index disambiguated by directory and points away from the mounted
+    // project: trust it.
+    return projectScopeKey(inferredProjectId)
+  }
+  if (mountedProjectId) return mountedScopeKey
+  if (inferredProjectId) return projectScopeKey(inferredProjectId)
+  return ''
 }
 
 type ModelSelection = { providerId: string; modelId: string }
@@ -70,6 +83,19 @@ const isPersistedSelectionState = (state: unknown): state is PersistedSelectionS
  * only when a scope separator is present. Scoped keys contain '\n', bare
  * (legacy) session IDs never do. */
 const selectionKeyFor = (scopeKey: string, sessionId: string): string => `${scopeKey}\n${sessionId}`
+
+/** P-MIG: rewrites a persisted scoped selection key written with the legacy
+ * `workspace:` scope prefix to the current `project:` prefix so pre-rename
+ * persisted selections stay readable. Bare session IDs pass through. */
+const normalizePersistedSelectionKey = (key: string): string => {
+  const separator = key.indexOf('\n')
+  if (separator <= 0) return key
+  const scopeKey = key.slice(0, separator)
+  if (!scopeKey.startsWith(LEGACY_WORKSPACE_SCOPE_PREFIX)) return key
+  const projectId = scopeKey.slice(LEGACY_WORKSPACE_SCOPE_PREFIX.length)
+  if (!projectId) return key
+  return `${PROJECT_SCOPE_PREFIX}${projectId}${key.slice(separator)}`
+}
 
 const sessionSelectionKey = (sessionId: string): string =>
   selectionKeyFor(resolveSessionScopeKey(sessionId), sessionId)
@@ -189,7 +215,7 @@ export const useSelectionStore = create<SelectionState>()(
     }),
     {
       name: "selection-store",
-      version: 2,
+      version: 3,
       storage: createDeferredSafeJSONStorage(),
       partialize: (state) => {
         // Convert Maps to arrays and slice to keep only the most recent MAX_PERSISTED_SESSIONS
@@ -212,19 +238,22 @@ export const useSelectionStore = create<SelectionState>()(
         if (Array.isArray(persisted?.sessionAgentModelSelections)) {
           persisted.sessionAgentModelSelections.forEach(([sessionId, agentArray]) => {
             const agentMap = new Map(agentArray)
-            if (sessionId.includes("\n")) agentModelSelections.set(sessionId, agentMap)
-            else legacySessionAgentModelSelections.set(sessionId, agentMap)
+            const normalized = normalizePersistedSelectionKey(sessionId)
+            if (normalized.includes("\n")) agentModelSelections.set(normalized, agentMap)
+            else legacySessionAgentModelSelections.set(normalized, agentMap)
           })
         }
         const modelSelections = new Map<string, ModelSelection>()
         for (const [sessionId, value] of persisted?.sessionModelSelections ?? []) {
-          if (sessionId.includes("\n")) modelSelections.set(sessionId, value)
-          else legacySessionModelSelections.set(sessionId, value)
+          const normalized = normalizePersistedSelectionKey(sessionId)
+          if (normalized.includes("\n")) modelSelections.set(normalized, value)
+          else legacySessionModelSelections.set(normalized, value)
         }
         const agentSelections = new Map<string, string>()
         for (const [sessionId, agentName] of persisted?.sessionAgentSelections ?? []) {
-          if (sessionId.includes("\n")) agentSelections.set(sessionId, agentName)
-          else legacySessionAgentSelections.set(sessionId, agentName)
+          const normalized = normalizePersistedSelectionKey(sessionId)
+          if (normalized.includes("\n")) agentSelections.set(normalized, agentName)
+          else legacySessionAgentSelections.set(normalized, agentName)
         }
 
         return {
@@ -236,9 +265,10 @@ export const useSelectionStore = create<SelectionState>()(
         }
       },
       migrate: (persistedState: unknown) => {
-        // Version 1 (bare session ID keys) and version 2 (scoped keys) are
-        // both handled by merge; the version bump only documents the key
-        // change.
+        // Version 1 (bare session ID keys), version 2 (scoped keys) and
+        // version 3 (project-scoped keys) are all handled by merge; the
+        // version bumps only document the key changes (v3 also normalizes
+        // `workspace:`-prefixed scoped keys to `project:` in merge).
         return persistedState
       }
     }

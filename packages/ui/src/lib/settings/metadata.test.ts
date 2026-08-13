@@ -29,15 +29,23 @@ const settingsDictionaries = {
 } as const;
 
 describe('settings metadata', () => {
-  test('the servers page keeps the renamed title and server keywords', () => {
+  test('the remote-instances page keeps the renamed title and server keywords', () => {
     const meta = SETTINGS_PAGE_METADATA.find((entry) => entry.slug === 'remote-instances');
     expect(meta).toBeDefined();
-    expect(meta?.title).toBe('Servers');
+    expect(meta?.title).toBe('Remote instances');
     const keywords = meta?.keywords ?? [];
     expect(keywords.join(' ')).toContain('server');
   });
 
-  test('every locale translates the servers page title', () => {
+  test('the legacy remote-instances page is hidden from the nav but stays routable', () => {
+    const meta = SETTINGS_PAGE_METADATA.find((entry) => entry.slug === 'remote-instances');
+    expect(meta?.hiddenInNav).toBe(true);
+    const navEntries = SETTINGS_PAGE_METADATA.filter((entry) => !entry.hiddenInNav);
+    expect(navEntries.some((entry) => entry.slug === 'remote-instances')).toBe(false);
+    expect(navEntries.some((entry) => entry.slug === 'servers')).toBe(true);
+  });
+
+  test('every locale translates the remote-instances page title', () => {
     for (const [locale, dictionary] of Object.entries(settingsDictionaries)) {
       const pageTitle = dictionary['settings.page.remoteInstances.title'];
       const sidebarTitle = dictionary['settings.remoteInstances.sidebar.title'];
@@ -45,7 +53,7 @@ describe('settings metadata', () => {
       expect(pageTitle).not.toBe('Remote Instances');
       expect(sidebarTitle).toBeTruthy();
       expect(sidebarTitle).not.toBe('Remote Instances');
-      expect(`${locale} has a servers page title`).toBeTruthy();
+      expect(`${locale} has a remote-instances page title`).toBeTruthy();
     }
   });
 });

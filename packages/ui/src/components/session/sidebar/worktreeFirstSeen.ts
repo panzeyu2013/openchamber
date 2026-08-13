@@ -5,7 +5,7 @@ import { normalizePath } from './utils';
 // this app run: a worktree created mid-session sorts to the top of its
 // project's empty-worktree tail, while everything discovered at startup ties
 // (same tick) and falls back to alphabetical order. The scope is part of the
-// key because two workspace connections may expose the same path.
+// key because two project connections may expose the same path.
 const firstSeenAtByScopePath = new Map<string, number>();
 
 const makeKey = (scopeKey: string, path: string): string => `${scopeKey}\u0000${path}`;

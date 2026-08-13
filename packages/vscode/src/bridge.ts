@@ -6,7 +6,7 @@ import { handleFsBridgeMessage } from './bridge-fs-runtime';
 import { handleConfigBridgeMessage } from './bridge-config-runtime';
 import { handleSystemBridgeMessage } from './bridge-system-runtime';
 import { handleProxyBridgeMessage } from './bridge-proxy-runtime';
-import { fetchControlPlaneCatalogWorkspaces, handleWorkspaceBridgeMessage } from './bridge-workspace-runtime';
+import { fetchControlPlaneCatalogProjects, handleProjectBridgeMessage } from './bridge-project-runtime';
 import { handlePermissionAutoAcceptBridgeMessage } from './bridge-permission-auto-accept-runtime';
 import {
   fetchOpenCodeSkillsFromApi,
@@ -176,7 +176,7 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
       return proxyResponse;
     }
 
-    const workspaceResponse = await handleWorkspaceBridgeMessage(
+    const projectResponse = await handleProjectBridgeMessage(
       { id, type, payload },
       {
         readWorkspaceFolders: () => resolveWorkspaceFolders(vscode.workspace.workspaceFolders ?? []),
@@ -185,14 +185,14 @@ export async function handleBridgeMessage(message: BridgeRequest, ctx?: BridgeCo
         // opencode binary the extension spawns when the setting is empty is
         // NOT a control plane, so no origin makes the descriptor resolution
         // answer capability_unavailable without touching the network.
-        fetchCatalogWorkspaces: () => fetchControlPlaneCatalogWorkspaces({
+        fetchCatalogProjects: () => fetchControlPlaneCatalogProjects({
           origin: readConfiguredControlPlaneOrigin(),
           authHeaders: ctx?.manager?.getOpenCodeAuthHeaders(),
         }),
       },
     );
-    if (workspaceResponse) {
-      return workspaceResponse;
+    if (projectResponse) {
+      return projectResponse;
     }
 
     switch (type) {

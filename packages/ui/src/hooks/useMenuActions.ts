@@ -11,7 +11,7 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { createWorktreeSession } from '@/lib/worktreeSessionCreator';
 import { showOpenCodeStatus } from '@/lib/openCodeStatus';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 
 const getActiveElementSelectedText = (): string => {
@@ -73,7 +73,7 @@ type MenuAction =
   | 'quick-open'
   | 'new-session'
   | 'new-worktree-session'
-  | 'change-workspace'
+  | 'change-project'
   | 'toggle-right-sidebar'
   | 'open-right-sidebar-git'
   | 'open-right-sidebar-files'
@@ -98,7 +98,7 @@ type MenuAction =
 export const useMenuActions = (
   onToggleMemoryDebug?: () => void
 ) => {
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const effectiveDirectory = useEffectiveDirectory();
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const toggleCommandPalette = useUIStore((s) => s.toggleCommandPalette);
@@ -138,7 +138,7 @@ export const useMenuActions = (
       });
   }, [checkForUpdates]);
 
-  const handleChangeWorkspace = React.useCallback(() => {
+  const handleChangeProject = React.useCallback(() => {
     sessionEvents.requestDirectoryDialog();
   }, []);
 
@@ -157,8 +157,8 @@ export const useMenuActions = (
 
     setActiveMainTab('chat');
     setSessionSwitcherOpen(false);
-    useSessionUIStore.getState().setCurrentSession(nextSession.id, null, activeWorkspaceId);
-  }, [activeWorkspaceId, setActiveMainTab, setSessionSwitcherOpen]);
+    useSessionUIStore.getState().setCurrentSession(nextSession.id, null, activeProjectId);
+  }, [activeProjectId, setActiveMainTab, setSessionSwitcherOpen]);
 
   const navigateProject = React.useCallback((direction: -1 | 1) => {
     const { activeProjectId, projects, setActiveProject } = useProjectsStore.getState();
@@ -206,8 +206,8 @@ export const useMenuActions = (
           createWorktreeSession();
           break;
 
-        case 'change-workspace':
-          handleChangeWorkspace();
+        case 'change-project':
+          handleChangeProject();
           break;
 
         // Legacy right-sidebar menu items now target the context surfaces
@@ -297,12 +297,12 @@ export const useMenuActions = (
           break;
 
         case 'go-back':
-          if (activeWorkspaceId) break;
+          if (activeProjectId) break;
           useDirectoryStore.getState().goBack();
           break;
 
         case 'go-forward':
-          if (activeWorkspaceId) break;
+          if (activeProjectId) break;
           useDirectoryStore.getState().goForward();
           break;
 
@@ -335,8 +335,8 @@ export const useMenuActions = (
       }
     },
     [
-      handleChangeWorkspace,
-      activeWorkspaceId,
+      handleChangeProject,
+      activeProjectId,
       effectiveDirectory,
       navigateProject,
       navigateSession,

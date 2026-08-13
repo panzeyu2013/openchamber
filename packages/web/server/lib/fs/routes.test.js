@@ -317,7 +317,7 @@ describe('fs write', () => {
     expect(fsPromises.rename).not.toHaveBeenCalledWith(expect.any(String), '/repo/link.txt');
   });
 
-  it('rejects existing symlinks that resolve outside the workspace', async () => {
+  it('rejects existing symlinks that resolve outside the project', async () => {
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => {
         if (targetPath === '/repo/link.txt') return '/outside/target.txt';
@@ -341,7 +341,7 @@ describe('fs write', () => {
 });
 
 describe('fs read', () => {
-  it('rejects outside workspace reads without a grant', async () => {
+  it('rejects outside project reads without a grant', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const fsPromises = {
       stat: vi.fn(async () => ({ isFile: () => true, size: 3 })),
@@ -349,15 +349,15 @@ describe('fs read', () => {
     };
     const handler = registerRead(fsPromises);
 
-    const res = await callRead(handler, { path: '/etc/passwd', allowOutsideWorkspace: 'true' });
+    const res = await callRead(handler, { path: '/etc/passwd', allowOutsideProject: 'true' });
 
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: 'Outside workspace file access requires a grant' });
+    expect(res.body).toEqual({ error: 'Outside project file access requires a grant' });
     expect(fsPromises.readFile).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
-  it('allows outside workspace reads with an exact-path grant', async () => {
+  it('allows outside project reads with an exact-path grant', async () => {
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => targetPath),
       stat: vi.fn(async () => ({ isFile: () => true, size: 6 })),
@@ -372,7 +372,7 @@ describe('fs read', () => {
 
     const res = await callRead(handler, {
       path: '/outside/plan.txt',
-      allowOutsideWorkspace: 'true',
+      allowOutsideProject: 'true',
       outsideFileGrant: grant.outsideFileGrant,
     });
 
@@ -380,7 +380,7 @@ describe('fs read', () => {
     expect(res.body).toBe('secret');
   });
 
-  it('rejects outside workspace grants for a different canonical path', async () => {
+  it('rejects outside project grants for a different canonical path', async () => {
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => targetPath),
       stat: vi.fn(async () => ({ isFile: () => true, size: 6 })),
@@ -395,12 +395,12 @@ describe('fs read', () => {
 
     const res = await callRead(handler, {
       path: '/outside/b.txt',
-      allowOutsideWorkspace: 'true',
+      allowOutsideProject: 'true',
       outsideFileGrant: grant.outsideFileGrant,
     });
 
     expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ error: 'Outside workspace file grant does not match requested path' });
+    expect(res.body).toEqual({ error: 'Outside project file grant does not match requested path' });
     expect(fsPromises.readFile).not.toHaveBeenCalled();
   });
 
@@ -420,7 +420,7 @@ describe('fs read', () => {
 
     const res = await callRaw(handler, {
       path: '/outside/image.png',
-      allowOutsideWorkspace: 'true',
+      allowOutsideProject: 'true',
       outsideFileGrant: grant.outsideFileGrant,
     });
 
@@ -428,16 +428,16 @@ describe('fs read', () => {
     expect(res.getHeader('referrer-policy')).toBe('no-referrer');
   });
 
-  it('rejects outside workspace mkdir without a trusted directory grant', async () => {
+  it('rejects outside project mkdir without a trusted directory grant', async () => {
     const fsPromises = {
       mkdir: vi.fn(async () => undefined),
     };
     const handler = registerMkdir(fsPromises);
 
-    const res = await callMkdir(handler, { path: '/tmp/staging', allowOutsideWorkspace: true });
+    const res = await callMkdir(handler, { path: '/tmp/staging', allowOutsideProject: true });
 
     expect(res.statusCode).toBe(403);
-    expect(res.body).toEqual({ error: 'Outside workspace directory creation requires a grant' });
+    expect(res.body).toEqual({ error: 'Outside project directory creation requires a grant' });
     expect(fsPromises.mkdir).not.toHaveBeenCalled();
   });
 
@@ -549,7 +549,7 @@ describe('fs exec git-read cache', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it('rejects command execution outside the workspace', async () => {
+  it('rejects command execution outside the project', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { spawn } = createSpawn();
     const handler = registerExec({ spawn });
@@ -557,7 +557,7 @@ describe('fs exec git-read cache', () => {
     const res = await callExec(handler, { commands: ['id'], cwd: '/' });
 
     expect(res.statusCode).toBe(403);
-    expect(res.body).toEqual({ error: 'Path is outside of active workspace' });
+    expect(res.body).toEqual({ error: 'Path is outside of active project' });
     expect(spawn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
@@ -747,7 +747,7 @@ describe('fs list symlink path space (issue 2627)', () => {
       spawn: vi.fn(),
       crypto: { randomUUID: () => 'job-0' },
       normalizeDirectoryPath: (p) => p,
-      resolveProjectDirectory: async () => ({ directory: '/workspace' }),
+      resolveProjectDirectory: async () => ({ directory: '/project' }),
       buildAugmentedPath: () => '/usr/bin',
       resolveGitBinaryForSpawn: () => 'git',
       openchamberUserConfigRoot: '/home/user/.config',
@@ -778,28 +778,28 @@ describe('fs list symlink path space (issue 2627)', () => {
     ];
     const fsPromises = {
       realpath: vi.fn(async (targetPath) => (
-        targetPath === '/workspace/pkg' ? '/real/pkg' : targetPath
+        targetPath === '/project/pkg' ? '/real/pkg' : targetPath
       )),
       stat: vi.fn(async () => ({ isDirectory: () => true })),
       readdir: vi.fn(async () => dirents),
     };
     const handler = registerList(fsPromises);
 
-    const res = await callList(handler, { path: '/workspace/pkg' });
+    const res = await callList(handler, { path: '/project/pkg' });
 
     expect(res.statusCode).toBe(200);
-    expect(res.body.path).toBe('/workspace/pkg');
+    expect(res.body.path).toBe('/project/pkg');
     expect(res.body.entries).toEqual([
       {
         name: 'src',
-        path: '/workspace/pkg/src',
+        path: '/project/pkg/src',
         isDirectory: true,
         isFile: false,
         isSymbolicLink: false,
       },
       {
         name: 'README.md',
-        path: '/workspace/pkg/README.md',
+        path: '/project/pkg/README.md',
         isDirectory: false,
         isFile: true,
         isSymbolicLink: false,
@@ -816,7 +816,7 @@ describe('fs list symlink path space (issue 2627)', () => {
         readdir: vi.fn(async () => { throw error; }),
       });
 
-      const res = await callList(handler, { path: '/workspace/protected' });
+      const res = await callList(handler, { path: '/project/protected' });
 
       expect(res.statusCode).toBe(403);
       expect(res.body).toEqual({ error: 'Access to directory denied', reason: 'os-permission' });

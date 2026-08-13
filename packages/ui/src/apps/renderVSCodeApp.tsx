@@ -13,7 +13,7 @@ import { initializeLocale, I18nProvider } from '@/lib/i18n';
 import { initializeAppearancePreferences, syncDesktopSettings } from '@/lib/persistence';
 import { startModelPrefsAutoSave } from '@/lib/modelPrefsAutoSave';
 import { startTypographyWatcher } from '@/lib/typographyWatcher';
-import { VSCodeApp, type VSCodeWorkspaceDescriptorResult } from './VSCodeApp';
+import { VSCodeApp, type VSCodeProjectDescriptorResult } from './VSCodeApp';
 
 const initializeSharedPreferences = () => {
   initializeLocale();
@@ -36,7 +36,7 @@ const initializeSharedPreferences = () => {
 
 export function renderVSCodeApp(
   apis: RuntimeAPIs,
-  workspaceDescriptor: VSCodeWorkspaceDescriptorResult = { phase: 'loading' },
+  projectDescriptor: VSCodeProjectDescriptorResult = { phase: 'loading' },
 ) {
   initializeSharedPreferences();
 
@@ -51,7 +51,7 @@ export function renderVSCodeApp(
         <ThemeSystemProvider>
           <ThemeProvider>
             <SessionAuthGate>
-              <VSCodeApp apis={apis} workspaceDescriptor={workspaceDescriptor} />
+              <VSCodeApp apis={apis} projectDescriptor={projectDescriptor} />
             </SessionAuthGate>
           </ThemeProvider>
         </ThemeSystemProvider>

@@ -55,7 +55,7 @@ export interface QueuedMessage {
 }
 
 export type MessageQueueTarget = {
-    /** Workspace scope key for workspace sessions, ambient runtime key otherwise. */
+    /** Project scope key for project sessions, ambient runtime key otherwise. */
     scopeKey: string;
     directory: string;
     sessionId: string;

@@ -58,8 +58,8 @@ import { createSettingsNormalizationRuntime } from './lib/opencode/settings-norm
 import { createSettingsHelpers } from './lib/opencode/settings-helpers.js';
 import { createThemeRuntime } from './lib/opencode/theme-runtime.js';
 import { createFeatureRoutesRuntime } from './lib/opencode/feature-routes-runtime.js';
-import { createWorkspacesRuntime } from './lib/workspaces/index.js';
-import { handleWorkspaceUpgrade } from './lib/workspaces/runtime-proxy.js';
+import { createProjectsRuntime } from './lib/projects/index.js';
+import { handleProjectUpgrade } from './lib/projects/runtime-proxy.js';
 import { parseServeCliOptions } from './lib/opencode/cli-options.js';
 import {
   registerAuthAndAccessRoutes,
@@ -558,7 +558,7 @@ let openCodeBaseUrl = hmrState.openCodeBaseUrl ?? null;
 let isShuttingDown = hmrState.isShuttingDown;
 let signalsAttached = hmrState.signalsAttached;
 let openCodeWorkingDirectory = hmrState.openCodeWorkingDirectory;
-let workspacesRuntime = null;
+let projectsRuntime = null;
 
 const {
   configuredOpenCodePort: ENV_CONFIGURED_OPENCODE_PORT,
@@ -1483,28 +1483,35 @@ async function main(options = {}) {
   }));
   expressApp = app;
   server = http.createServer(app);
-  // Central workspace upgrade dispatcher. It owns every
-  // `/api/workspaces/:id/runtime...` WebSocket upgrade and leaves every other
+  // Central project upgrade dispatcher. It owns every
+  // `/api/projects/:id/runtime...` WebSocket upgrade and leaves every other
   // path untouched for the existing module upgrade listeners (terminal, event
   // stream, dictation, realtime proxy, preview), which registered later still
   // behave exactly as before. It is registered BEFORE those listeners so it
-  // runs first; module listeners that also match workspace-prefixed paths
+  // runs first; module listeners that also match project-prefixed paths
   // (the terminal runtime) skip requests the dispatcher marks as handled, so
-  // a workspace upgrade always has exactly one handler. The workspaces
+  // a project upgrade always has exactly one handler. The projects
   // runtime and auth controller are late-bound because they are created after
   // this point in startup.
   server.on('upgrade', (req, socket, head) => {
-    const runtime = workspacesRuntime;
+    const runtime = projectsRuntime;
     if (!runtime) return;
-    void handleWorkspaceUpgrade(req, socket, head, {
-      catalogStore: runtime.catalogStore,
-      connectionBroker: runtime.connectionBroker,
-      credentialProvider: options.workspaceCredentialProvider ?? null,
-      getUiAuthController: () => uiAuthController,
-      isRequestOriginAllowed,
-      rejectWebSocketUpgrade,
-      logger: null,
-    });
+    try {
+      void handleProjectUpgrade(req, socket, head, {
+        catalogStore: runtime.catalogStore,
+        connectionBroker: runtime.connectionBroker,
+        credentialProvider: options.workspaceCredentialProvider ?? null,
+        getUiAuthController: () => uiAuthController,
+        isRequestOriginAllowed,
+        rejectWebSocketUpgrade,
+        logger: null,
+      });
+    } catch (error) {
+      // A malformed upgrade request must never escape this listener: an
+      // uncaught exception here would hit the process-wide uncaughtException
+      // handler and shut the whole control plane down.
+      socket.destroy();
+    }
   });
   let realtimeProxyRuntime = { stop: () => {} };
 
@@ -1713,12 +1720,12 @@ async function main(options = {}) {
     permissionAutoAcceptRuntime,
   });
 
-  // Unified workspace catalog + connection broker. Registered after the base
+  // Unified project catalog + connection broker. Registered after the base
   // UI auth gate (feature routes above) and before the generic OpenCode /api/*
-  // proxy (inside startupPipelineRuntime.run below) so workspace routes are
+  // proxy (inside startupPipelineRuntime.run below) so project routes are
   // never captured by the proxy. Migration imports legacy local projects
   // without blocking startup.
-  workspacesRuntime = await createWorkspacesRuntime({
+  projectsRuntime = await createProjectsRuntime({
     fs,
     fsPromises,
     path,
@@ -1727,7 +1734,7 @@ async function main(options = {}) {
     normalizeDirectoryPath,
     buildOpenCodeUrl,
     getOpenCodeAuthHeaders,
-    // Optional privileged resolver for server-side Relay workspace profiles.
+    // Optional privileged resolver for server-side Relay project profiles.
     // It returns only private data to the adapter and is never exposed through
     // the Catalog API (credentialRef -> { relay, token, headers }).
     credentialProvider: options.workspaceCredentialProvider ?? null,
@@ -1735,15 +1742,15 @@ async function main(options = {}) {
     // tunnels). Web/headless servers never receive these.
     injectedAdapters: Array.isArray(options.workspaceConnectionAdapters) ? options.workspaceConnectionAdapters : [],
   });
-  workspacesRuntime.registerRoutes(app);
-  void workspacesRuntime.migrate().catch((error) => {
-    console.error('[workspaces] legacy migration failed:', error?.message ?? error);
+  projectsRuntime.registerRoutes(app);
+  void projectsRuntime.migrate().catch((error) => {
+    console.error('[projects] legacy migration failed:', error?.message ?? error);
   });
   // Session index: one snapshot pass + one event stream per saved connection.
   // Started after route registration so a fast client cannot race the
   // initial snapshot; failures are per-connection and non-fatal.
-  void workspacesRuntime.startSessionIndex().catch((error) => {
-    console.error('[workspaces] session index start failed:', error?.message ?? error);
+  void projectsRuntime.startSessionIndex().catch((error) => {
+    console.error('[projects] session index start failed:', error?.message ?? error);
   });
 
   const previewProxyRuntime = createPreviewProxyRuntime({
@@ -1848,6 +1855,13 @@ async function main(options = {}) {
     }),
     isReady: () => isOpenCodeReady,
     restartOpenCode: () => restartOpenCode(),
+    // Runtime registration of privileged connection adapters (Electron SSH):
+    // lets the native host attach/detach adapters for connections created or
+    // removed AFTER startup, so instances appear/disappear as catalog
+    // connections without restarting the server. Both forward to the
+    // projects runtime; unregistration preserves the saved profile.
+    registerWorkspaceConnectionAdapter: (adapter) => projectsRuntime.registerInjectedAdapter(adapter),
+    unregisterWorkspaceConnectionAdapter: (connectionId) => projectsRuntime.unregisterInjectedAdapter(connectionId),
     getOpenCodeProcessInfo: () => {
       const managed = Boolean((openCodeProcess || openCodePort) && !ENV_SKIP_OPENCODE_START && !isExternalOpenCode);
       // Only ever expose pid/port for a server WE manage. The Electron-side
@@ -1876,9 +1890,9 @@ async function main(options = {}) {
         // best-effort shutdown of the dictation worker
       }
       try {
-        void workspacesRuntime?.dispose?.();
+        void projectsRuntime?.dispose?.();
       } catch {
-        // best-effort teardown of the workspace connection broker
+        // best-effort teardown of the project connection broker
       }
       return gracefulShutdown({ exitProcess: shutdownOptions.exitProcess ?? false });
     }

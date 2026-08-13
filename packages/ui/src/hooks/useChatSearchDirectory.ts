@@ -4,8 +4,8 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
 import { getAttachedSessionDirectory } from '@/sync/session-worktree-contract';
 import { useSessions } from '@/sync/sync-context';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import type { Session } from '@opencode-ai/sdk/v2';
 
 export const useChatSearchDirectory = (): string | undefined => {
@@ -17,12 +17,12 @@ export const useChatSearchDirectory = (): string | undefined => {
   const worktreeMap = useSessionUIStore((state) => state.worktreeMetadata);
   const newSessionDraft = useSessionUIStore((state) => state.newSessionDraft);
 
-  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const legacyActiveProjectId = useProjectsStore((state) => state.activeProjectId);
   const projects = useProjectsStore((state) => state.projects);
 
   const fallbackDirectory = useDirectoryStore((state) => state.currentDirectory);
-  const { handle } = useWorkspaceRuntime();
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const { handle } = useProjectRuntime();
+  const activeProjectId = useActiveProjectId();
 
   if (currentSessionId) {
     const attachmentDirectory = getAttachedSessionDirectory(worktreeAttachment);
@@ -45,12 +45,12 @@ export const useChatSearchDirectory = (): string | undefined => {
     return (newSessionDraft.bootstrapPendingDirectory || newSessionDraft.directoryOverride) ?? undefined;
   }
 
-  if (activeWorkspaceId) {
+  if (activeProjectId) {
     return handle?.directory ?? undefined;
   }
 
-  if (activeProjectId) {
-    const activeProject = projects.find((project) => project.id === activeProjectId);
+  if (legacyActiveProjectId) {
+    const activeProject = projects.find((project) => project.id === legacyActiveProjectId);
     if (activeProject?.path) {
       return activeProject.path;
     }

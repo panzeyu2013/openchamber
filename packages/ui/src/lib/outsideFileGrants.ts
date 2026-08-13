@@ -48,10 +48,10 @@ const rememberOutsideFileGrant = (
 
 export const ensureOutsideFileGrantForDesktop = async (
   path: string,
-  workspaceRoot: string,
+  projectRoot: string,
 ): Promise<string | undefined> => {
   const normalizedPath = normalizeFilePath(path);
-  if (!normalizedPath || !workspaceRoot || isFilePathWithinDirectory(normalizedPath, workspaceRoot)) {
+  if (!normalizedPath || !projectRoot || isFilePathWithinDirectory(normalizedPath, projectRoot)) {
     return undefined;
   }
 

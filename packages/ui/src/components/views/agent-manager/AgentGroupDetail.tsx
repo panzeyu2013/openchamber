@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Icon } from "@/components/icon/Icon";
 import { useI18n } from '@/lib/i18n';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 interface AgentGroupDetailProps {
   group: AgentGroup;
@@ -53,7 +53,7 @@ export const AgentGroupDetail: React.FC<AgentGroupDetailProps> = ({
   const selectSession = useAgentGroupsStore((s) => s.selectSession);
   const deleteGroupSessions = useAgentGroupsStore((s) => s.deleteGroupSessions);
   const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
   const [worktreeDialog, setWorktreeDialog] = React.useState<null | { kind: 'remove' | 'keepOnly'; path: string; label: string }>(null);
   const [isProcessing, setIsProcessing] = React.useState(false);
@@ -65,8 +65,8 @@ export const AgentGroupDetail: React.FC<AgentGroupDetailProps> = ({
 
   const handleSessionSelect = React.useCallback((session: AgentGroupSession) => {
     selectSession(session.id);
-    setCurrentSession(session.id, session.path, activeWorkspaceId);
-  }, [activeWorkspaceId, selectSession, setCurrentSession]);
+    setCurrentSession(session.id, session.path, activeProjectId);
+  }, [activeProjectId, selectSession, setCurrentSession]);
 
   // Auto-select first session when group changes and sync OpenCode session
   React.useEffect(() => {
@@ -77,14 +77,14 @@ export const AgentGroupDetail: React.FC<AgentGroupDetailProps> = ({
 
         if (session) {
           if (session.id !== currentSessionId) {
-            setCurrentSession(session.id, session.path, activeWorkspaceId);
+            setCurrentSession(session.id, session.path, activeProjectId);
           }
           if (!selectedSessionId) {
             selectSession(session.id);
         }
       }
     }
-  }, [activeWorkspaceId, group.name, group.sessions, selectedSessionId, currentSessionId, selectSession, setCurrentSession]);
+  }, [activeProjectId, group.name, group.sessions, selectedSessionId, currentSessionId, selectSession, setCurrentSession]);
 
   const isSessionSynced = selectedSession?.id === currentSessionId;
 

@@ -104,15 +104,15 @@ const buildEmbeddedSessionChatURLSignature = (
   sessionID: string,
   directory: string | null,
   readOnly: boolean,
-  workspaceId: string | null,
-): string => JSON.stringify({ sessionID, directory: directory || '', readOnly: readOnly === true, workspaceId: workspaceId || '' });
+  projectId: string | null,
+): string => JSON.stringify({ sessionID, directory: directory || '', readOnly: readOnly === true, projectId: projectId || '' });
 
 export const buildEmbeddedSessionChatURL = (
   sessionID: string,
   directory: string | null,
   readOnly: boolean,
   theme: EmbeddedSessionChatThemeBootstrap,
-  workspaceId?: string | null,
+  projectId?: string | null,
 ): string => {
   if (typeof window === 'undefined') {
     return '';
@@ -122,10 +122,10 @@ export const buildEmbeddedSessionChatURL = (
   url.searchParams.set('ocPanel', 'session-chat');
   url.searchParams.set('surface', 'desktop');
   url.searchParams.set('sessionId', sessionID);
-  if (workspaceId && workspaceId.trim().length > 0) {
-    url.searchParams.set('workspace', workspaceId);
+  if (projectId && projectId.trim().length > 0) {
+    url.searchParams.set('project', projectId);
   } else {
-    url.searchParams.delete('workspace');
+    url.searchParams.delete('project');
   }
   if (readOnly) {
     url.searchParams.set('readOnly', '1');
@@ -153,15 +153,15 @@ export const getOrCreateEmbeddedSessionChatURL = (
   directory: string | null,
   readOnly: boolean,
   theme: EmbeddedSessionChatThemeBootstrap,
-  workspaceId?: string | null,
+  projectId?: string | null,
 ): string => {
-  const signature = buildEmbeddedSessionChatURLSignature(sessionID, directory, readOnly, workspaceId ?? null);
+  const signature = buildEmbeddedSessionChatURLSignature(sessionID, directory, readOnly, projectId ?? null);
   const existing = cache.get(tabID);
   if (existing?.signature === signature) {
     return existing.src;
   }
 
-  const src = buildEmbeddedSessionChatURL(sessionID, directory, readOnly, theme, workspaceId);
+  const src = buildEmbeddedSessionChatURL(sessionID, directory, readOnly, theme, projectId);
   cache.set(tabID, { signature, src });
   return src;
 };

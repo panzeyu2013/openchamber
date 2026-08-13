@@ -4,8 +4,8 @@ import { isVSCodeRuntime } from './vscodeRuntime';
 describe('VS Code runtime detection', () => {
   test('uses extension-host bootstrap config before runtime APIs are registered', () => {
     expect(isVSCodeRuntime(null, {
-      workspaceFolder: '/workspace/project-one',
-      workspaceFolders: [{ name: 'project-one', path: '/workspace/project-one' }],
+      workspaceFolder: '/project/project-one',
+      workspaceFolders: [{ name: 'project-one', path: '/project/project-one' }],
     })).toBe(true);
   });
 

@@ -5,6 +5,8 @@ export type SettingsPageSlug =
   | 'home'
   | 'general'
   | 'projects'
+  | 'servers'
+  | 'devices'
   | 'remote-instances'
   | 'providers'
   | 'usage'
@@ -48,6 +50,12 @@ export interface SettingsPageMeta {
   description?: string;
   keywords?: string[];
   isAvailable?: (ctx: SettingsRuntimeContext) => boolean;
+  /**
+   * Reachable page that is not listed in the settings navigation or command
+   * palette (deep links, settings search and programmatic navigation by slug
+   * still resolve it).
+   */
+  hiddenInNav?: boolean;
 }
 
 export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
@@ -74,12 +82,32 @@ export const SETTINGS_PAGE_METADATA: readonly SettingsPageMeta[] = [
     keywords: ['project', 'projects', 'worktree', 'worktrees', 'repo', 'repository', 'directory'],
   },
   {
-    slug: 'remote-instances',
+    slug: 'servers',
     title: 'Servers',
+    group: 'projects',
+    kind: 'split',
+    keywords: ['server', 'servers', 'server connections', 'connection', 'connection profiles', 'project catalog', 'add server', 'remote', 'url', 'token', 'probe'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    slug: 'devices',
+    title: 'Devices',
+    group: 'projects',
+    kind: 'single',
+    keywords: ['device', 'devices', 'pairing', 'pair', 'mobile', 'client', 'trusted'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
+    slug: 'remote-instances',
+    title: 'Remote instances',
     group: 'projects',
     kind: 'single',
     keywords: ['server', 'servers', 'server connections', 'connection', 'connection profiles', 'ssh', 'remote', 'instances', 'tunnels', 'forwarding'],
     isAvailable: (ctx) => !ctx.isVSCode,
+    // The catalog-driven Servers page owns connection management in the nav;
+    // this legacy SSH/pairing surface stays reachable via settings search,
+    // deep links and the desktop host switcher.
+    hiddenInNav: true,
   },
   {
     slug: 'providers',
@@ -248,6 +276,10 @@ export function getSettingsNavIcon(slug: SettingsPageSlug): IconName | null {
       return 'settings-3';
     case 'projects':
       return 'folders';
+    case 'servers':
+      return 'server';
+    case 'devices':
+      return 'smartphone';
     case 'remote-instances':
       return 'computer';
     case 'appearance':

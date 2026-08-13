@@ -269,6 +269,11 @@ const state = {
   miniChatWindowsBySession: new Map(),
   sshStatuses: new Map(),
   sshLogs: new Map(),
+  // Registered SSH workspace connection adapters by connectionId
+  // (`ssh:<instanceId>`): the in-process server's Connection Broker side of
+  // the saved ssh-manager instance set. Kept in sync by
+  // syncSshWorkspaceAdapters (initial alignment + desktop_ssh_instances_set).
+  sshConnectionAdapters: new Map(),
   trayController: null,
   trayFocusListener: null,
   lastFocusedWindowId: null,
@@ -1519,19 +1524,6 @@ const spawnLocalServer = async () => {
 
   const { startWebUiServer } = await import('@openchamber/web/server/index.js');
 
-  // SSH workspace adapters: one per saved SSH instance, injected into the
-  // in-process server's Connection Broker. Tunnel lifecycle stays owned by
-  // ssh-manager; the adapter only resolves the current tunnel URL per call.
-  const sshInstances = await sshManager.readInstances().catch(() => []);
-  const workspaceConnectionAdapters = sshInstances.map((instance) => (
-    createSshWorkspaceConnectionAdapter({
-      connectionId: `ssh:${instance.id}`,
-      label: instance.label || instance.id,
-      sshInstanceId: instance.id,
-      sshManager,
-    })
-  ));
-
   const handle = await startWebUiServer({
     port: chosenPort,
     host: bindHost,
@@ -1539,7 +1531,6 @@ const spawnLocalServer = async () => {
     attachSignals: false,
     exitOnShutdown: false,
     apiOnly: false,
-    workspaceConnectionAdapters,
     onDesktopNotification: (payload) => maybeShowNativeNotification(payload),
     getIsWindowFocused: isAnyWindowFocused,
     getDesktopRuntimeConfig: () => ({
@@ -1557,11 +1548,80 @@ const spawnLocalServer = async () => {
     durationMs: performance.now() - serverStartedAt,
   });
 
+  // SSH workspace adapters: reconcile the in-process server's Connection
+  // Broker with the saved ssh-manager instances (same path the
+  // desktop_ssh_instances_set handler uses for runtime changes). Tunnel
+  // lifecycle stays owned by ssh-manager; the adapter only resolves the
+  // current tunnel URL per call. Instances created at runtime must appear as
+  // catalog connections without restarting the app.
+  await syncSshWorkspaceAdapters().catch((error) => {
+    log.error('[ssh-adapters] initial alignment failed', error);
+  });
+
   await mutateSettingsRoot((root) => {
     root.desktopLocalPort = port;
   });
 
   return url;
+};
+
+/** Reconciles the in-process web server's SSH workspace connection adapters
+ * with the persisted ssh-manager instance set:
+ * - new instances -> create an adapter and register it with the server's
+ *   Connection Broker (the server seeds the connection profile and starts
+ *   session-index observation);
+ * - removed instances -> unregister the adapter (the server stops the
+ *   observer; the saved profile and catalog workspaces are deliberately
+ *   preserved — deleting them is the user-facing connection delete path).
+ * Tunnel lifecycle always stays with ssh-manager; this only maintains the
+ * broker-side adapters. Never throws: failures are logged and the registry
+ * keeps its last consistent state so the next sync retries them. */
+const syncSshWorkspaceAdapters = async (instances = null) => {
+  const handle = state.serverHandle;
+  if (!handle || typeof handle.registerWorkspaceConnectionAdapter !== 'function') return;
+  let nextInstances = instances;
+  if (!nextInstances) {
+    try {
+      nextInstances = (await sshManager.readInstances()).instances || [];
+    } catch (error) {
+      log.error('[ssh-adapters] reading saved instances failed', error);
+      return;
+    }
+  }
+  if (!Array.isArray(nextInstances)) nextInstances = [];
+  const nextIds = new Set(
+    nextInstances
+      .map((instance) => String(instance?.id || '').trim())
+      .filter(Boolean)
+  );
+  for (const instance of nextInstances) {
+    const id = String(instance?.id || '').trim();
+    if (!id) continue;
+    const connectionId = `ssh:${id}`;
+    if (state.sshConnectionAdapters.has(connectionId)) continue;
+    const adapter = createSshWorkspaceConnectionAdapter({
+      connectionId,
+      label: instance.label || instance.id,
+      sshInstanceId: id,
+      sshManager,
+    });
+    try {
+      await handle.registerWorkspaceConnectionAdapter(adapter);
+      state.sshConnectionAdapters.set(connectionId, adapter);
+    } catch (error) {
+      log.error(`[ssh-adapters] register ${connectionId} failed`, error);
+    }
+  }
+  for (const connectionId of [...state.sshConnectionAdapters.keys()]) {
+    const id = connectionId.slice('ssh:'.length);
+    if (nextIds.has(id)) continue;
+    try {
+      await handle.unregisterWorkspaceConnectionAdapter(connectionId);
+      state.sshConnectionAdapters.delete(connectionId);
+    } catch (error) {
+      log.error(`[ssh-adapters] unregister ${connectionId} failed`, error);
+    }
+  }
 };
 
 const launchDetachedOpenCodeKiller = (processInfo) => {
@@ -4663,6 +4723,13 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
 
     case 'desktop_ssh_instances_set':
       await sshManager.setInstances(args.config || {});
+      // Reconcile the in-process server's SSH workspace connection adapters
+      // with the persisted instance set, so instances created/removed at
+      // runtime appear/disappear as catalog connections without restarting
+      // the app. Failures are logged and never thrown to the renderer.
+      await syncSshWorkspaceAdapters().catch((error) => {
+        log.error('[ssh-adapters] instance sync failed', error);
+      });
       return null;
 
     case 'desktop_ssh_import_hosts':
@@ -4738,7 +4805,7 @@ const buildMacMenu = () => {
         // renderer own the (customizable) key binding, avoiding a double open.
         { label: 'New Mini Chat', accelerator: 'Cmd+Alt+N', registerAccelerator: false, click: () => dispatchOpenMiniChat() },
         { type: 'separator' },
-        { label: 'Add Workspace', click: () => dispatchAction('change-workspace') },
+        { label: 'Add Project', click: () => dispatchAction('change-project') },
         { type: 'separator' },
         { role: 'close' },
       ],
@@ -4836,7 +4903,7 @@ const buildAutoHiddenMenu = () => {
         { label: 'New Session', accelerator: 'Ctrl+N', click: () => dispatchAction('new-session') },
         { label: 'New Worktree', accelerator: 'Ctrl+Shift+N', click: () => dispatchAction('new-worktree-session') },
         { type: 'separator' },
-        { label: 'Add Workspace', click: () => dispatchAction('change-workspace') },
+        { label: 'Add Project', click: () => dispatchAction('change-project') },
         { type: 'separator' },
         { role: 'quit' },
       ],

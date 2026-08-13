@@ -25,7 +25,7 @@ import { adoptRelayTunnel, isRelayModeActive } from '@/lib/relay/runtime-tunnel'
 import { createRelayTunnelClient } from '@/lib/relay/tunnel-client';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { getControlPlaneBaseUrl, getControlPlaneKey, setControlPlane } from '@/lib/control-plane';
-import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
+import { setControlPlaneOrigin } from '@/projects/control-plane-fetch';
 
 const MOBILE_CONNECTIONS_STORAGE_KEY = 'openchamber.mobile.connections.v1';
 const MOBILE_SECURE_STORAGE_PREFIX = 'openchamber.mobile.';
@@ -954,13 +954,13 @@ const probeConnectionCandidates = async (
 // ---------------------------------------------------------------------------
 // Control-plane detection
 //
-// The Workspace Catalog / Session Index ALWAYS belong to the control plane —
-// the OpenChamber instance that owns the `/api/workspaces` catalog API. A
+// The Project Catalog / Session Index ALWAYS belong to the control plane —
+// the OpenChamber instance that owns the `/api/projects` catalog API. A
 // mobile connection can target either an OpenChamber server (control plane)
 // or a bare OpenCode server (no catalog API at all). After a successful
 // switch we probe the connected server and pin the control-plane origin so
-// the workspace surfaces stay available; a bare OpenCode server leaves the
-// origin null and the workspace sidebar reports control_plane_unavailable
+// the project surfaces stay available; a bare OpenCode server leaves the
+// origin null and the project sidebar reports control_plane_unavailable
 // instead of dispatching requests to a server that cannot answer them.
 // ---------------------------------------------------------------------------
 
@@ -979,7 +979,7 @@ const probeControlPlaneOf = async (transport: ChosenTransport, token: string | n
     // explicit origin is pinned — null keeps the virtual-origin resolution).
     const response = await raceWithTimeout(
       MOBILE_FAST_PROBE_TIMEOUT_MS,
-      runtimeFetch('/api/workspaces').then((r): Response | null => r).catch(() => null),
+      runtimeFetch('/api/projects').then((r): Response | null => r).catch(() => null),
     );
     const outcome: ControlPlaneProbeOutcome = response?.ok ? 'control-plane' : 'no-control-plane';
     logConnect('control-plane:probe', { transport: 'relay', outcome });
@@ -991,7 +991,7 @@ const probeControlPlaneOf = async (transport: ChosenTransport, token: string | n
   // catalog refresh, so a slow server never shows a misleading
   // control-plane-unavailable window.
   const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
-  const response = await requestWithTimeout(`${transport.url}/api/workspaces`, {
+  const response = await requestWithTimeout(`${transport.url}/api/projects`, {
     method: 'GET',
     credentials: token ? 'omit' : 'include',
     headers,

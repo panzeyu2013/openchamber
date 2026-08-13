@@ -1,22 +1,22 @@
 import React, { type JSX, type ReactNode } from 'react';
 import { RuntimeAPIContext } from '@/contexts/runtimeAPIContext';
-import { registerWorkspaceRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
+import { registerProjectRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import type { FilesAPI, RuntimeAPIs } from '@/lib/api/types';
 import { createContentCachedFiles } from '@/contexts/content-cache-owner';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
 
 type ContentCachedFiles = ReturnType<typeof createContentCachedFiles>;
 
 export function RuntimeAPIProvider({ apis, children }: { apis: RuntimeAPIs; children: ReactNode }): JSX.Element {
-  const { handle } = useWorkspaceRuntime();
+  const { handle } = useProjectRuntime();
   const scopedApis = React.useMemo<RuntimeAPIs>(() => {
     if (!handle) return apis;
 
-    // Workspace-owned capabilities must follow the selected workspace handle.
+    // Project-owned capabilities must follow the selected project handle.
     // Keep the ambient API object for capabilities that are still global or
-    // have not acquired a workspace route yet (GitHub, auth, …). Settings are
-    // deliberately overlaid with the workspace handle's typed unavailable
-    // implementation: a missing workspace config contract must never turn
+    // have not acquired a project route yet (GitHub, auth, …). Settings are
+    // deliberately overlaid with the project handle's typed unavailable
+    // implementation: a missing project config contract must never turn
     // into a write against the ambient runtime.
     return {
       ...apis,
@@ -29,8 +29,8 @@ export function RuntimeAPIProvider({ apis, children }: { apis: RuntimeAPIs; chil
   }, [apis, handle]);
 
   React.useEffect(() => {
-    registerWorkspaceRuntimeAPIs(handle ? scopedApis : null);
-    return () => registerWorkspaceRuntimeAPIs(null);
+    registerProjectRuntimeAPIs(handle ? scopedApis : null);
+    return () => registerProjectRuntimeAPIs(null);
   }, [handle, scopedApis]);
 
   // Effect-owned lifecycle: React Strict Mode dispose+remount must create a fresh

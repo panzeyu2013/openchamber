@@ -463,7 +463,7 @@ interface GitWorktreeAPI {
 export interface GitAPI {
   checkIsGitRepository(directory: string): Promise<boolean>;
   getGitStatus(directory: string, options?: { mode?: 'light' }): Promise<GitStatus>;
-  /** Resolve worktree roots through the workspace-bound runtime when present. */
+  /** Resolve worktree roots through the project-bound runtime when present. */
   resolveGitPrimaryRoot?(directory: string): Promise<{ root: string }>;
   resolveGitTopLevel?(directory: string): Promise<{ root: string }>;
   getGitDiff(directory: string, options: GetGitDiffOptions): Promise<GitDiffResponse>;
@@ -595,7 +595,7 @@ interface ListDirectoryOptions {
 }
 
 interface FileReadOptions {
-  allowOutsideWorkspace?: boolean;
+  allowOutsideProject?: boolean;
   outsideFileGrant?: string;
   optional?: boolean;
   directory?: string;
@@ -632,6 +632,10 @@ export interface ProjectEntry {
   addedAt?: number;
   lastOpenedAt?: number;
   sidebarCollapsed?: boolean;
+  /** Owning catalog connection; absent entries are treated as 'local'. */
+  connectionId?: string;
+  /** Display label of the owning server (e.g. ConnectionProfileSummary.label). */
+  connectionLabel?: string;
 }
 
 export interface SettingsPayload {
@@ -738,7 +742,7 @@ export interface NotificationPayload {
 
   tag?: string;
   kind?: string;
-  workspaceId?: string;
+  projectId?: string;
   sessionId?: string;
   directory?: string;
   requireHidden?: boolean;

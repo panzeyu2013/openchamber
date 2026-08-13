@@ -3,14 +3,31 @@ import { devtools, persist } from 'zustand/middleware';
 
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { LEGACY_WORKSPACE_SCOPE_PREFIX, PROJECT_SCOPE_PREFIX, projectScopeKey } from '@/projects/identity';
 
-const resolveActiveWorkspaceScopeKey = (): string => {
+const resolveActiveProjectScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
+};
+
+/** P-MIG: rewrites persisted scope keys written with the legacy `workspace:`
+ * prefix (pre-rename builds) to the current `project:` prefix so persisted
+ * per-project tab snapshots stay readable. */
+const normalizePersistedScopeKey = (scopeKey: string): string => {
+  if (typeof scopeKey !== 'string' || !scopeKey.startsWith(LEGACY_WORKSPACE_SCOPE_PREFIX)) return scopeKey;
+  const projectId = scopeKey.slice(LEGACY_WORKSPACE_SCOPE_PREFIX.length);
+  return projectId ? `${PROJECT_SCOPE_PREFIX}${projectId}` : scopeKey;
+};
+
+const normalizePersistedScopeSnapshots = (scopeSnapshots: Record<string, ScopeTabSnapshot>): Record<string, ScopeTabSnapshot> => {
+  const next: Record<string, ScopeTabSnapshot> = {};
+  for (const [scopeKey, snapshot] of Object.entries(scopeSnapshots)) {
+    next[normalizePersistedScopeKey(scopeKey)] = snapshot;
+  }
+  return next;
 };
 
 type RootTabsState = {
@@ -20,10 +37,15 @@ type RootTabsState = {
   touchedAt: number;
 };
 
+type ScopeTabSnapshot = {
+  byRoot: Record<string, RootTabsState>;
+  updatedAt: number;
+};
+
 type FilesViewTabsState = {
   byRoot: Record<string, RootTabsState>;
-  activeRuntimeKey: string;
-  runtimeSnapshots: Record<string, { byRoot: Record<string, RootTabsState>; updatedAt: number }>;
+  activeScopeKey: string;
+  scopeSnapshots: Record<string, ScopeTabSnapshot>;
 };
 
 type FilesViewTabsActions = {
@@ -42,7 +64,7 @@ type FilesViewTabsActions = {
 export type FilesViewTabsStore = FilesViewTabsState & FilesViewTabsActions;
 
 const MAX_ROOTS = 20;
-const MAX_RUNTIME_SNAPSHOTS = 8;
+const MAX_SCOPE_SNAPSHOTS = 8;
 const MAX_OPEN_PATHS_PER_ROOT = 50;
 const MAX_EXPANDED_PATHS_PER_ROOT = 500;
 const MAX_PATH_LENGTH = 4096;
@@ -186,8 +208,8 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
     persist(
       (set, get) => ({
         byRoot: {},
-        activeRuntimeKey: '',
-        runtimeSnapshots: {},
+        activeScopeKey: '',
+        scopeSnapshots: {},
 
         addOpenPath: (root, path, options) => {
           const normalizedRoot = normalizePath((root || '').trim());
@@ -498,41 +520,67 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
       }),
       {
         name: 'files-view-tabs-store',
-        version: 3,
+        version: 5,
         storage: createDeferredSafeJSONStorage(),
         migrate: (persistedState, version) => {
-          if (version < 3 || !persistedState || typeof persistedState !== 'object') {
-            return { byRoot: {}, activeRuntimeKey: resolveActiveWorkspaceScopeKey(), runtimeSnapshots: {} };
+          if (typeof persistedState !== 'object' || persistedState === null) {
+            return { byRoot: {}, activeScopeKey: resolveActiveProjectScopeKey(), scopeSnapshots: {} };
+          }
+          if (version < 4) {
+            const legacy = persistedState as {
+              activeRuntimeKey?: string;
+              runtimeSnapshots?: Record<string, ScopeTabSnapshot>;
+            };
+            return {
+              ...persistedState,
+              activeScopeKey: legacy.activeRuntimeKey ?? resolveActiveProjectScopeKey(),
+              scopeSnapshots: legacy.runtimeSnapshots ?? {},
+            };
+          }
+          if (version < 5) {
+            const state = persistedState as {
+              activeScopeKey?: string;
+              scopeSnapshots?: Record<string, ScopeTabSnapshot>;
+            };
+            return {
+              ...persistedState,
+              activeScopeKey: state.activeScopeKey
+                ? normalizePersistedScopeKey(state.activeScopeKey)
+                : resolveActiveProjectScopeKey(),
+              scopeSnapshots: normalizePersistedScopeSnapshots(state.scopeSnapshots ?? {}),
+            };
           }
           return persistedState;
         },
         partialize: (state) => {
           const currentSnapshots = {
-            ...state.runtimeSnapshots,
-            [state.activeRuntimeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
+            ...state.scopeSnapshots,
+            [state.activeScopeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
           };
-          const runtimeSnapshots = Object.fromEntries(Object.entries(currentSnapshots)
+          const scopeSnapshots = Object.fromEntries(Object.entries(currentSnapshots)
             .sort(([, left], [, right]) => right.updatedAt - left.updatedAt)
-            .slice(0, MAX_RUNTIME_SNAPSHOTS)
-            .map(([runtimeKey, snapshot]) => [runtimeKey, {
+            .slice(0, MAX_SCOPE_SNAPSHOTS)
+            .map(([scopeKey, snapshot]) => [scopeKey, {
               byRoot: sanitizeByRoot(snapshot.byRoot),
               updatedAt: snapshot.updatedAt,
             }]));
-          return { activeRuntimeKey: state.activeRuntimeKey, runtimeSnapshots };
+          return { activeScopeKey: state.activeScopeKey, scopeSnapshots };
         },
         merge: (persistedState, currentState) => {
           const persisted = persistedState && typeof persistedState === 'object'
             ? persistedState as Partial<FilesViewTabsState>
             : {};
-          const runtimeSnapshots = persisted.runtimeSnapshots && typeof persisted.runtimeSnapshots === 'object'
-            ? persisted.runtimeSnapshots
+          // P-MIG: persisted snapshots keyed by the legacy `workspace:` prefix
+          // are re-keyed to `project:` so they stay readable after the rename.
+          const scopeSnapshots = persisted.scopeSnapshots && typeof persisted.scopeSnapshots === 'object'
+            ? normalizePersistedScopeSnapshots(persisted.scopeSnapshots)
             : {};
-          const activeRuntimeKey = resolveActiveWorkspaceScopeKey();
+          const activeScopeKey = resolveActiveProjectScopeKey();
           return {
             ...currentState,
-            activeRuntimeKey,
-            runtimeSnapshots,
-            byRoot: sanitizeByRoot(runtimeSnapshots[activeRuntimeKey]?.byRoot),
+            activeScopeKey,
+            scopeSnapshots,
+            byRoot: sanitizeByRoot(scopeSnapshots[activeScopeKey]?.byRoot),
           };
         },
       }
@@ -543,17 +591,17 @@ export const useFilesViewTabsStore = create<FilesViewTabsStore>()(
 
 const swapTabsScope = (scopeKey: string): void => {
   const state = useFilesViewTabsStore.getState();
-  if (state.activeRuntimeKey === scopeKey) {
+  if (state.activeScopeKey === scopeKey) {
     return;
   }
-  const runtimeSnapshots = {
-    ...state.runtimeSnapshots,
-    [state.activeRuntimeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
+  const scopeSnapshots = {
+    ...state.scopeSnapshots,
+    [state.activeScopeKey]: { byRoot: sanitizeByRoot(state.byRoot), updatedAt: Date.now() },
   };
   useFilesViewTabsStore.setState({
-    activeRuntimeKey: scopeKey,
-    runtimeSnapshots,
-    byRoot: sanitizeByRoot(runtimeSnapshots[scopeKey]?.byRoot),
+    activeScopeKey: scopeKey,
+    scopeSnapshots,
+    byRoot: sanitizeByRoot(scopeSnapshots[scopeKey]?.byRoot),
   });
 };
 
@@ -562,16 +610,16 @@ const installScopeSubscription = (): void => {
   if (scopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
   scopeSubscriptionInstalled = true;
   queueMicrotask(() => {
-    let lastScope = resolveActiveWorkspaceScopeKey();
+    let lastScope = resolveActiveProjectScopeKey();
     const check = () => {
-      const nextScope = resolveActiveWorkspaceScopeKey();
+      const nextScope = resolveActiveProjectScopeKey();
       if (nextScope !== lastScope) {
         lastScope = nextScope;
         swapTabsScope(nextScope);
       }
     };
     useSessionUIStore?.subscribe?.(check);
-    useWorkspaceSessionIndexStore?.subscribe?.(check);
+    useProjectSessionIndexStore?.subscribe?.(check);
   });
 };
 installScopeSubscription();

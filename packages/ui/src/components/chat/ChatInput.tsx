@@ -78,7 +78,7 @@ import { sessionEvents } from '@/lib/sessionEvents';
 import { fetchResponseStyleInstruction } from '@/lib/responseStyle';
 import { wrapSystemReminder } from '@/lib/systemReminder';
 import { getSyncMessages, getSyncOpencodeService } from '@/sync/sync-refs';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import { eventMatchesShortcut, getEffectiveShortcutCombo, normalizeCombo } from '@/lib/shortcuts';
 import {
     assignImageAttachmentFilenames,
@@ -228,13 +228,13 @@ const resolveChatDraftIdentity = (sessionId: string | null): ChatDraftIdentity |
     const newSessionDirectory = sessionState.newSessionDraft?.open
         ? sessionState.newSessionDraft.bootstrapPendingDirectory ?? sessionState.newSessionDraft.directoryOverride
         : null;
-    const workspaceId = sessionState.currentWorkspaceId ?? sessionState.newSessionDraft?.workspaceId ?? null;
+    const projectId = sessionState.currentProjectId ?? sessionState.newSessionDraft?.projectId ?? null;
     const directory = sessionId
         ? sessionState.getDirectoryForSession(sessionId) ?? sessionState.currentSessionDirectory
-        : newSessionDirectory ?? (workspaceId
+        : newSessionDirectory ?? (projectId
             ? getSyncOpencodeService().getDirectory()
             : useDirectoryStore.getState().currentDirectory);
-    return createChatDraftIdentity(resolveSessionScopeKey(sessionId, directory, workspaceId), directory, sessionId);
+    return createChatDraftIdentity(resolveSessionScopeKey(sessionId, directory, projectId), directory, sessionId);
 };
 
 const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollToBottom }) => {
@@ -303,18 +303,18 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
         Promise.resolve((useSessionUIStore.getState().sendMessage as (...a: unknown[]) => unknown)(...args)),
     ).current;
     const currentSessionId = useSessionUIStore((s) => s.currentSessionId);
-    const currentWorkspaceId = useSessionUIStore((s) => s.currentWorkspaceId);
+    const currentProjectId = useSessionUIStore((s) => s.currentProjectId);
     const fallbackDirectory = useDirectoryStore((s) => s.currentDirectory);
-    const activeWorkspaceId = useActiveWorkspaceId();
-    const draftWorkspaceId = useSessionUIStore((s) => s.newSessionDraft?.open ? s.newSessionDraft.workspaceId ?? null : null);
-    const currentDirectory = useEffectiveDirectory() ?? (activeWorkspaceId ? '' : fallbackDirectory ?? '');
+    const activeProjectId = useActiveProjectId();
+    const draftProjectId = useSessionUIStore((s) => s.newSessionDraft?.open ? s.newSessionDraft.projectId ?? null : null);
+    const currentDirectory = useEffectiveDirectory() ?? (activeProjectId ? '' : fallbackDirectory ?? '');
     const currentSessionDirectoryForSync = useSessionUIStore(
         React.useCallback((s) => currentSessionId ? s.getDirectoryForSession(currentSessionId) : null, [currentSessionId]),
     );
     const activeRuntimeKey = resolveSessionScopeKey(
         currentSessionId,
         currentSessionDirectoryForSync ?? currentDirectory,
-        currentWorkspaceId ?? draftWorkspaceId ?? activeWorkspaceId,
+        currentProjectId ?? draftProjectId ?? activeProjectId,
     );
     const chatDraftIdentity = React.useMemo(
         () => createChatDraftIdentity(
@@ -698,7 +698,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             resolveSessionScopeKey(
                 currentSessionId,
                 currentSessionDirectoryForSync ?? currentDirectory,
-                currentWorkspaceId,
+                currentProjectId,
             ),
         )
         : null;
@@ -2480,7 +2480,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
             )}
             style={isMobile && inputBarOffset > 0 ? { marginBottom: `${inputBarOffset}px` } : undefined}
         >
-            {newSessionDraftOpen && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
+            {newSessionDraftOpen && !currentSessionId && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
                 <div className="chat-input-column mb-7 text-center">
                     <h1 className="text-balance text-2xl font-normal tracking-tight text-foreground md:text-3xl">
                         {renderDraftTitle(
@@ -2830,7 +2830,7 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({ onOpenSettings, scrollTo
                     />
                 ) : null}
             </div>
-            {newSessionDraftOpen && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
+            {newSessionDraftOpen && !currentSessionId && !isDesktopExpanded && !isMobile && !isVSCode && !isMiniChatSurface ? (
                 <DraftPresetChips
                     onSubmit={(starter) => submitPresetPrompt(starter.submitText, starter.ref.type)}
                     className="chat-input-column mt-4"

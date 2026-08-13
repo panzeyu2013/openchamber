@@ -18,6 +18,10 @@ export interface WebviewHtmlOptions {
   viewMode?: 'sidebar' | 'editor';
   devServerUrl?: string | null;
   extensionVersion?: string;
+  /** Configured control-plane origin (`openchamber.apiUrl`) — the webview
+   * routes catalog/session-index/control-plane requests through the bridge to
+   * this origin; null means no control plane (explicit 501s). */
+  apiUrl?: string | null;
 }
 
 const asCspToken = (value: string | null | undefined): string | null => {
@@ -56,8 +60,12 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
     viewMode = 'sidebar',
     devServerUrl,
     extensionVersion = '',
+    apiUrl = null,
   } = options;
   const workspaceFoldersJson = JSON.stringify(workspaceFolders).replace(/</g, '\\u003c');
+  const apiUrlJson = typeof apiUrl === 'string' && apiUrl.trim().length > 0
+    ? JSON.stringify(apiUrl.trim())
+    : 'null';
 
   const scriptPath = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'assets', 'index.js');
   const scriptUri = webview.asWebviewUri(scriptPath);
@@ -192,6 +200,7 @@ export function getWebviewHtml(options: WebviewHtmlOptions): string {
       arch: "${os.arch()}",
       panelType: "${panelType}",
       viewMode: "${viewMode}",
+      apiUrl: ${apiUrlJson},
       initialSessionId: ${initialSessionId ? `"${initialSessionId.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"` : 'null'},
     };
     window.__OPENCHAMBER_HOME__ = "${workspaceFolder.replace(/\\/g, '\\\\')}";

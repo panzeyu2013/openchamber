@@ -1,18 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 import { useUIStore } from './useUIStore';
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => ({
   revision: 1,
   sessions: [{
-    key: `${workspaceId}\u0000session-${workspaceId}`,
-    workspaceId,
+    key: `${projectId}\u0000session-${projectId}`,
+    projectId,
     connectionId: 'connection',
-    upstreamSessionId: `session-${workspaceId}`,
+    upstreamSessionId: `session-${projectId}`,
     directory: '/repo',
-    title: workspaceId,
+    title: projectId,
     updatedAt: 1,
     archived: false,
     createdAt: 1,
@@ -20,22 +20,22 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
   freshnessByConnection: {},
 });
 
-const setWorkspaceSession = (workspaceId: string): void => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+const setProjectSession = (projectId: string): void => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
   useSessionUIStore.setState({
-    currentSessionId: `session-${workspaceId}`,
+    currentSessionId: `session-${projectId}`,
     currentSessionDirectory: '/repo',
   });
 };
 
-const clearWorkspaceSession = (): void => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = (): void => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-describe('useUIStore context panel workspace scope', () => {
+describe('useUIStore context panel project scope', () => {
   beforeEach(() => {
-    clearWorkspaceSession();
+    clearProjectSession();
     useUIStore.setState({
       contextPanelScopeKey: '',
       contextPanelByDirectory: {},
@@ -44,7 +44,7 @@ describe('useUIStore context panel workspace scope', () => {
   });
 
   afterEach(() => {
-    clearWorkspaceSession();
+    clearProjectSession();
     useUIStore.setState({
       contextPanelScopeKey: '',
       contextPanelByDirectory: {},
@@ -52,21 +52,21 @@ describe('useUIStore context panel workspace scope', () => {
     });
   });
 
-  test('keeps same-directory context tabs isolated per workspace', () => {
-    setWorkspaceSession('ws-a');
+  test('keeps same-directory context tabs isolated per project', () => {
+    setProjectSession('ws-a');
     useUIStore.getState().openContextFile('/repo', '/repo/a.ts');
     const tabA = useUIStore.getState().contextPanelByDirectory['/repo']?.tabs[0]?.id;
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useUIStore.getState().contextPanelByDirectory['/repo']).toBe(undefined);
     useUIStore.getState().openContextFile('/repo', '/repo/b.ts');
     const tabB = useUIStore.getState().contextPanelByDirectory['/repo']?.tabs[0]?.id;
     expect(tabB).not.toBe(tabA);
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useUIStore.getState().contextPanelByDirectory['/repo']?.tabs[0]?.targetPath).toBe('/repo/a.ts');
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useUIStore.getState().contextPanelByDirectory['/repo']?.tabs[0]?.targetPath).toBe('/repo/b.ts');
   });
 });

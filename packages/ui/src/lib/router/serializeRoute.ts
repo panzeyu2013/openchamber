@@ -8,7 +8,7 @@ import { ROUTE_PARAMS } from './types';
 export interface AppRouteState {
   sessionId: string | null;
   /** Optional during the compatibility window; old callers remain valid. */
-  workspaceId?: string | null;
+  projectId?: string | null;
   tab: MainTab;
   isSettingsOpen: boolean;
   settingsPath: string;
@@ -31,8 +31,10 @@ function serializeRoute(state: AppRouteState): URLSearchParams {
   if (state.sessionId && state.sessionId.trim().length > 0) {
     params.set(ROUTE_PARAMS.SESSION, state.sessionId);
   }
-  if (state.workspaceId && state.workspaceId.trim().length > 0) {
-    params.set(ROUTE_PARAMS.WORKSPACE, state.workspaceId);
+  if (state.projectId && state.projectId.trim().length > 0) {
+    // The URL param keeps its legacy `workspace` name so bookmarked links and
+    // shared URLs stay valid.
+    params.set(ROUTE_PARAMS.WORKSPACE, state.projectId);
   }
 
   // Settings takes precedence - if open, include settings section

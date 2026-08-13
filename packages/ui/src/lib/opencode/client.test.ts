@@ -35,11 +35,14 @@ mock.module('@opencode-ai/sdk/v2', () => ({
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: mock(() => null),
-  isWorkspaceRuntimeActive: mock(() => false),
+  isProjectRuntimeActive: mock(() => false),
 }));
 
 mock.module('@/lib/runtime-url', () => ({
   getRuntimeUrlResolver: mock(() => ({
+    api: (path: string) => path,
+  })),
+  configureRuntimeUrlResolver: mock(() => ({
     api: (path: string) => path,
   })),
 }));
@@ -69,8 +72,8 @@ beforeEach(() => {
   promptAsyncResults.length = 0;
 });
 
-describe('workspace-bound OpencodeService', () => {
-  test('keeps SDK, fetch, scoped clients, and runtime guard bound to one workspace', async () => {
+describe('project-bound OpencodeService', () => {
+  test('keeps SDK, fetch, scoped clients, and runtime guard bound to one project', async () => {
     const scopedClient = {};
     const scopedDirectories: string[] = [];
     const boundFetchCalls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
@@ -84,9 +87,9 @@ describe('workspace-bound OpencodeService', () => {
     const boundClient = { session: { promptAsync: promptAsyncMock } };
     const service = createOpencodeServiceForSdk({
       client: boundClient as never,
-      baseUrl: '/api/workspaces/ws-1/runtime/api',
-      directory: '/workspace/ws-1',
-      scopeKey: 'workspace:ws-1',
+      baseUrl: '/api/projects/ws-1/runtime/api',
+      directory: '/project/ws-1',
+      scopeKey: 'project:ws-1',
       fetch: boundFetch,
       createScopedClient: (directory: string) => {
         scopedDirectories.push(directory);
@@ -96,26 +99,26 @@ describe('workspace-bound OpencodeService', () => {
 
     promptAsyncResults.push({ response: new Response(null, { status: 200 }) });
     await service.sendMessage({
-      runtimeKey: 'workspace:ws-1',
+      runtimeKey: 'project:ws-1',
       id: 'session-bound',
-      providerID: 'workspace-provider',
-      modelID: 'workspace-model',
-      text: 'hello workspace',
+      providerID: 'project-provider',
+      modelID: 'project-model',
+      text: 'hello project',
     });
 
     expect(promptAsyncCalls).toHaveLength(1);
-    expect((promptAsyncCalls[0]?.[0] as { directory?: string }).directory).toBe('/workspace/ws-1');
+    expect((promptAsyncCalls[0]?.[0] as { directory?: string }).directory).toBe('/project/ws-1');
     expect(await service.checkHealth()).toBe(true);
-    expect(boundFetchCalls[0]?.input).toBe('/api/workspaces/ws-1/runtime/api/opencode/health');
-    expect(service.getScopedSdkClient('/workspace/ws-1/worktree')).toBe(scopedClient);
-    expect(service.getScopedSdkClient('/workspace/ws-1/worktree')).toBe(scopedClient);
-    expect(scopedDirectories).toEqual(['/workspace/ws-1/worktree']);
+    expect(boundFetchCalls[0]?.input).toBe('/api/projects/ws-1/runtime/api/opencode/health');
+    expect(service.getScopedSdkClient('/project/ws-1/worktree')).toBe(scopedClient);
+    expect(service.getScopedSdkClient('/project/ws-1/worktree')).toBe(scopedClient);
+    expect(scopedDirectories).toEqual(['/project/ws-1/worktree']);
 
     await expect(service.sendMessage({
-      runtimeKey: 'workspace:ws-2',
+      runtimeKey: 'project:ws-2',
       id: 'session-bound',
-      providerID: 'workspace-provider',
-      modelID: 'workspace-model',
+      providerID: 'project-provider',
+      modelID: 'project-model',
       text: 'must not dispatch',
     })).rejects.toThrow('runtime changed');
     expect(promptAsyncCalls).toHaveLength(1);
@@ -128,25 +131,25 @@ describe('workspace-bound OpencodeService', () => {
 
 describe('opencodeClient getConfig cache', () => {
   test('cleared stale in-flight requests do not repopulate cache or delete newer in-flight requests', async () => {
-    const first = opencodeClient.getConfig('/workspace/project');
+    const first = opencodeClient.getConfig('/project/project');
     expect(configCalls).toBe(1);
 
     opencodeClient.clearConfigCache();
 
-    const second = opencodeClient.getConfig('/workspace/project');
+    const second = opencodeClient.getConfig('/project/project');
     expect(configCalls).toBe(2);
 
     configResolvers[0]?.({ data: { model: 'old/model' } });
     expect(await first).toEqual({ model: 'old/model' });
 
-    const third = opencodeClient.getConfig('/workspace/project');
+    const third = opencodeClient.getConfig('/project/project');
     expect(configCalls).toBe(2);
 
     configResolvers[1]?.({ data: { model: 'new/model' } });
     expect(await second).toEqual({ model: 'new/model' });
     expect(await third).toEqual({ model: 'new/model' });
 
-    const cached = await opencodeClient.getConfig('/workspace/project');
+    const cached = await opencodeClient.getConfig('/project/project');
     expect(cached).toEqual({ model: 'new/model' });
     expect(configCalls).toBe(2);
   });

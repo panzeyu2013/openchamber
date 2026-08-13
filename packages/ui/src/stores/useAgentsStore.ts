@@ -17,7 +17,7 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { useSkillsCatalogStore } from "@/stores/useSkillsCatalogStore";
 import { invalidateSkillsLoadCache, useSkillsStore } from "@/stores/useSkillsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 // Note: useDirectoryStore cannot be imported at top level to avoid circular dependency
 // useDirectoryStore -> useAgentsStore (for refreshAfterOpenCodeRestart)
@@ -29,8 +29,8 @@ const getCurrentDirectory = (): string | null => {
     return opencodeDirectory;
   }
 
-  if (isWorkspaceRuntimeActive()) {
-    // A workspace without a resolved directory is unavailable, not a reason
+  if (isProjectRuntimeActive()) {
+    // A project without a resolved directory is unavailable, not a reason
     // to refresh the ambient project configuration.
     return null;
   }
@@ -51,9 +51,9 @@ const getCurrentDirectory = (): string | null => {
 export const getConfigDirectory = (): string | null => {
   try {
     const boundService = getSyncOpencodeService();
-    if (isWorkspaceRuntimeActive()) {
-      // Agent config CRUD has no workspace-owned route yet. Keep the request
-      // bound to the mounted workspace for a typed unavailable response.
+    if (isProjectRuntimeActive()) {
+      // Agent config CRUD has no project-owned route yet. Keep the request
+      // bound to the mounted project for a typed unavailable response.
       return boundService.getDirectory()?.trim() || null;
     }
 

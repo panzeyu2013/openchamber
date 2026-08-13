@@ -1,8 +1,8 @@
 /**
  * VS Code webview control-plane handling.
  *
- * The OpenChamber control plane — the Workspace Catalog (`/api/workspaces*`),
- * the Session Index (`/api/workspace-sessions/*`) and connection profiles
+ * The OpenChamber control plane — the Project Catalog (`/api/projects*`),
+ * the Session Index (`/api/project-sessions/*`) and connection profiles
  * (`/api/connections*`) — is NOT hosted by the opencode binary the extension
  * manages. Forwarding these paths to the binary would surface a confusing 404
  * from a server that cannot answer them.
@@ -11,7 +11,7 @@
  * regular requests ride `api:proxy` with `controlPlane: true` and the
  * extension host forwards them to the configured `openchamber.apiUrl` (or
  * answers an explicit `capability_unavailable` 501 when no control plane is
- * configured). SSE streams (`/api/workspace-sessions/events`) ride the
+ * configured). SSE streams (`/api/project-sessions/events`) ride the
  * dedicated streamed SSE bridge (`api:sse:start` with `controlPlane: true`),
  * because a single-response proxy message cannot stream. No URL is ever
  * hardcoded in this module.
@@ -22,9 +22,9 @@ const CONTROL_PLANE_UNAVAILABLE_STATUS = 501;
 
 /** True for control-plane-owned API paths. */
 export const isControlPlaneApiPath = (pathname: string): boolean => {
-  if (pathname === '/api/workspaces' || pathname.startsWith('/api/workspaces/')) return true;
+  if (pathname === '/api/projects' || pathname.startsWith('/api/projects/')) return true;
   if (pathname === '/api/connections' || pathname.startsWith('/api/connections/')) return true;
-  return pathname === '/api/workspace-sessions' || pathname.startsWith('/api/workspace-sessions/');
+  return pathname === '/api/project-sessions' || pathname.startsWith('/api/project-sessions/');
 };
 
 /** True for a control-plane request that expects an SSE stream (the

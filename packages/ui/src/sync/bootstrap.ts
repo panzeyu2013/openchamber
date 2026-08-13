@@ -31,7 +31,7 @@ function unwrap<T>(
     if (typeof errorCode === "string") {
       ;(err as Error & { code?: string }).code = errorCode
     } else if (status === 501) {
-      // Workspace-scoped endpoints may explicitly report a capability that
+      // Project-scoped endpoints may explicitly report a capability that
       // has no contract yet. It is unavailable by design, not a transient
       // OpenCode warm-up failure.
       ;(err as Error & { code?: string }).code = "capability_unavailable"

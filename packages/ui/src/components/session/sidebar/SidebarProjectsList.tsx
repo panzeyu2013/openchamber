@@ -53,7 +53,7 @@ type Props = {
   sectionsForRender: ProjectSection[];
   projectSections: ProjectSection[];
   activeProjectId: string | null;
-  showOnlyMainWorkspace: boolean;
+  showOnlyMainProject: boolean;
   hasSessionSearchQuery: boolean;
   emptyState: React.ReactNode;
   searchEmptyState: React.ReactNode;
@@ -223,7 +223,7 @@ function SidebarProjectsListComponent(props: Props): React.ReactNode {
       onScroll={enableStickyFade ? (event) => syncTopFade(event.currentTarget) : undefined}
     >
       {props.topContent}
-      {props.showOnlyMainWorkspace ? (
+      {props.showOnlyMainProject ? (
         <div className="space-y-[0.6rem] py-1">
           {(() => {
             const activeSection = props.sectionsForRender.find((section) => section.project.id === props.activeProjectId) ?? props.sectionsForRender[0];

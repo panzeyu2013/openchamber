@@ -3,9 +3,8 @@ import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
 import { getDesktopHomeDirectory, isVSCodeRuntime } from '@/lib/desktop';
 import { subscribeControlPlaneChanged } from '@/lib/control-plane';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { updateDesktopSettings } from '@/lib/persistence';
-import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import { getDeferredSafeStorage } from './utils/safeStorage';
 
@@ -35,8 +34,14 @@ const initialHasPersistedDirectory =
   typeof persistedLastDirectory === 'string' && persistedLastDirectory.length > 0;
 
 
-const invalidateFileSearchCache = (scope?: string | null) => {
+// useFileSearchStore is lazy-loaded: it reaches session-ui-store, which
+// imports useConfigStore, which imports this module. A static import would
+// evaluate useConfigStore's persist-name resolution while this module is
+// still being evaluated (temporal dead zone) and crash app boot with
+// "Cannot access 'useDirectoryStore' before initialization".
+const invalidateFileSearchCache = async (scope?: string | null) => {
   try {
+    const { useFileSearchStore } = await import('@/stores/useFileSearchStore');
     useFileSearchStore.getState().invalidateDirectory(scope);
   } catch (error) {
     console.warn('Failed to invalidate file search cache:', error);
@@ -224,7 +229,7 @@ const initializeHomeDirectory = async () => {
   return fallback;
 };
 
-const getVsCodeWorkspaceFolder = (): string | null => {
+const getVsCodeProjectFolder = (): string | null => {
   if (!isVSCodeRuntime()) {
     return null;
   }
@@ -236,7 +241,7 @@ const getVsCodeWorkspaceFolder = (): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
-const initialHomeDirectory = getVsCodeWorkspaceFolder() || getHomeDirectory();
+const initialHomeDirectory = getVsCodeProjectFolder() || getHomeDirectory();
 const initialCurrentDirectory = (() => {
   const persisted = getStoredLastDirectory();
   if (persisted && !isVSCodeRuntime()) {
@@ -263,10 +268,10 @@ export const useDirectoryStore = create<DirectoryStore>()(
       isSwitchingDirectory: false,
 
       setDirectory: (path: string, options?: { showOverlay?: boolean }) => {
-        // A workspace handle owns its directory. Keep the legacy directory
+        // A project handle owns its directory. Keep the legacy directory
         // store inert while that scope is mounted so late UI effects cannot
-        // rewrite the ambient runtime behind the selected workspace.
-        if (isWorkspaceRuntimeActive()) return;
+        // rewrite the ambient runtime behind the selected project.
+        if (isProjectRuntimeActive()) return;
         void options;
         const homeDir = cachedHomeDirectory || get().homeDirectory || safeStorage.getItem('homeDirectory');
         const resolvedPath = resolveDirectoryPath(path, homeDir);
@@ -275,7 +280,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
         }
 
         opencodeClient.setDirectory(resolvedPath);
-        invalidateFileSearchCache();
+        void invalidateFileSearchCache();
 
         set((state) => {
           const newHistory = [...state.directoryHistory.slice(0, state.historyIndex + 1), resolvedPath];
@@ -295,14 +300,14 @@ export const useDirectoryStore = create<DirectoryStore>()(
       },
 
       goBack: () => {
-        if (isWorkspaceRuntimeActive()) return;
+        if (isProjectRuntimeActive()) return;
         const state = get();
         if (state.historyIndex > 0) {
           const newIndex = state.historyIndex - 1;
           const newDirectory = state.directoryHistory[newIndex];
 
           opencodeClient.setDirectory(newDirectory);
-          invalidateFileSearchCache();
+          void invalidateFileSearchCache();
 
           safeStorage.setItem('lastDirectory', newDirectory);
 
@@ -319,14 +324,14 @@ export const useDirectoryStore = create<DirectoryStore>()(
       },
 
       goForward: () => {
-        if (isWorkspaceRuntimeActive()) return;
+        if (isProjectRuntimeActive()) return;
         const state = get();
         if (state.historyIndex < state.directoryHistory.length - 1) {
           const newIndex = state.historyIndex + 1;
           const newDirectory = state.directoryHistory[newIndex];
 
           opencodeClient.setDirectory(newDirectory);
-          invalidateFileSearchCache();
+          void invalidateFileSearchCache();
 
           safeStorage.setItem('lastDirectory', newDirectory);
 
@@ -427,7 +432,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
         if ((shouldReplaceCurrent || currentChanged) && resolvedReady) {
           const nextDirectory = shouldReplaceCurrent ? resolvedHome : (resolvedCurrent as string);
           opencodeClient.setDirectory(nextDirectory);
-          invalidateFileSearchCache();
+          void invalidateFileSearchCache();
           safeStorage.setItem('lastDirectory', nextDirectory);
           void updateDesktopSettings({ lastDirectory: nextDirectory });
 
@@ -444,7 +449,7 @@ export const useDirectoryStore = create<DirectoryStore>()(
 
 if (typeof window !== 'undefined') {
   initializeHomeDirectory().then((home) => {
-    if (isWorkspaceRuntimeActive()) return;
+    if (isProjectRuntimeActive()) return;
     useDirectoryStore.getState().synchronizeHomeDirectory(home);
   });
 
@@ -452,15 +457,15 @@ if (typeof window !== 'undefined') {
   // must be re-resolved from the new runtime's authoritative source instead
   // of keeping the previous host's value cached.
   subscribeControlPlaneChanged(() => {
-    // A workspace provider owns its directory and service. Runtime endpoint
+    // A project provider owns its directory and service. Runtime endpoint
     // changes are a legacy ambient concern; applying them here would rewrite
-    // the compatibility directory while a workspace session is mounted.
-    if (isWorkspaceRuntimeActive()) return;
+    // the compatibility directory while a project session is mounted.
+    if (isProjectRuntimeActive()) return;
     cachedHomeDirectory = null;
     const generation = ++homeResolveGeneration;
     initializeHomeDirectory().then((home) => {
       if (generation !== homeResolveGeneration) return;
-      if (isWorkspaceRuntimeActive()) return;
+      if (isProjectRuntimeActive()) return;
       useDirectoryStore.getState().synchronizeHomeDirectory(home);
     });
   });

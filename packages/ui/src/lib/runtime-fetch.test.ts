@@ -3,7 +3,7 @@ import { createOpencodeClient } from '@opencode-ai/sdk/v2';
 import { buildRuntimeFetchUrl, isLatin1Safe, runtimeFetch, sanitizeHeadersForBrowser } from './runtime-fetch';
 import { clearRuntimeAuthCredentialProvider, setRuntimeBearerToken } from './runtime-auth';
 import { configureRuntimeUrlResolver, getRuntimeUrlResolver, setRuntimeUrlResolver } from './runtime-url';
-import { isWorkspaceRuntimeActive, setWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive, setProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 const originalFetch = globalThis.fetch;
 
@@ -80,11 +80,11 @@ describe('buildRuntimeFetchUrl', () => {
 });
 
 describe('runtimeFetch transport contract', () => {
-  test('returns explicit capability_unavailable for workspace config CRUD without touching the ambient fetch', async () => {
+  test('returns explicit capability_unavailable for project config CRUD without touching the ambient fetch', async () => {
     const calls: Array<string | URL | Request> = [];
-    const previousActive = isWorkspaceRuntimeActive();
+    const previousActive = isProjectRuntimeActive();
     try {
-      setWorkspaceRuntimeActive(true);
+      setProjectRuntimeActive(true);
       globalThis.fetch = (async (input: RequestInfo | URL) => {
         calls.push(input);
         throw new Error('ambient fetch must not run');
@@ -97,21 +97,21 @@ describe('runtimeFetch transport contract', () => {
 
       expect(response.status).toBe(501);
       expect(await response.json()).toEqual({
-        error: 'This workspace capability is not available',
+        error: 'This project capability is not available',
         code: 'capability_unavailable',
       });
       expect(calls).toHaveLength(0);
     } finally {
-      setWorkspaceRuntimeActive(previousActive);
+      setProjectRuntimeActive(previousActive);
       globalThis.fetch = originalFetch;
     }
   });
 
-  test('keeps host-owned provider config routes unavailable in workspace scope', async () => {
+  test('keeps host-owned provider config routes unavailable in project scope', async () => {
     const calls: Array<string | URL | Request> = [];
-    const previousActive = isWorkspaceRuntimeActive();
+    const previousActive = isProjectRuntimeActive();
     try {
-      setWorkspaceRuntimeActive(true);
+      setProjectRuntimeActive(true);
       globalThis.fetch = (async (input: RequestInfo | URL) => {
         calls.push(input);
         throw new Error('ambient fetch must not run');
@@ -121,12 +121,12 @@ describe('runtimeFetch transport contract', () => {
 
       expect(response.status).toBe(501);
       expect(await response.json()).toEqual({
-        error: 'This workspace capability is not available',
+        error: 'This project capability is not available',
         code: 'capability_unavailable',
       });
       expect(calls).toHaveLength(0);
     } finally {
-      setWorkspaceRuntimeActive(previousActive);
+      setProjectRuntimeActive(previousActive);
       globalThis.fetch = originalFetch;
     }
   });
@@ -238,7 +238,7 @@ describe('runtimeFetch transport contract', () => {
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
       }) as typeof fetch;
 
-      const request = new Request('https://app.example/api/session/abc/prompt_async?directory=%2Frepo&workspace=main', {
+      const request = new Request('https://app.example/api/session/abc/prompt_async?directory=%2Frepo&project=main', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -252,7 +252,7 @@ describe('runtimeFetch transport contract', () => {
 
       expect(calls).toHaveLength(1);
       const captured = calls[0].input;
-      expect(captured.url).toBe('https://runtime.example/api/session/abc/prompt_async?directory=%2Frepo&workspace=main');
+      expect(captured.url).toBe('https://runtime.example/api/session/abc/prompt_async?directory=%2Frepo&project=main');
       expect(captured.method).toBe('POST');
       expect(captured.signal).toBe(controller.signal);
       expect(captured.headers.get('content-type')).toBe('application/json');

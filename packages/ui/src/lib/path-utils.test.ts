@@ -23,13 +23,13 @@ describe('path-utils', () => {
     expect(isAbsoluteFilePath('src/file.ts')).toBe(false);
   });
 
-  test('does not prefix Windows absolute targets with the workspace directory', () => {
+  test('does not prefix Windows absolute targets with the project directory', () => {
     expect(toAbsoluteFilePath('C:/Users/Bohdan Triapitsyn/projects/openchamber', 'C:/Users/Bohdan Triapitsyn/projects/openchamber/packages/ui/Button.tsx')).toBe(
       'C:/Users/Bohdan Triapitsyn/projects/openchamber/packages/ui/Button.tsx',
     );
   });
 
-  test('joins relative targets under Windows workspaces', () => {
+  test('joins relative targets under Windows projects', () => {
     expect(toAbsoluteFilePath('C:/Users/Bohdan Triapitsyn/projects/openchamber', 'packages/ui/Button.tsx')).toBe(
       'C:/Users/Bohdan Triapitsyn/projects/openchamber/packages/ui/Button.tsx',
     );
@@ -38,7 +38,7 @@ describe('path-utils', () => {
     );
   });
 
-  test('compares Windows workspace containment case-insensitively', () => {
+  test('compares Windows project containment case-insensitively', () => {
     expect(isFilePathWithinDirectory(
       'c:/users/bohdan triapitsyn/projects/openchamber/packages/ui/button.tsx',
       'C:/Users/Bohdan Triapitsyn/projects/openchamber',

@@ -67,7 +67,7 @@ import { openSessionFromToast } from "./session-navigation"
 import { getPermissionToastKey, showPermissionNeededToast } from "./permission-toast"
 import { getRuntimeLiveStatusSeed, LIVE_STATUS_TTL_MS } from "./runtime-live-memory"
 import { getControlPlaneKey } from "@/lib/control-plane"
-import { workspaceIdFromScopeKey } from "@/workspaces/identity"
+import { projectIdFromScopeKey } from "@/projects/identity"
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry"
 import { isFilesystemError } from "@/lib/api/files-errors"
 import { listGlobalSessionPages } from "@/stores/globalSessions"
@@ -89,7 +89,7 @@ import {
 type SyncSystem = {
   childStores: ChildStoreManager
   messageLoader: SessionMessageLoader
-  /** Sync scope: the workspace scope key of the mounted workspace handle. */
+  /** Sync scope: the project scope key of the mounted project handle. */
   scopeKey: string
   sdk: OpencodeClient
   directory: string
@@ -290,12 +290,12 @@ type PendingSessionMaterialization = {
   directory: string
   enqueuedAt: number
   request: SessionMaterializationRequest
-  /** Loader captured at enqueue time: workspace mode drops the pending work
+  /** Loader captured at enqueue time: project mode drops the pending work
    * when a provider remount replaced the imperative loader, so a stale
-   * materialization can never land in a different workspace's store. */
+   * materialization can never land in a different project's store. */
   loader: SessionMessageLoader
   /** SDK captured with the loader so post-event status recovery cannot fall
-   * back to the ambient runtime after a workspace switch. */
+   * back to the ambient runtime after a project switch. */
   sdk: OpencodeClient
 }
 
@@ -303,7 +303,7 @@ const SESSION_MATERIALIZATION_COOLDOWN_MS = 5_000
 const pendingSessionMaterializations = new Map<string, PendingSessionMaterialization>()
 
 const resolveFallbackSdk = (): OpencodeClient | null => {
-  // A workspace scope must never borrow the process-wide SDK while its
+  // A project scope must never borrow the process-wide SDK while its
   // provider is between unmount and mount.
   return getSyncSdk()
 }
@@ -478,7 +478,7 @@ type UiNotificationPayload = {
   tag?: unknown
   kind?: unknown
   sessionId?: unknown
-  workspaceId?: unknown
+  projectId?: unknown
   directory?: unknown
   requireHidden?: unknown
   desktopNotificationDelivered?: unknown
@@ -506,12 +506,12 @@ const handleUiNotificationEvent = (
   }
 
   const notification = properties as UiNotificationPayload
-  const notificationWorkspaceId = asOptionalString(notification.workspaceId)
-    ?? workspaceIdFromScopeKey(scopeKey)
+  const notificationProjectId = asOptionalString(notification.projectId)
+    ?? projectIdFromScopeKey(scopeKey)
     ?? undefined
   if (
     (notification.desktopNotificationDelivered === true || notification.desktopStdoutActive === true)
-    && !notificationWorkspaceId
+    && !notificationProjectId
     && getControlPlaneKey() === "local"
   ) {
     return true
@@ -527,7 +527,7 @@ const handleUiNotificationEvent = (
     body: asOptionalString(notification.body),
     tag: asOptionalString(notification.tag),
     kind: asOptionalString(notification.kind),
-    workspaceId: notificationWorkspaceId,
+    projectId: notificationProjectId,
     sessionId: asOptionalString(notification.sessionId),
     directory: asOptionalString(notification.directory) ?? (fallbackDirectory && fallbackDirectory !== "global" ? fallbackDirectory : undefined),
     requireHidden: notification.requireHidden === true,
@@ -1262,7 +1262,7 @@ const updateRoutingIndexFromEvent = (
  * `candidateSessionIds` is omitted, every session known to the directory store
  * is treated as a candidate.
  */
-/** Pending question list through a specific SDK client (workspace-bound
+/** Pending question list through a specific SDK client (project-bound
  * sync), falling back to the ambient runtime wrapper when no SDK is passed.
  * The unscoped request runs first, then one per requested directory; results
  * are merged and deduplicated by id — the same contract as
@@ -1273,7 +1273,7 @@ async function listPendingQuestionsFor(
 ): Promise<QuestionRequest[]> {
   const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) {
-    throw new Error("Workspace SDK is unavailable for question recovery")
+    throw new Error("Project SDK is unavailable for question recovery")
   }
   const results = await Promise.all([null, ...directories].map(async (directory) => {
     const result = await resolvedSdk.question.list(directory ? { directory } : undefined)
@@ -1294,7 +1294,7 @@ async function listPendingQuestionsFor(
   return merged
 }
 
-/** Pending permission list through a specific SDK client (workspace-bound
+/** Pending permission list through a specific SDK client (project-bound
  * sync), falling back to the ambient runtime wrapper when no SDK is passed. */
 async function listPendingPermissionsFor(
   sdk: OpencodeClient | undefined,
@@ -1302,7 +1302,7 @@ async function listPendingPermissionsFor(
 ): Promise<PermissionRequest[]> {
   const resolvedSdk = sdk ?? resolveFallbackSdk()
   if (!resolvedSdk) {
-    throw new Error("Workspace SDK is unavailable for permission recovery")
+    throw new Error("Project SDK is unavailable for permission recovery")
   }
   const results = await Promise.all([null, ...directories].map(async (directory) => {
     const result = await resolvedSdk.permission.list(directory ? { directory } : undefined)
@@ -1574,8 +1574,8 @@ export function handleEvent(
   if (payload.type === "session.deleted") {
     const sessionID = getSessionIdFromPayload(payload)
     if (sessionID && directory && directory !== "global") {
-      // Scope-aware deletion cleanup: every mounted sync scope is a workspace
-      // scope, whose composite keys are collision-free per workspace, so the
+      // Scope-aware deletion cleanup: every mounted sync scope is a project
+      // scope, whose composite keys are collision-free per project, so the
       // identity always commits (there is no ambient runtime to guard).
       const identity = resolveSessionDeletionIdentity(sessionID, directory, expectedScopeKey)
       cleanupPersistedSessionState(identity)
@@ -1675,7 +1675,7 @@ export function handleEvent(
       const completePermissionCheck = (accepted: boolean) => {
         if (eventKey && pendingVSCodePermissionEvents.get(eventKey) !== eventToken) return
         if (eventKey) pendingVSCodePermissionEvents.delete(eventKey)
-        // Workspace-scoped keys are collision-free per workspace, so the
+        // Project-scoped keys are collision-free per project, so the
         // completion always commits.
         if (!accepted) handleEvent(rawDirectory, payload, childStores, routingIndex, expectedScopeKey, true, streamingDirectory)
       }
@@ -1754,7 +1754,7 @@ export function handleEvent(
       // subtask — skip notification
     } else if (sessionID) {
       appendNotification({
-        workspaceId: workspaceIdFromScopeKey(expectedScopeKey) ?? undefined,
+        projectId: projectIdFromScopeKey(expectedScopeKey) ?? undefined,
         directory: resolvedDirectory,
         session: sessionID,
         time: Date.now(),
@@ -2049,15 +2049,15 @@ const dispatchOpenCodeUpdateAvailable = (payload: { version: string }) => {
 }
 
 export function SyncProvider(props: {
-  /** Workspace-bound handle: the sync runs against the handle's
-   * workspace-scoped SDK and directory (the CURRENT control plane through the
-   * workspace runtime proxy), keyed by the handle's workspace scope key. There
-   * is no ambient fallback: mounting sync without a workspace handle is a
+  /** Project-bound handle: the sync runs against the handle's
+   * project-scoped SDK and directory (the CURRENT control plane through the
+   * project runtime proxy), keyed by the handle's project scope key. There
+   * is no ambient fallback: mounting sync without a project handle is a
    * programming error, and callers that cannot resolve a handle must render
    * an explicit unavailable state instead. The SDK identity changes per
-   * workspace, which forces the message loader to rebuild — stale in-flight
-   * responses from a previous workspace cannot land in the new one. */
-  workspaceHandle: import('@/workspaces/workspace-runtime-registry').WorkspaceRuntimeHandle
+   * project, which forces the message loader to rebuild — stale in-flight
+   * responses from a previous project cannot land in the new one. */
+  projectHandle: import('@/projects/project-runtime-registry').ProjectRuntimeHandle
   children: React.ReactNode
 }) {
   // Capacitor apps were previously locked to SSE because Android WebSocket
@@ -2067,17 +2067,17 @@ export function SyncProvider(props: {
   // 403. With the origin allowlisted, mobile uses the same transport
   // selection as everywhere else ('auto' falls back to SSE on WS failure).
   const messageStreamTransport = useConfigStore((state) => state.settingsMessageStreamTransport)
-  const boundSdk = props.workspaceHandle.sdk
-  const boundService = props.workspaceHandle.service
-  const boundDirectory = props.workspaceHandle.directory
-  // Sync scope: the workspace scope key of the bound handle. Every cache keyed
+  const boundSdk = props.projectHandle.sdk
+  const boundService = props.projectHandle.service
+  const boundDirectory = props.projectHandle.directory
+  // Sync scope: the project scope key of the bound handle. Every cache keyed
   // by it (persisted storage, prefetch cache, loader entries, child-store
-  // identities) is isolated per workspace: equal directory paths and equal
-  // session IDs on different workspaces never share state.
-  const scopeKey = props.workspaceHandle.scopeKey
+  // identities) is isolated per project: equal directory paths and equal
+  // session IDs on different projects never share state.
+  const scopeKey = props.projectHandle.scopeKey
 
   // Bind the scope-partitioned sync stores before child effects can issue a
-  // load, so switching workspaces preserves the prior partition instead of
+  // load, so switching projects preserves the prior partition instead of
   // clearing or overwriting it.
   React.useLayoutEffect(() => {
     useGlobalSessionStatusStore.getState().bindScope(scopeKey)
@@ -2154,6 +2154,18 @@ export function SyncProvider(props: {
         const { directory } = context
         const store = childStores.getChild(directory)
         if (!store || !context.isCurrent()) return
+
+        // Defense in depth for the directory boundary: the demand set is
+        // narrowed to the bound project directory, but other demand sources
+        // (draft opens, session openers) could still queue a foreign
+        // directory. Bootstrapping it through this project handle would be
+        // rejected by the server (403 directory outside the project), so
+        // skip it here instead.
+        const normalizedBound = normalizeEventDirectory(boundDirectory)
+        const normalizedTarget = normalizeEventDirectory(directory)
+        if (normalizedBound && normalizedTarget && normalizedTarget !== normalizedBound && !normalizedTarget.startsWith(`${normalizedBound}/`)) {
+          return
+        }
 
         const runBootstrap = async (attempt: number): Promise<"complete" | "failed" | "stale"> => {
           if (!context.isCurrent()) return "stale"
@@ -2257,7 +2269,7 @@ export function SyncProvider(props: {
         const result = await runBootstrap(0)
         if (result === "failed") {
           // OpenCode can mask the underlying errno while initializing an
-          // inaccessible workspace. Probe the exact directory through the
+          // inaccessible project. Probe the exact directory through the
           // owning runtime filesystem API so only an authoritative local
           // EPERM/EACCES becomes an actionable grant-access failure.
           const files = getRegisteredRuntimeAPIs()?.files
@@ -2289,7 +2301,7 @@ export function SyncProvider(props: {
       },
       isLoadingSessions: () => false,
     })
-  }, [childStores, messageLoader, boundSdk, routingIndex, scopeKey])
+  }, [childStores, messageLoader, boundSdk, routingIndex, scopeKey, boundDirectory])
 
   // Bootstrap global state — set bootingRoot/bootedAt to suppress
   // redundant refresh events during startup
@@ -2321,9 +2333,9 @@ export function SyncProvider(props: {
 
   // Event pipeline — created once per mount. No class, no start/stop.
   // Abort controller owned by the pipeline closure. Cleanup aborts + flushes.
-  // Workspace-bound sync runs on the bound SDK's SSE stream: the workspace
+  // Project-bound sync runs on the bound SDK's SSE stream: the project
   // runtime proxy pipes `text/event-stream`, and the pipeline intentionally
-  // stays on SSE so it never opens a WS against the workspace prefix through
+  // stays on SSE so it never opens a WS against the project prefix through
   // the ambient global runtime URL builder.
   useEffect(() => {
     const pipeline = createEventPipeline({
@@ -2703,10 +2715,10 @@ export function useSessionMessageLoadState(sessionID: string, directory?: string
   )
 }
 
-/** The active sync scope (the mounted workspace handle's scope key).
+/** The active sync scope (the mounted project handle's scope key).
  * Consumers keying caches by sync identity must use this
  * instead of `getControlPlaneKey()` so equal session IDs/directories in different
- * workspaces never share state. */
+ * projects never share state. */
 export function useSyncScopeKey(): string {
   return useSyncSystem().scopeKey
 }
@@ -2911,8 +2923,15 @@ export function useParentSession(sessionID: string | null, directory?: string): 
 
 /** Get one session by id for a directory */
 export function useSession(sessionID?: string | null, directory?: string) {
-  const { childStores } = useSyncSystem()
+  // Tolerates being mounted without a SyncProvider (e.g. App's own body,
+  // onboarding, recovery): outside a provider there are no live sessions, so
+  // the lookup is simply undefined instead of throwing like useSyncSystem.
+  const sync = useContext(SyncContext)
+  const childStores = sync?.childStores ?? null
   const getSnapshot = useCallback(() => {
+    if (!childStores) {
+      return undefined
+    }
     if (directory) {
       return childStores.getChild(directory)?.getState().session.find((session) => session.id === sessionID)
     }
@@ -2920,6 +2939,9 @@ export function useSession(sessionID?: string | null, directory?: string) {
   }, [childStores, directory, sessionID])
 
   const subscribe = useCallback((notify: () => void) => {
+    if (!childStores) {
+      return () => {}
+    }
     if (directory) {
       return childStores.ensureChild(directory, { bootstrap: false }).subscribe((state, previous) => {
         if (state.session !== previous.session) notify()

@@ -27,7 +27,7 @@ import { getCycledPrimaryAgentName } from '@/components/chat/mobileControlsUtils
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { addSelectionToChat } from '@/lib/addSelectionToChat';
 import { hasOpenDropdown } from './keyboard-shortcut-dom';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 export const useKeyboardShortcuts = () => {
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
@@ -41,9 +41,9 @@ export const useKeyboardShortcuts = () => {
   const effectiveDirectory = useEffectiveDirectory();
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
   const activeProject = useProjectsStore((s) => s.getActiveProject());
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const currentSessionDirectory = useSessionUIStore((s) => s.currentSessionDirectory);
-  const currentShortcutDirectory = activeWorkspaceId
+  const currentShortcutDirectory = activeProjectId
     ? currentSessionDirectory ?? effectiveDirectory ?? currentDirectory
     : currentDirectory;
 
@@ -299,11 +299,11 @@ export const useKeyboardShortcuts = () => {
       if (canUseElectronDesktopIPC() && eventMatchesShortcut(e, combo('new_mini_chat'))) {
         e.preventDefault();
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
-          directory: activeWorkspaceId
+          directory: activeProjectId
             ? effectiveDirectory ?? ''
             : currentDirectory || activeProject?.path || '',
-          projectId: activeWorkspaceId ? null : activeProject?.id ?? null,
-          workspaceId: activeWorkspaceId ?? null,
+          projectId: activeProjectId ? null : activeProject?.id ?? null,
+          workspaceId: activeProjectId ?? null,
           ...getDesktopRuntimeEndpointArgs(),
         }).catch((error) => {
           console.warn('[keyboard-shortcuts] failed to open draft mini chat window', error);
@@ -719,7 +719,7 @@ export const useKeyboardShortcuts = () => {
     effectiveDirectory,
     activeProject?.id,
     activeProject?.path,
-    activeWorkspaceId,
+    activeProjectId,
     shortcutOverrides,
   ]);
 

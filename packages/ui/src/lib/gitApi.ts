@@ -302,9 +302,9 @@ export async function generateCommitMessage(
 ): Promise<{ message: import('./api/types').GeneratedCommitMessage }> {
   const startedAt = Date.now();
 
-  // Git is a workspace-owned capability. Once the RuntimeAPI provider has
+  // Git is a project-owned capability. Once the RuntimeAPI provider has
   // mounted, route the generation request through its bound adapter so a
-  // remote workspace never posts to the ambient runtime's small-model route.
+  // remote project never posts to the ambient runtime's small-model route.
   const runtime = getRuntimeGit();
   if (runtime?.generateCommitMessage) {
     return runtime.generateCommitMessage(directory, files, options);
@@ -385,7 +385,7 @@ export async function generatePullRequestDescription(
 ): Promise<import('./api/types').GeneratedPullRequestDescription> {
   const startedAt = Date.now();
 
-  // Keep the remote path on the workspace-bound Git adapter. The legacy
+  // Keep the remote path on the project-bound Git adapter. The legacy
   // client-side prompt assembly below remains for non-mounted/older runtimes.
   const runtime = getRuntimeGit();
   if (runtime?.generatePullRequestDescription) {

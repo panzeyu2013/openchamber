@@ -20,12 +20,12 @@ import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { SyncProvider } from '@/sync/sync-context';
-import { setControlPlaneOrigin } from '@/workspaces/control-plane-fetch';
-import { WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
-import { WorkspaceCatalogSessionIndexEffects, SyncAppEffects } from './AppEffects';
+import { setControlPlaneOrigin } from '@/projects/control-plane-fetch';
+import { ProjectRuntimeProvider } from '@/projects/ProjectRuntimeProvider';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
+import { ProjectCatalogSessionIndexEffects, SyncAppEffects } from './AppEffects';
 import { useAppFontEffects } from './useAppFontEffects';
-import type { WorkspaceDescriptor } from '@/workspaces/types';
+import type { ProjectDescriptor } from '@/projects/types';
 
 type VSCodePanelType = 'chat' | 'agentManager';
 
@@ -36,23 +36,23 @@ declare global {
 }
 
 /**
- * VS Code workspace descriptor (structural mirror of the bridge payload in
- * `packages/vscode/webview/api/workspaces.ts`). The webview resolves it
+ * VS Code project descriptor (structural mirror of the bridge payload in
+ * `packages/vscode/webview/api/projects.ts`). The webview resolves it
  * through the extension bridge and passes it down; the UI never fabricates a
- * workspace identity from paths. States:
+ * project identity from paths. States:
  * - `loading`: the bridge has not answered yet — render a loading state,
  *   never a fake scope.
- * - `available`: the current VS Code folder resolves to a catalog workspace —
- *   mount the workspace-scoped runtime + sync.
- * - `no_folder` / `capability_unavailable` / `not_found`: no workspace
+ * - `available`: the current VS Code folder resolves to a catalog project —
+ *   mount the project-scoped runtime + sync.
+ * - `no_folder` / `capability_unavailable` / `not_found`: no project
  *   identity exists in this runtime — render the explicit unavailable state.
  */
-export type VSCodeWorkspaceDescriptorResult =
+export type VSCodeProjectDescriptorResult =
   | { phase: 'loading' }
   | {
       phase: 'available';
-      workspaceId: string;
-      workspace: WorkspaceDescriptor;
+      projectId: string;
+      project: ProjectDescriptor;
       activePath: string;
     }
   | {
@@ -65,10 +65,10 @@ type VSCodeAppProps = {
   apis: RuntimeAPIs;
   /** Resolved by the webview through the extension bridge. `loading` means
    * the bridge has not answered yet. */
-  workspaceDescriptor?: VSCodeWorkspaceDescriptorResult;
+  projectDescriptor?: VSCodeProjectDescriptorResult;
 };
 
-const VSCodeWorkspaceGate: React.FC = () => {
+const VSCodeProjectGate: React.FC = () => {
   const { t } = useI18n();
   return (
     <div className="flex h-full items-center justify-center bg-background px-4 text-center text-sm text-muted-foreground">
@@ -77,12 +77,12 @@ const VSCodeWorkspaceGate: React.FC = () => {
   );
 };
 
-const VSCodeWorkspaceUnavailable: React.FC<{ reason?: string }> = ({ reason }) => {
+const VSCodeProjectUnavailable: React.FC<{ reason?: string }> = ({ reason }) => {
   const { t } = useI18n();
   return (
     <div className="flex h-full items-center justify-center bg-background px-4 text-center text-sm text-muted-foreground">
       <div>
-        <p>{t('workspaces.sidebar.unavailable')}</p>
+        <p>{t('projects.sidebar.unavailable')}</p>
         {reason ? (
           <p className="mt-1 truncate text-xs text-muted-foreground/70" title={reason}>{reason}</p>
         ) : null}
@@ -92,40 +92,40 @@ const VSCodeWorkspaceUnavailable: React.FC<{ reason?: string }> = ({ reason }) =
 };
 
 /**
- * Workspace-scoped sync mount for the VS Code webview. Follows the main app
- * pattern: the sync always runs against the bound workspace handle; a missing
+ * Project-scoped sync mount for the VS Code webview. Follows the main app
+ * pattern: the sync always runs against the bound project handle; a missing
  * handle renders the gate instead of falling back to an ambient scope.
  */
-const VSCodeWorkspaceSyncMount: React.FC<{
+const VSCodeProjectSyncMount: React.FC<{
   children: React.ReactNode;
 }> = ({ children }) => {
-  const { handle } = useWorkspaceRuntime();
+  const { handle } = useProjectRuntime();
   if (!handle) {
-    return <VSCodeWorkspaceGate />;
+    return <VSCodeProjectGate />;
   }
   return (
-    <SyncProvider key={handle.workspaceId} workspaceHandle={handle}>
+    <SyncProvider key={handle.projectId} projectHandle={handle}>
       {children}
     </SyncProvider>
   );
 };
 
-const VSCodeWorkspaceRuntime: React.FC<{
+const VSCodeProjectRuntime: React.FC<{
   apis: RuntimeAPIs;
-  workspaceId: string;
+  projectId: string;
   children: React.ReactNode;
-}> = ({ apis, workspaceId, children }) => (
-  <WorkspaceRuntimeProvider workspaceId={workspaceId}>
-    <WorkspaceCatalogSessionIndexEffects />
-    <VSCodeWorkspaceSyncMount>
+}> = ({ apis, projectId, children }) => (
+  <ProjectRuntimeProvider projectId={projectId}>
+    <ProjectCatalogSessionIndexEffects />
+    <VSCodeProjectSyncMount>
       <RuntimeAPIProvider apis={apis}>
         {children}
       </RuntimeAPIProvider>
-    </VSCodeWorkspaceSyncMount>
-  </WorkspaceRuntimeProvider>
+    </VSCodeProjectSyncMount>
+  </ProjectRuntimeProvider>
 );
 
-export function VSCodeApp({ apis, workspaceDescriptor = { phase: 'loading' } }: VSCodeAppProps) {
+export function VSCodeApp({ apis, projectDescriptor = { phase: 'loading' } }: VSCodeAppProps) {
   const error = useSessionUIStore((state) => state.error);
   const clearError = useSessionUIStore((state) => state.clearError);
   const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
@@ -141,18 +141,18 @@ export function VSCodeApp({ apis, workspaceDescriptor = { phase: 'loading' } }: 
   }, [apis]);
 
   // Pin the control-plane origin when the extension host resolved a
-  // workspace descriptor from a configured control plane
-  // (`openchamber.apiUrl`). Without this the workspace runtime registry's
+  // project descriptor from a configured control plane
+  // (`openchamber.apiUrl`). Without this the project runtime registry's
   // pinned fetch would 501 on the webview origin.
   React.useEffect(() => {
-    if (workspaceDescriptor.phase !== 'available') return;
+    if (projectDescriptor.phase !== 'available') return;
     const configured = typeof window !== 'undefined'
       ? (window as unknown as { __VSCODE_CONFIG__?: { apiUrl?: string } }).__VSCODE_CONFIG__?.apiUrl?.trim()
       : '';
     if (configured) {
       setControlPlaneOrigin(configured);
     }
-  }, [workspaceDescriptor]);
+  }, [projectDescriptor]);
 
   useAppFontEffects();
   usePushVisibilityBeacon({ enabled: true });
@@ -201,28 +201,28 @@ export function VSCodeApp({ apis, workspaceDescriptor = { phase: 'loading' } }: 
     return () => window.clearTimeout(timeout);
   }, [clearError, error]);
 
-  if (workspaceDescriptor.phase === 'loading') {
+  if (projectDescriptor.phase === 'loading') {
     return (
       <ErrorBoundary>
-        <VSCodeWorkspaceGate />
+        <VSCodeProjectGate />
       </ErrorBoundary>
     );
   }
 
-  if (workspaceDescriptor.phase !== 'available') {
+  if (projectDescriptor.phase !== 'available') {
     return (
       <ErrorBoundary>
-        <VSCodeWorkspaceUnavailable reason={workspaceDescriptor.reason} />
+        <VSCodeProjectUnavailable reason={projectDescriptor.reason} />
       </ErrorBoundary>
     );
   }
 
-  const { workspaceId } = workspaceDescriptor;
+  const { projectId } = projectDescriptor;
 
   if (panelType === 'agentManager') {
     return (
       <ErrorBoundary>
-        <VSCodeWorkspaceRuntime apis={apis} workspaceId={workspaceId}>
+        <VSCodeProjectRuntime apis={apis} projectId={projectId}>
           <TooltipProvider delayDuration={300} skipDelayDuration={150}>
             <div className="h-full text-foreground bg-background">
               <SyncAppEffects embeddedBackgroundWorkEnabled={true} />
@@ -231,14 +231,14 @@ export function VSCodeApp({ apis, workspaceDescriptor = { phase: 'loading' } }: 
               <Toaster position="top-center" />
             </div>
           </TooltipProvider>
-        </VSCodeWorkspaceRuntime>
+        </VSCodeProjectRuntime>
       </ErrorBoundary>
     );
   }
 
   return (
     <ErrorBoundary>
-      <VSCodeWorkspaceRuntime apis={apis} workspaceId={workspaceId}>
+      <VSCodeProjectRuntime apis={apis} projectId={projectId}>
         <FireworksProvider>
           <TooltipProvider delayDuration={300} skipDelayDuration={150}>
             <div className="h-full text-foreground bg-background">
@@ -250,7 +250,7 @@ export function VSCodeApp({ apis, workspaceDescriptor = { phase: 'loading' } }: 
             </div>
           </TooltipProvider>
         </FireworksProvider>
-      </VSCodeWorkspaceRuntime>
+      </VSCodeProjectRuntime>
     </ErrorBoundary>
   );
 }

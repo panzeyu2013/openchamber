@@ -1,9 +1,9 @@
 /**
  * Scope-scoped pagination metadata shared with the session message loader.
  *
- * The scope is the workspace scope key in workspace mode and the ambient
- * runtime key otherwise (byte-identical keys in non-workspace mode), so
- * equal session IDs and directories in different workspaces never share
+ * The scope is the project scope key in project mode and the ambient
+ * runtime key otherwise (byte-identical keys in non-project mode), so
+ * equal session IDs and directories in different projects never share
  * pagination state.
  */
 
@@ -71,7 +71,7 @@ export function clearDirectorySessionPrefetch(directory: string, scopeKey: strin
   }
 }
 
-/** Clears every entry under a scope (runtime key or workspace scope key). */
+/** Clears every entry under a scope (runtime key or project scope key). */
 export function clearRuntimeSessionPrefetch(scopeKey: string) {
   const prefix = `${scopeKey}\n`
   for (const id of cache.keys()) {

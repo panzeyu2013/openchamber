@@ -133,9 +133,9 @@ describe('permission store server policy', () => {
     expect(usePermissionStore.getState().autoAccept).toEqual({ next: true });
   });
 
-  test('does not send the ambient policy request for a workspace scope', async () => {
+  test('does not send the ambient policy request for a project scope', async () => {
     usePermissionStore.getState().applySnapshot({ sessions: { old: true }, revision: 1 });
-    currentScopeKey = 'workspace:remote';
+    currentScopeKey = 'project:remote';
     let requestCount = 0;
     fetchImpl = async () => {
       requestCount += 1;

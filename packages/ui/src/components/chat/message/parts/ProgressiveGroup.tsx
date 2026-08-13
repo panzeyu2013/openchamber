@@ -637,7 +637,7 @@ const StaticToolRowInner: React.FC<{
         }
 
         // Dedicated mobile app: stage the same pending file focus/navigation
-        // desktop uses, then surface the Files pane (workspace drawer tab),
+        // desktop uses, then surface the Files pane (project drawer tab),
         // which consumes it. Desktop grant flows don't apply here.
         if (mobileActions) {
             const uiStore = useUIStore.getState();

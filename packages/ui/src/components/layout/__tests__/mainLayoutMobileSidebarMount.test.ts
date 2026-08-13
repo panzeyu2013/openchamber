@@ -40,7 +40,7 @@ describe('MainLayout mobile SessionSidebar mount (issue #1695 regression guard)'
 
     test('hidden sidebars disable render-only subscriptions and effects', () => {
         expect(sessionSidebarSource).toContain('useGitAllBranches(isVisible)');
-        expect(sessionSidebarSource).toContain('useGitRepoStatusMap(isVisible && !activeWorkspaceId ? normalizedProjectPaths : EMPTY_STRING_ARRAY)');
+        expect(sessionSidebarSource).toContain('useGitRepoStatusMap(isVisible && !activeProjectId && !projectMounted ? normalizedProjectPaths : EMPTY_STRING_ARRAY)');
         expect(sessionSidebarSource).toContain('enabled: isVisible && stickyZoneHeaders,');
         expect(sessionSidebarSource).toContain('isDesktopShellRuntime,');
         expect(sessionSidebarSource).toContain('isVisible ? state.rankById : EMPTY_SESSION_ORDER_RANKS');

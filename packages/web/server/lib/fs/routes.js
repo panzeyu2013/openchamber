@@ -70,18 +70,18 @@ export const mintOutsideFileGrant = async (targetPath, {
 const resolveOutsideFileGrant = async ({ token, targetPath, scope, fsPromises }) => {
   pruneOutsideFileGrants();
   if (typeof token !== 'string' || !token.trim()) {
-    return { ok: false, error: 'Outside workspace file access requires a grant' };
+    return { ok: false, error: 'Outside project file access requires a grant' };
   }
   const grant = outsideFileGrants.get(token.trim());
   if (!grant) {
-    return { ok: false, error: 'Outside workspace file grant is invalid or expired' };
+    return { ok: false, error: 'Outside project file grant is invalid or expired' };
   }
   if (!grant.scopes.has(scope)) {
-    return { ok: false, error: 'Outside workspace file grant does not allow this operation' };
+    return { ok: false, error: 'Outside project file grant does not allow this operation' };
   }
   const canonicalPath = await fsPromises.realpath(targetPath);
   if (canonicalPath !== grant.canonicalPath) {
-    return { ok: false, error: 'Outside workspace file grant does not match requested path' };
+    return { ok: false, error: 'Outside project file grant does not match requested path' };
   }
   return { ok: true, base: grant.base, resolved: canonicalPath, granted: true };
 };
@@ -169,7 +169,7 @@ const isPathWithinRoot = (resolvedPath, rootPath, path, os) => {
   return true;
 };
 
-const resolveWorkspacePath = ({ targetPath, baseDirectory, path, os, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
+const resolveProjectPath = ({ targetPath, baseDirectory, path, os, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
   const normalized = normalizeDirectoryPath(targetPath);
   if (!normalized || typeof normalized !== 'string') {
     return { ok: false, error: 'Path is required' };
@@ -186,10 +186,10 @@ const resolveWorkspacePath = ({ targetPath, baseDirectory, path, os, normalizeDi
     return { ok: true, base: path.resolve(openchamberUserConfigRoot), resolved };
   }
 
-  return { ok: false, error: 'Path is outside of active workspace' };
+  return { ok: false, error: 'Path is outside of active project' };
 };
 
-const resolveWorkspacePathFromWorktrees = async ({ targetPath, baseDirectory, path, os, normalizeDirectoryPath }) => {
+const resolveProjectPathFromWorktrees = async ({ targetPath, baseDirectory, path, os, normalizeDirectoryPath }) => {
   const normalized = normalizeDirectoryPath(targetPath);
   if (!normalized || typeof normalized !== 'string') {
     return { ok: false, error: 'Path is required' };
@@ -219,16 +219,16 @@ const resolveWorkspacePathFromWorktrees = async ({ targetPath, baseDirectory, pa
     console.warn('Failed to resolve worktree roots:', error);
   }
 
-  return { ok: false, error: 'Path is outside of active workspace' };
+  return { ok: false, error: 'Path is outside of active project' };
 };
 
-const resolveWorkspacePathFromContext = async ({ req, targetPath, resolveProjectDirectory, path, os, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
+const resolveProjectPathFromContext = async ({ req, targetPath, resolveProjectDirectory, path, os, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
   const resolvedProject = await resolveProjectDirectory(req);
   if (!resolvedProject.directory) {
-    return { ok: false, error: resolvedProject.error || 'Active workspace is required' };
+    return { ok: false, error: resolvedProject.error || 'Active project is required' };
   }
 
-  const resolved = resolveWorkspacePath({
+  const resolved = resolveProjectPath({
     targetPath,
     baseDirectory: resolvedProject.directory,
     path,
@@ -236,11 +236,11 @@ const resolveWorkspacePathFromContext = async ({ req, targetPath, resolveProject
     normalizeDirectoryPath,
     openchamberUserConfigRoot,
   });
-  if (resolved.ok || resolved.error !== 'Path is outside of active workspace') {
+  if (resolved.ok || resolved.error !== 'Path is outside of active project') {
     return resolved;
   }
 
-  return resolveWorkspacePathFromWorktrees({
+  return resolveProjectPathFromWorktrees({
     targetPath,
     baseDirectory: resolvedProject.directory,
     path,
@@ -292,7 +292,7 @@ const escapeCloneSshKeyPath = (sshKeyPath) => {
 };
 
 const resolveReadPathFromContext = async ({ req, targetPath, scope, resolveProjectDirectory, path, os, fsPromises, normalizeDirectoryPath, openchamberUserConfigRoot }) => {
-  if (req.query?.allowOutsideWorkspace === 'true') {
+  if (req.query?.allowOutsideProject === 'true') {
     const normalized = normalizeDirectoryPath(targetPath);
     if (!normalized || typeof normalized !== 'string') {
       return { ok: false, error: 'Path is required' };
@@ -306,7 +306,7 @@ const resolveReadPathFromContext = async ({ req, targetPath, scope, resolveProje
     });
   }
 
-  return resolveWorkspacePathFromContext({
+  return resolveProjectPathFromContext({
     req,
     targetPath,
     resolveProjectDirectory,
@@ -587,17 +587,17 @@ export const registerFsRoutes = (app, dependencies) => {
 
   app.post('/api/fs/mkdir', async (req, res) => {
     try {
-      const { path: dirPath, allowOutsideWorkspace } = req.body ?? {};
+      const { path: dirPath, allowOutsideProject } = req.body ?? {};
       if (typeof dirPath !== 'string' || !dirPath.trim()) {
         return res.status(400).json({ error: 'Path is required' });
       }
 
       let resolvedPath = '';
-      if (allowOutsideWorkspace) {
-        console.warn('Rejected outside-workspace mkdir without trusted directory grant');
-        return res.status(403).json({ error: 'Outside workspace directory creation requires a grant' });
+      if (allowOutsideProject) {
+        console.warn('Rejected outside-project mkdir without trusted directory grant');
+        return res.status(403).json({ error: 'Outside project directory creation requires a grant' });
       } else {
-        const resolved = await resolveWorkspacePathFromContext({
+        const resolved = await resolveProjectPathFromContext({
           req,
           targetPath: dirPath,
           resolveProjectDirectory,
@@ -752,8 +752,8 @@ export const registerFsRoutes = (app, dependencies) => {
         openchamberUserConfigRoot,
       });
       if (!resolved.ok) {
-        if (req.query?.allowOutsideWorkspace === 'true') {
-          console.warn(`Rejected outside-workspace stat: ${resolved.error}`);
+        if (req.query?.allowOutsideProject === 'true') {
+          console.warn(`Rejected outside-project stat: ${resolved.error}`);
         }
         return res.status(400).json({ error: resolved.error });
       }
@@ -809,8 +809,8 @@ export const registerFsRoutes = (app, dependencies) => {
         openchamberUserConfigRoot,
       });
       if (!resolved.ok) {
-        if (req.query?.allowOutsideWorkspace === 'true') {
-          console.warn(`Rejected outside-workspace read: ${resolved.error}`);
+        if (req.query?.allowOutsideProject === 'true') {
+          console.warn(`Rejected outside-project read: ${resolved.error}`);
         }
         return res.status(400).json({ error: resolved.error });
       }
@@ -880,8 +880,8 @@ export const registerFsRoutes = (app, dependencies) => {
         openchamberUserConfigRoot,
       });
       if (!resolved.ok) {
-        if (req.query?.allowOutsideWorkspace === 'true') {
-          console.warn(`Rejected outside-workspace raw read: ${resolved.error}`);
+        if (req.query?.allowOutsideProject === 'true') {
+          console.warn(`Rejected outside-project raw read: ${resolved.error}`);
         }
         return res.status(400).json({ error: resolved.error });
       }
@@ -953,8 +953,8 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      if (req.query?.allowOutsideWorkspace === 'true') {
-        return res.status(403).json({ error: 'allowOutsideWorkspace is not permitted for this endpoint' });
+      if (req.query?.allowOutsideProject === 'true') {
+        return res.status(403).json({ error: 'allowOutsideProject is not permitted for this endpoint' });
       }
 
       const filePath = path.resolve('/', rawPath);
@@ -1017,7 +1017,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolved = await resolveWorkspacePathFromContext({
+      const resolved = await resolveProjectPathFromContext({
         req,
         targetPath: filePath,
         resolveProjectDirectory,
@@ -1076,7 +1076,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolved = await resolveWorkspacePathFromContext({
+      const resolved = await resolveProjectPathFromContext({
         req,
         targetPath,
         resolveProjectDirectory,
@@ -1114,7 +1114,7 @@ export const registerFsRoutes = (app, dependencies) => {
     }
 
     try {
-      const resolvedOld = await resolveWorkspacePathFromContext({
+      const resolvedOld = await resolveProjectPathFromContext({
         req,
         targetPath: oldPath,
         resolveProjectDirectory,
@@ -1127,7 +1127,7 @@ export const registerFsRoutes = (app, dependencies) => {
         return res.status(400).json({ error: resolvedOld.error });
       }
 
-      const resolvedNew = await resolveWorkspacePathFromContext({
+      const resolvedNew = await resolveProjectPathFromContext({
         req,
         targetPath: newPath,
         resolveProjectDirectory,
@@ -1141,7 +1141,7 @@ export const registerFsRoutes = (app, dependencies) => {
       }
 
       if (resolvedOld.base !== resolvedNew.base) {
-        return res.status(400).json({ error: 'Source and destination must share the same workspace root' });
+        return res.status(400).json({ error: 'Source and destination must share the same project root' });
       }
 
       await fsPromises.rename(resolvedOld.resolved, resolvedNew.resolved);
@@ -1233,7 +1233,7 @@ export const registerFsRoutes = (app, dependencies) => {
         return res.status(400).json({ error: 'Background command execution is not allowed' });
       }
       const resolvedCwdCandidate = path.resolve(normalizeDirectoryPath(cwd));
-      const resolvedForWorkspace = await resolveWorkspacePathFromContext({
+      const resolvedForProject = await resolveProjectPathFromContext({
         req,
         targetPath: resolvedCwdCandidate,
         resolveProjectDirectory,
@@ -1242,11 +1242,11 @@ export const registerFsRoutes = (app, dependencies) => {
         normalizeDirectoryPath,
         openchamberUserConfigRoot,
       });
-      if (!resolvedForWorkspace.ok) {
-        console.warn(`Rejected /api/fs/exec outside workspace: ${resolvedForWorkspace.error}`);
-        return res.status(403).json({ error: resolvedForWorkspace.error });
+      if (!resolvedForProject.ok) {
+        console.warn(`Rejected /api/fs/exec outside project: ${resolvedForProject.error}`);
+        return res.status(403).json({ error: resolvedForProject.error });
       }
-      const resolvedCwd = resolvedForWorkspace.resolved;
+      const resolvedCwd = resolvedForProject.resolved;
       const stats = await fsPromises.stat(resolvedCwd);
       if (!stats.isDirectory()) {
         return res.status(400).json({ error: 'Specified cwd is not a directory' });
@@ -1336,7 +1336,7 @@ export const registerFsRoutes = (app, dependencies) => {
     // Logical (requested) path stays in the caller's path space. Realpath is
     // only used to read directory contents — returning real paths for entries
     // breaks file-tree expansion when listing through a symlink, because the
-    // UI rejects expanded paths that fall outside the workspace root.
+    // UI rejects expanded paths that fall outside the project root.
     let requestedPath = '';
     let resolvedPath = '';
 

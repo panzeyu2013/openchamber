@@ -546,17 +546,17 @@ Respond in the same language the user used most in the conversation.`,
   },
   {
     id: 'session.review.visible',
-    title: 'Workspace Review Visible Prompt',
+    title: 'Project Review Visible Prompt',
     group: 'Session',
     description: 'Visible user message sent by the /workspace-review command.',
-    template: 'Review the changes made in this workspace.',
+    template: 'Review the changes made in this project.',
   },
   {
     id: 'session.review.instructions',
-    title: 'Workspace Review Instructions',
+    title: 'Project Review Instructions',
     group: 'Session',
-    description: 'Hidden instructions attached to the /workspace-review command. Reviews the workspace diff for intent, correctness, and adequacy, with severity-classified findings.',
-    template: `Review the changes in this workspace and judge whether they are correct and adequate — not just whether they contain catastrophic bugs.
+    description: 'Hidden instructions attached to the /workspace-review command. Reviews the project diff for intent, correctness, and adequacy, with severity-classified findings.',
+    template: `Review the changes in this project and judge whether they are correct and adequate — not just whether they contain catastrophic bugs.
 
 The diff is the source of truth. Read the relevant code around the diff too, not only the diff itself, so you understand the change in context.
 
@@ -661,7 +661,7 @@ Focus on correctness, regressions, missing implementation, missing tests, and wh
     title: 'Review Session Starter Prompt Without Handoff',
     group: 'Session',
     description: 'Visible user message sent to a generated review session when no implementation handoff is generated first.',
-    template: `Please review the current workspace changes.
+    template: `Please review the current project changes.
 
 There is no generated implementation handoff. Infer the likely user intent from the current diff, recent session context if available, changed files, and surrounding code. Judge whether the implementation is correct for that inferred intent, and call out uncertainty explicitly when intent cannot be recovered.
 
@@ -754,7 +754,7 @@ Use the \`question\` tool only for clarifying decisions that have a small set of
 
 1. Start from the user's intent. If the visible message includes an initial idea, use it immediately. Otherwise ask in plain text what they want to accomplish and wait for the answer. Do not ask them to formulate the Goal themselves.
 
-2. Investigate before asking when context is available. For repository work, inspect relevant code, tests, scripts, documentation, and conventions when that would answer questions or expose constraints. Do not ask for information that can be determined reliably from the workspace.
+2. Investigate before asking when context is available. For repository work, inspect relevant code, tests, scripts, documentation, and conventions when that would answer questions or expose constraints. Do not ask for information that can be determined reliably from the project.
 
 3. Decide whether a Goal is appropriate. Goals fit work with a durable objective, an evidence-based finish line, and an uncertain or iterative path. If this is a one-off edit, simple explanation, or obvious single step, explain briefly that a normal prompt is likely better. Continue crafting a Goal if the user still wants one.
 
@@ -766,13 +766,13 @@ Use the \`question\` tool only for clarifying decisions that have a small set of
 - Iteration policy: how the working agent should evaluate evidence and choose the next useful action after each attempt.
 - Blocked stop condition: when it should stop, what evidence and attempted paths it should report, and what input would unlock progress.
 
-5. Ask only necessary questions, in batches of at most 3. Prefer concrete, decision-oriented questions. Distinguish facts found in the workspace from decisions only the user can make.
+5. Ask only necessary questions, in batches of at most 3. Prefer concrete, decision-oriented questions. Distinguish facts found in the project from decisions only the user can make.
 
 6. Do not over-prescribe the path. Define the destination, evidence standard, and operating constraints while leaving the working agent room to choose its next action from what it learns.
 
 7. Do not invent precision. Never fabricate targets, commands, environments, acceptance criteria, or scope. When exact criteria are unavailable, define an honest evidence standard that separates confirmed results, approximations, blockers, and remaining uncertainty.
 
-8. Do not implement the task. You may inspect the workspace to understand it, but do not edit files, execute the proposed solution, or begin working toward the Goal. This session's deliverable is the Goal itself.
+8. Do not implement the task. You may inspect the project to understand it, but do not edit files, execute the proposed solution, or begin working toward the Goal. This session's deliverable is the Goal itself.
 
 9. Once the contract is resolved, respond in exactly this structure:
 
@@ -819,9 +819,9 @@ Run this as a guided dialogue, not a one-shot answer.
 
 Use the \`question\` tool only for clarifying decisions that have a small set of concrete answer options you already know from the conversation or your investigation — choices like option A/B/C, scope boundaries, or edge-case behavior. Ask open-ended questions, including what the user wants in the first place, in plain assistant text. Never invent speculative options just to fit the question tool.
 
-1. Start from the user's intent. If the visible message includes an initial idea, use it immediately. Otherwise ask in plain text what they want to automate, and wait for the answer — do not propose invented automation ideas and do not start investigating the workspace before you know the intent.
+1. Start from the user's intent. If the visible message includes an initial idea, use it immediately. Otherwise ask in plain text what they want to automate, and wait for the answer — do not propose invented automation ideas and do not start investigating the project before you know the intent.
 
-2. Investigate before asking. When the task concerns this repository, inspect the relevant code, scripts, tests, or documentation so the prompt you draft is grounded in what actually exists. Do not ask for information the workspace can answer.
+2. Investigate before asking. When the task concerns this repository, inspect the relevant code, scripts, tests, or documentation so the prompt you draft is grounded in what actually exists. Do not ask for information the project can answer.
 
 3. Resolve the task definition:
 - Name: a short, recognizable task name.

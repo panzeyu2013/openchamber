@@ -260,7 +260,7 @@ function setRefs(
   childStores: ReturnType<typeof createChildStores>,
   getDirectory: () => string,
   enqueueSessionMaterialization?: (directory: string, sessionID: string, messageID: string) => void,
-  scopeKey = "workspace:ws-a",
+  scopeKey = "project:ws-a",
 ): void {
   setActionRefs(
     mockSdk as unknown as OpencodeClient,
@@ -272,7 +272,7 @@ function setRefs(
   )
 }
 
-/** Switches the mounted action scope (the workspace-scoped equivalent of the
+/** Switches the mounted action scope (the project-scoped equivalent of the
  * retired runtime-endpoint switch). */
 const switchActionScope = (scopeKey: string): void => {
   setActionRefs(
@@ -363,7 +363,7 @@ describe("moveSessionToDirectory", () => {
     expect(destination.getState().part["message-a"]).toBe(undefined)
   })
 
-  test("uses the workspace-bound service SDK instead of the ambient singleton", async () => {
+  test("uses the project-bound service SDK instead of the ambient singleton", async () => {
     const source = createStore({}, {
       session: [{ id: "session-bound", directory: "/source" } as Session],
       sessionTotal: 1,
@@ -391,7 +391,7 @@ describe("moveSessionToDirectory", () => {
       () => "/source",
       undefined,
       boundService as never,
-      "workspace:ws-bound",
+      "project:ws-bound",
     )
 
     await moveSessionToDirectory(source.getState().session[0], "/source", "/destination")
@@ -444,18 +444,18 @@ describe("confirmed session removal", () => {
     }).toEqual({ directory: "/test/project", sessionId: "session-a" })
   })
 
-  test("scopes persisted cleanup to the workspace scope captured when the delete started", async () => {
+  test("scopes persisted cleanup to the project scope captured when the delete started", async () => {
     const source = createStore({}, {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     const { deleteSession} = await import("./session-actions")
-    setRefs(createChildStores([["/test/project", source]]), () => "/test/project", undefined, "workspace:ws-a")
+    setRefs(createChildStores([["/test/project", source]]), () => "/test/project", undefined, "project:ws-a")
 
     expect(await deleteSession("session-a")).toBe(true)
-    // The cleanup identity must carry the captured workspace scope, which is
+    // The cleanup identity must carry the captured project scope, which is
     // what lets cleanupPersistedSessionState reject a stale identity instead
     // of comparing the live scope key with itself.
-    expect(deletedCleanupIdentities[0]?.runtimeKey).toBe("workspace:ws-a")
+    expect(deletedCleanupIdentities[0]?.runtimeKey).toBe("project:ws-a")
   })
 
   test("rejects a delete response that arrives after a runtime switch", async () => {
@@ -463,13 +463,13 @@ describe("confirmed session removal", () => {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     beforeSessionDeleteResolve = () => {
-      switchActionScope("workspace:ws-b")
+      switchActionScope("project:ws-b")
     }
     const { deleteSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await deleteSession("session-a")).toBe(false)
-    // Session IDs are not unique across workspaces: committing here could evict
+    // Session IDs are not unique across projects: committing here could evict
     // an unrelated session and erase its queue, todos, drafts, folders, and pins.
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
     expect(deletedCleanupIdentities).toEqual([])
@@ -481,13 +481,13 @@ describe("confirmed session removal", () => {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     beforeSessionDeleteResolve = () => {
-      switchActionScope("workspace:ws-b")
+      switchActionScope("project:ws-b")
     }
     const { deleteSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     // A 404 only proves "already deleted" for the captured scope. After a
-    // switch it describes the wrong workspace, so it must not commit cleanup.
+    // switch it describes the wrong project, so it must not commit cleanup.
     expect(await deleteSession("session-a")).toBe(false)
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
     expect(deletedCleanupIdentities).toEqual([])
@@ -516,7 +516,7 @@ describe("confirmed session removal", () => {
     })
     beforeSessionDeleteResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchActionScope("workspace:ws-b")
+        switchActionScope("project:ws-b")
       }
     }
     const { deleteSessions} = await import("./session-actions")
@@ -557,7 +557,7 @@ describe("confirmed session removal", () => {
     expect(source.getState().session).toEqual([])
   })
 
-  test("rejects an archive response that arrives after a workspace scope switch", async () => {
+  test("rejects an archive response that arrives after a project scope switch", async () => {
     sessionUpdateResult = {
       data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 2 } } as Session,
     }
@@ -565,13 +565,13 @@ describe("confirmed session removal", () => {
       session: [{ id: "session-a", directory: "/test/project", time: { created: 1 } } as Session],
     })
     beforeSessionUpdateResolve = () => {
-      switchActionScope("workspace:ws-b")
+      switchActionScope("project:ws-b")
     }
     const { archiveSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await archiveSession("session-a")).toBe(false)
-    // The stale response must not reconcile the workspace the user switched to.
+    // The stale response must not reconcile the project the user switched to.
     expect(source.getState().session.map((item) => item.id)).toEqual(["session-a"])
   })
 
@@ -588,7 +588,7 @@ describe("confirmed session removal", () => {
     })
     beforeSessionUpdateResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchActionScope("workspace:ws-b")
+        switchActionScope("project:ws-b")
       }
     }
     const { archiveSessions} = await import("./session-actions")
@@ -620,7 +620,7 @@ describe("confirmed session removal", () => {
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     const result = await archiveSessions(["session-a", "session-b"], {
-      expectedRuntimeKey: "workspace:ws-a",
+      expectedRuntimeKey: "project:ws-a",
     })
 
     expect(result).toEqual({ archivedIds: ["session-a", "session-b"], failedIds: [] })
@@ -682,7 +682,7 @@ describe("session restore (unarchive)", () => {
     expect(registeredSessionDirectories).toEqual([])
   })
 
-  test("rejects a restore response that arrives after a workspace scope switch", async () => {
+  test("rejects a restore response that arrives after a project scope switch", async () => {
     sessionUpdateResult = {
       data: { id: "session-a", directory: "/test/project", time: { created: 1, archived: 0 } } as Session,
     }
@@ -690,13 +690,13 @@ describe("session restore (unarchive)", () => {
       session: [],
     })
     beforeSessionUpdateResolve = () => {
-      switchActionScope("workspace:ws-b")
+      switchActionScope("project:ws-b")
     }
     const { unarchiveSession} = await import("./session-actions")
     setRefs(createChildStores([["/test/project", source]]), () => "/test/project")
 
     expect(await unarchiveSession("session-a")).toBe(false)
-    // The stale response must not reconcile the workspace the user switched to.
+    // The stale response must not reconcile the project the user switched to.
     expect(registeredSessionDirectories).toEqual([])
   })
 
@@ -709,7 +709,7 @@ describe("session restore (unarchive)", () => {
     })
     beforeSessionUpdateResolve = (sessionId) => {
       if (sessionId === "session-b") {
-        switchActionScope("workspace:ws-b")
+        switchActionScope("project:ws-b")
       }
     }
     const { unarchiveSessions} = await import("./session-actions")
@@ -1017,7 +1017,7 @@ describe("optimisticSend target directory", () => {
     expect(targetStore.getState().part.msg_2).toEqual([revertedPart])
   })
 
-  test("rolls back a captured send when the workspace scope changes after optimistic insert", async () => {
+  test("rolls back a captured send when the project scope changes after optimistic insert", async () => {
     const targetStore = createStore({})
     const childStores = createChildStores([["/target/project", targetStore]])
     let optimisticAdd: OptimisticAddCall | null = null
@@ -1040,12 +1040,12 @@ describe("optimisticSend target directory", () => {
       await optimisticSend({
         sessionId: "session-race",
         directory: "/target/project",
-        runtimeKey: "workspace:ws-a",
+        runtimeKey: "project:ws-a",
         content: "hello",
         providerID: "provider",
         modelID: "model",
         onOptimisticInsert: () => {
-          switchActionScope("workspace:ws-b")
+          switchActionScope("project:ws-b")
         },
         send: async () => {
           finalSendCalled = true

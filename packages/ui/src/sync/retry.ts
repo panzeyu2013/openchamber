@@ -20,7 +20,7 @@ const TRANSIENT_MESSAGES = [
   "502",
 ]
 
-function isTransientError(error: unknown): boolean {
+export function isTransientError(error: unknown): boolean {
   if (!error) return false
   if ((error as { code?: unknown }).code === "capability_unavailable") return false
   const message = String(error instanceof Error ? error.message : error).toLowerCase()

@@ -94,13 +94,13 @@ describe('VS Code API proxy control plane', () => {
       }) as typeof fetch;
 
       const response = await handleProxyBridgeMessage(
-        { id: 'cp_1', type: 'api:proxy', payload: { method: 'GET', path: '/api/workspaces', controlPlane: true } },
+        { id: 'cp_1', type: 'api:proxy', payload: { method: 'GET', path: '/api/projects', controlPlane: true } },
         ctx,
         deps,
       );
       assert.equal(response?.success, true);
       assert.equal((response?.data as { status?: number }).status, 501);
-      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { code?: string; workspaceId?: string };
+      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { code?: string; projectId?: string };
       assert.equal(body.code, 'capability_unavailable');
       assert.equal(binaryFetchCount, 0);
     } finally {
@@ -108,7 +108,7 @@ describe('VS Code API proxy control plane', () => {
     }
   });
 
-  test('controlPlane requests echo a workspaceId for forward-compat', async () => {
+  test('controlPlane requests echo a projectId for forward-compat', async () => {
     const originalFetch = globalThis.fetch;
     try {
       globalThis.fetch = (async () =>
@@ -118,13 +118,13 @@ describe('VS Code API proxy control plane', () => {
         {
           id: 'cp_2',
           type: 'api:proxy',
-          payload: { method: 'GET', path: '/api/workspaces/ws-1', controlPlane: true, workspaceId: 'ws-1' },
+          payload: { method: 'GET', path: '/api/projects/ws-1', controlPlane: true, projectId: 'ws-1' },
         },
         ctx,
         deps,
       );
-      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { workspaceId?: string };
-      assert.equal(body.workspaceId, 'ws-1');
+      const body = JSON.parse((response?.data as { bodyText: string }).bodyText) as { projectId?: string };
+      assert.equal(body.projectId, 'ws-1');
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -161,7 +161,7 @@ describe('VS Code API proxy control plane', () => {
         {
           id: 'cp_fwd_1',
           type: 'api:proxy',
-          payload: { method: 'GET', path: '/api/workspace-sessions/snapshot?fresh=1', controlPlane: true },
+          payload: { method: 'GET', path: '/api/project-sessions/snapshot?fresh=1', controlPlane: true },
         },
         ctxWithAuth,
         depsWithOrigin('http://control.test:3000'),
@@ -169,7 +169,7 @@ describe('VS Code API proxy control plane', () => {
 
       assert.equal(response?.success, true);
       assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.url, 'http://control.test:3000/api/workspace-sessions/snapshot?fresh=1');
+      assert.equal(calls[0]?.url, 'http://control.test:3000/api/project-sessions/snapshot?fresh=1');
       assert.equal(calls[0]?.init.method, 'GET');
       const headers = new Headers(calls[0]?.init.headers);
       assert.equal(headers.get('authorization'), 'Bearer test-token');
@@ -186,7 +186,7 @@ describe('VS Code API proxy control plane', () => {
     try {
       globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
         calls.push({ url: typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url, init: init || {} });
-        return new Response('{"sessionId":"s-1","workspaceId":"ws-1"}', { status: 201, headers: { 'content-type': 'application/json' } });
+        return new Response('{"sessionId":"s-1","projectId":"ws-1"}', { status: 201, headers: { 'content-type': 'application/json' } });
       }) as typeof fetch;
 
       const response = await handleProxyBridgeMessage(
@@ -195,7 +195,7 @@ describe('VS Code API proxy control plane', () => {
           type: 'api:proxy',
           payload: {
             method: 'POST',
-            path: '/api/workspaces/ws-1/sessions',
+            path: '/api/projects/ws-1/sessions',
             controlPlane: true,
             bodyBase64: Buffer.from('{"prompt":"hello"}').toString('base64'),
           },
@@ -205,7 +205,7 @@ describe('VS Code API proxy control plane', () => {
       );
 
       assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.url, 'http://host:8080/chamber/api/workspaces/ws-1/sessions');
+      assert.equal(calls[0]?.url, 'http://host:8080/chamber/api/projects/ws-1/sessions');
       assert.equal(calls[0]?.init.method, 'POST');
       assert.equal(Buffer.from(calls[0]?.init.body as Uint8Array).toString('utf8'), '{"prompt":"hello"}');
       assert.equal((response?.data as { status?: number }).status, 201);
@@ -222,7 +222,7 @@ describe('VS Code API proxy control plane', () => {
         new Response(JSON.stringify({ error: 'nope' }), { status, headers: { 'content-type': 'application/json' } })) as typeof fetch;
 
       let response = await handleProxyBridgeMessage(
-        { id: 'cp_404', type: 'api:proxy', payload: { method: 'GET', path: '/api/workspaces/ws-missing', controlPlane: true } },
+        { id: 'cp_404', type: 'api:proxy', payload: { method: 'GET', path: '/api/projects/ws-missing', controlPlane: true } },
         ctx,
         depsWithOrigin('http://control.test'),
       );
@@ -258,7 +258,7 @@ describe('VS Code API proxy control plane', () => {
         })) as typeof fetch;
 
       const response = await handleProxyBridgeMessage(
-        { id: 'cp_leak', type: 'api:proxy', payload: { method: 'GET', path: '/api/workspaces', controlPlane: true } },
+        { id: 'cp_leak', type: 'api:proxy', payload: { method: 'GET', path: '/api/projects', controlPlane: true } },
         ctx,
         depsWithOrigin('http://control.test'),
       );
@@ -286,7 +286,7 @@ describe('VS Code API proxy control plane', () => {
         {
           id: 'cp_sse',
           type: 'api:proxy',
-          payload: { method: 'GET', path: '/api/workspace-sessions/events', controlPlane: true, headers: { accept: 'text/event-stream' } },
+          payload: { method: 'GET', path: '/api/project-sessions/events', controlPlane: true, headers: { accept: 'text/event-stream' } },
         },
         ctx,
         depsWithOrigin('http://control.test'),
@@ -312,7 +312,7 @@ describe('VS Code API proxy control plane', () => {
         {
           id: 'cp_ws',
           type: 'api:proxy',
-          payload: { method: 'GET', path: '/api/workspaces/ws-1/terminal', controlPlane: true, headers: { upgrade: 'websocket', connection: 'Upgrade' } },
+          payload: { method: 'GET', path: '/api/projects/ws-1/terminal', controlPlane: true, headers: { upgrade: 'websocket', connection: 'Upgrade' } },
         },
         ctx,
         depsWithOrigin('http://control.test'),
@@ -340,7 +340,7 @@ describe('VS Code API proxy control plane', () => {
       }) as typeof fetch;
 
       const pending = handleProxyBridgeMessage(
-        { id: 'cp_abort_1', type: 'api:proxy', payload: { method: 'GET', path: '/api/workspaces', controlPlane: true } },
+        { id: 'cp_abort_1', type: 'api:proxy', payload: { method: 'GET', path: '/api/projects', controlPlane: true } },
         ctx,
         depsWithOrigin('http://control.test'),
       );

@@ -9,7 +9,7 @@ import { createDeferredSafeJSONStorage } from "./utils/safeStorage";
 import { useSessionUIStore } from "@/sync/session-ui-store";
 import { opencodeClient } from "@/lib/opencode/client";
 import { getSyncScopeKey } from "@/sync/sync-refs";
-import { workspaceIdFromScopeKey } from "@/workspaces/identity";
+import { projectIdFromScopeKey } from "@/projects/identity";
 
 type PermissionPolicySnapshot = {
     sessions: PermissionAutoAcceptMap;
@@ -95,7 +95,7 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
         if (get().activeScopeKey && get().activeScopeKey !== operation.scopeKey) {
             set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
         }
-        if (workspaceIdFromScopeKey(operation.scopeKey)) {
+        if (projectIdFromScopeKey(operation.scopeKey)) {
             set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
             return;
         }
@@ -142,7 +142,7 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
     applySnapshot: (snapshot, expectedScopeKey) => {
         const currentScopeKey = getSyncScopeKey();
         if (expectedScopeKey && expectedScopeKey !== currentScopeKey) return;
-        if (workspaceIdFromScopeKey(currentScopeKey)) return;
+        if (projectIdFromScopeKey(currentScopeKey)) return;
         const sessions = normalizeSessions(snapshot.sessions);
         const revision = normalizeRevision(snapshot.revision);
         set((state) => {
@@ -171,9 +171,9 @@ export const usePermissionStore = create<PermissionStore>()(persist((set, get) =
         if (get().activeScopeKey && get().activeScopeKey !== operation.scopeKey) {
             set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
         }
-        if (workspaceIdFromScopeKey(operation.scopeKey)) {
+        if (projectIdFromScopeKey(operation.scopeKey)) {
             set({ autoAccept: {}, loaded: false, lastAppliedRevision: -1, activeScopeKey: operation.scopeKey });
-            throw new Error('Permission auto-accept is unavailable for workspace-bound sessions.');
+            throw new Error('Permission auto-accept is unavailable for project-bound sessions.');
         }
         pendingSavingOperations.add(operation.sequence);
         set({ saving: true });

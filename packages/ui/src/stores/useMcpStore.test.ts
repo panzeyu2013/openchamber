@@ -3,20 +3,20 @@ import type { McpStatus } from '@opencode-ai/sdk/v2';
 import type { OpencodeService } from '@/lib/opencode/client';
 import { clearSyncRefs, setSyncRefs } from '@/sync/sync-refs';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
-import { setWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
+import { setProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { useMcpStore } from './useMcpStore';
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => ({
   revision: 1,
   sessions: [{
-    key: `${workspaceId}\u0000session-${workspaceId}`,
-    workspaceId,
+    key: `${projectId}\u0000session-${projectId}`,
+    projectId,
     connectionId: 'connection',
-    upstreamSessionId: `session-${workspaceId}`,
+    upstreamSessionId: `session-${projectId}`,
     directory: '/repo',
-    title: workspaceId,
+    title: projectId,
     updatedAt: 1,
     archived: false,
     createdAt: 1,
@@ -24,16 +24,16 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => ({
   freshnessByConnection: {},
 });
 
-const setWorkspaceSession = (workspaceId: string): void => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
+const setProjectSession = (projectId: string): void => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
   useSessionUIStore.setState({
-    currentSessionId: `session-${workspaceId}`,
+    currentSessionId: `session-${projectId}`,
     currentSessionDirectory: '/repo',
   });
 };
 
-const clearWorkspaceSession = (): void => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = (): void => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
@@ -47,27 +47,27 @@ const resetStore = (): void => {
 };
 
 afterEach(() => {
-  setWorkspaceRuntimeActive(false);
-  clearWorkspaceSession();
+  setProjectRuntimeActive(false);
+  clearProjectSession();
   resetStore();
 });
 
-describe('useMcpStore workspace scope', () => {
-  test('does not reuse same-directory status across workspaces', () => {
+describe('useMcpStore project scope', () => {
+  test('does not reuse same-directory status across projects', () => {
     const connected = { status: 'connected' } as McpStatus;
     useMcpStore.setState({
-      byDirectory: { 'workspace:ws-a\u0000/repo': { server: connected } },
+      byDirectory: { 'project:ws-a\u0000/repo': { server: connected } },
     });
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useMcpStore.getState().getStatusForDirectory('/repo').server).toBe(connected);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useMcpStore.getState().getStatusForDirectory('/repo')).toEqual({});
   });
 
-  test('uses the currently mounted SyncProvider service for workspace requests', async () => {
-    setWorkspaceSession('ws-a');
+  test('uses the currently mounted SyncProvider service for project requests', async () => {
+    setProjectSession('ws-a');
     const requestedDirectories: string[] = [];
     const api = {
       mcp: {
@@ -83,7 +83,7 @@ describe('useMcpStore workspace scope', () => {
     } as unknown as OpencodeService;
     const sdk = {} as never;
     const childStores = {} as never;
-    setSyncRefs(sdk, childStores, '/repo', undefined, service, 'workspace:ws-a');
+    setSyncRefs(sdk, childStores, '/repo', undefined, service, 'project:ws-a');
 
     await useMcpStore.getState().refresh({ directory: '/repo' });
 
@@ -92,9 +92,9 @@ describe('useMcpStore workspace scope', () => {
     clearSyncRefs(sdk, childStores);
   });
 
-  test('uses the bound service directory when a workspace action omits one', async () => {
-    setWorkspaceRuntimeActive(true);
-    setWorkspaceSession('ws-a');
+  test('uses the bound service directory when a project action omits one', async () => {
+    setProjectRuntimeActive(true);
+    setProjectSession('ws-a');
     const requestedDirectories: string[] = [];
     const api = {
       mcp: {
@@ -102,7 +102,7 @@ describe('useMcpStore workspace scope', () => {
       },
     };
     const service = {
-      getDirectory: () => '/bound/workspace',
+      getDirectory: () => '/bound/project',
       getApiClient: () => api,
       getScopedApiClient: (directory: string) => {
         requestedDirectories.push(directory);
@@ -111,19 +111,19 @@ describe('useMcpStore workspace scope', () => {
     } as unknown as OpencodeService;
     const sdk = {} as never;
     const childStores = {} as never;
-    setSyncRefs(sdk, childStores, '/bound/workspace', undefined, service, 'workspace:ws-a');
+    setSyncRefs(sdk, childStores, '/bound/project', undefined, service, 'project:ws-a');
 
     await useMcpStore.getState().refresh();
 
-    expect(requestedDirectories).toEqual(['/bound/workspace']);
+    expect(requestedDirectories).toEqual(['/bound/project']);
     expect(useMcpStore.getState().getStatusForDirectory()).toEqual({
       server: { status: 'connected' },
     });
     clearSyncRefs(sdk, childStores);
   });
 
-  test('commits a late response to its captured workspace bucket only', async () => {
-    setWorkspaceSession('ws-a');
+  test('commits a late response to its captured project bucket only', async () => {
+    setProjectSession('ws-a');
     let resolveStatus!: (value: { data: Record<string, McpStatus> }) => void;
     const statusPromise = new Promise<{ data: Record<string, McpStatus> }>((resolve) => {
       resolveStatus = resolve;
@@ -139,10 +139,10 @@ describe('useMcpStore workspace scope', () => {
     } as unknown as OpencodeService;
     const sdk = {} as never;
     const childStores = {} as never;
-    setSyncRefs(sdk, childStores, '/repo', undefined, service, 'workspace:ws-a');
+    setSyncRefs(sdk, childStores, '/repo', undefined, service, 'project:ws-a');
 
     const pending = useMcpStore.getState().refresh({ directory: '/repo' });
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     resolveStatus({ data: { server: { status: 'connected' } as McpStatus } });
     await pending;
 

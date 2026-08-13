@@ -1,7 +1,7 @@
 // Server-side Relay tunnel client: the initiator counterpart to tunnel-host.js.
 //
 // This module is intentionally a plain-JS mirror of the normative client in
-// packages/ui/src/lib/relay/tunnel-client.ts. It is used by the workspace Relay
+// packages/ui/src/lib/relay/tunnel-client.ts. It is used by the project Relay
 // adapter when the control plane itself must reach another OpenChamber host.
 // Keep the E2EE and Layer 3 behavior byte-compatible with the UI client.
 

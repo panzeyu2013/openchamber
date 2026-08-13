@@ -4,9 +4,9 @@ import { isDesktopLocalOriginActive, isDesktopShell } from '@/lib/desktop';
 import { desktopHostsGet, getDesktopHostApiUrl, locationMatchesHost, redactSensitiveUrl } from '@/lib/desktopHosts';
 import { setDesktopWindowTitle } from '@/lib/desktopNative';
 import { getControlPlaneBaseUrl } from '@/lib/control-plane';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
-import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
-import type { WorkspaceCatalogSnapshot } from '@/workspaces/types';
+import { useActiveProjectId } from '@/projects/useActiveProject';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import type { ProjectCatalogSnapshot } from '@/projects/types';
 
 const APP_TITLE = 'OpenChamber';
 
@@ -25,40 +25,40 @@ const buildWindowTitle = (projectLabel: string | null, instanceLabel: string | n
   return parts.join(' | ');
 };
 
-type WorkspaceTitleContext = {
+type ProjectTitleContext = {
   projectLabel: string | null;
   instanceLabel: string | null;
 };
 
 /**
- * Resolve title identity from the authoritative workspace catalog. A
+ * Resolve title identity from the authoritative project catalog. A
  * connection label is safe UI metadata; URL matching is intentionally left to
- * the legacy no-workspace fallback in the hook below.
+ * the legacy no-project fallback in the hook below.
  */
-export const resolveWorkspaceTitleContext = (
-  workspaceId: string | null,
-  snapshot: WorkspaceCatalogSnapshot | null,
-): WorkspaceTitleContext | null => {
-  if (!workspaceId || !snapshot) return null;
-  const workspace = snapshot.workspaces.find((entry) => entry.id === workspaceId);
-  if (!workspace) return null;
-  const connection = snapshot.connections.find((entry) => entry.id === workspace.connectionId);
-  const workspaceLabel = workspace.label.trim() || getProjectNameFromPath(workspace.path);
+export const resolveProjectTitleContext = (
+  projectId: string | null,
+  snapshot: ProjectCatalogSnapshot | null,
+): ProjectTitleContext | null => {
+  if (!projectId || !snapshot) return null;
+  const project = snapshot.projects.find((entry) => entry.id === projectId);
+  if (!project) return null;
+  const connection = snapshot.connections.find((entry) => entry.id === project.connectionId);
+  const projectLabel = project.label.trim() || getProjectNameFromPath(project.path);
   const connectionLabel = connection?.label?.trim() || '';
   return {
-    projectLabel: workspaceLabel ? formatProjectLabel(workspaceLabel) : null,
-    instanceLabel: workspace.connectionId === 'local'
+    projectLabel: projectLabel ? formatProjectLabel(projectLabel) : null,
+    instanceLabel: project.connectionId === 'local'
       ? null
-      : redactSensitiveUrl(connectionLabel || 'Workspace'),
+      : redactSensitiveUrl(connectionLabel || 'Project'),
   };
 };
 
 export const useWindowTitle = () => {
-  const activeWorkspaceId = useActiveWorkspaceId();
-  const catalogSnapshot = useWorkspaceCatalogStore((state) => state.snapshot);
-  const workspaceTitleContext = React.useMemo(
-    () => resolveWorkspaceTitleContext(activeWorkspaceId, catalogSnapshot),
-    [activeWorkspaceId, catalogSnapshot],
+  const activeProjectId = useActiveProjectId();
+  const catalogSnapshot = useProjectCatalogStore((state) => state.snapshot);
+  const projectTitleContext = React.useMemo(
+    () => resolveProjectTitleContext(activeProjectId, catalogSnapshot),
+    [activeProjectId, catalogSnapshot],
   );
   const activeProject = useProjectsStore((state) => {
     if (!state.activeProjectId) {
@@ -68,8 +68,8 @@ export const useWindowTitle = () => {
   });
 
   const projectLabel = React.useMemo(() => {
-    if (workspaceTitleContext?.projectLabel) {
-      return workspaceTitleContext.projectLabel;
+    if (projectTitleContext?.projectLabel) {
+      return projectTitleContext.projectLabel;
     }
     if (!activeProject) {
       return null;
@@ -86,7 +86,7 @@ export const useWindowTitle = () => {
     }
 
     return null;
-  }, [activeProject, workspaceTitleContext]);
+  }, [activeProject, projectTitleContext]);
 
   const [instanceLabel, setInstanceLabel] = React.useState<string | null>(null);
 
@@ -96,11 +96,11 @@ export const useWindowTitle = () => {
       return;
     }
 
-    if (activeWorkspaceId) {
-      // A workspace title is scoped by the Catalog, not by the ambient
+    if (activeProjectId) {
+      // A project title is scoped by the Catalog, not by the ambient
       // Desktop Host Switcher endpoint. Keep a temporary generic label while
       // the catalog is loading rather than leaking the previous host name.
-      setInstanceLabel(workspaceTitleContext?.instanceLabel ?? 'Workspace');
+      setInstanceLabel(projectTitleContext?.instanceLabel ?? 'Project');
       return;
     }
 
@@ -149,7 +149,7 @@ export const useWindowTitle = () => {
       cancelled = true;
       window.removeEventListener('focus', handleFocus);
     };
-  }, [activeWorkspaceId, workspaceTitleContext]);
+  }, [activeProjectId, projectTitleContext]);
 
   const title = React.useMemo(() => buildWindowTitle(projectLabel, instanceLabel), [projectLabel, instanceLabel]);
 

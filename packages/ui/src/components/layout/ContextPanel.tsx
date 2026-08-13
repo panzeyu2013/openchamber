@@ -51,7 +51,7 @@ import {
 } from './contextPanelEmbeddedChat';
 import { getContextSurfaceWidthFraction } from '@/lib/surfaces/registry';
 import { isTerminalEventTarget } from '@/lib/terminalFocus';
-import { useActiveWorkspaceCapabilities, useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectCapabilities, useActiveProjectId } from '@/projects/useActiveProject';
 import {
   type PreviewElementMetadata,
   isPreviewElementMetadata,
@@ -2242,13 +2242,13 @@ export const ContextPanel: React.FC = () => {
   const { t } = useI18n();
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const directoryKey = React.useMemo(() => normalizeDirectoryKey(effectiveDirectory), [effectiveDirectory]);
-  // Terminal capability of the ACTIVE workspace's connection (null = no
-  // active workspace session or catalog not loaded → keep current behavior).
-  // A remote workspace whose connection cannot host a terminal must not
+  // Terminal capability of the ACTIVE project's connection (null = no
+  // active project session or catalog not loaded → keep current behavior).
+  // A remote project whose connection cannot host a terminal must not
   // mount a dead PTY when its terminal tab is (already) open.
-  const workspaceCapabilities = useActiveWorkspaceCapabilities();
-  const activeWorkspaceId = useActiveWorkspaceId();
-  const terminalUnavailable = workspaceCapabilities !== null && workspaceCapabilities.terminal === false;
+  const projectCapabilities = useActiveProjectCapabilities();
+  const activeProjectId = useActiveProjectId();
+  const terminalUnavailable = projectCapabilities !== null && projectCapabilities.terminal === false;
 
   const panelState = useUIStore((state) => (directoryKey ? state.contextPanelByDirectory[directoryKey] : undefined));
   const closeContextPanel = useUIStore((state) => state.closeContextPanel);
@@ -2505,7 +2505,7 @@ export const ContextPanel: React.FC = () => {
         return;
       }
 
-      markSessionViewed(activeChatSessionID, activeWorkspaceId);
+      markSessionViewed(activeChatSessionID, activeProjectId);
       setExternallyViewedSession(directoryKey, activeChatSessionID, true);
     };
 
@@ -2522,7 +2522,7 @@ export const ContextPanel: React.FC = () => {
       document.removeEventListener('visibilitychange', markActiveChatViewed);
       setExternallyViewedSession(directoryKey, activeChatSessionID, false);
     };
-  }, [activeChatSessionID, activeWorkspaceId, directoryKey, isOpen]);
+  }, [activeChatSessionID, activeProjectId, directoryKey, isOpen]);
 
   const getEmbeddedChatSrc = React.useCallback((tabID: string, sessionID: string, readOnly: boolean): string => {
     return getOrCreateEmbeddedSessionChatURL(chatFrameSrcByTabIDRef.current, tabID, sessionID, directoryKey || null, readOnly, {
@@ -2530,8 +2530,8 @@ export const ContextPanel: React.FC = () => {
       lightThemeId,
       darkThemeId,
       currentTheme,
-    }, activeWorkspaceId);
-  }, [activeWorkspaceId, currentTheme, darkThemeId, directoryKey, lightThemeId, themeMode]);
+    }, activeProjectId);
+  }, [activeProjectId, currentTheme, darkThemeId, directoryKey, lightThemeId, themeMode]);
 
   React.useEffect(() => {
     const liveTabIDs = new Set(tabs.map((tab) => tab.id));
@@ -3015,7 +3015,7 @@ export const ContextPanel: React.FC = () => {
             {terminalUnavailable ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                 <Icon name="terminal-box" className="h-5 w-5 text-muted-foreground" />
-                <p className="text-sm text-muted-foreground">{t('workspaces.capability.terminalUnavailable')}</p>
+                <p className="text-sm text-muted-foreground">{t('projects.capability.terminalUnavailable')}</p>
               </div>
             ) : (
               <TerminalView visible={isOpen && activeTab?.mode === 'terminal'} />

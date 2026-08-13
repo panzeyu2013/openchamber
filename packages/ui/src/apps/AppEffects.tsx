@@ -9,9 +9,9 @@ import { markSessionViewed } from '@/sync/notification-store';
 import { setExternallyViewedSession } from '@/sync/sync-context';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSync } from '@/sync/use-sync';
-import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { openWorkspaceSessionEventStream } from '@/workspaces/session-index-client';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { openProjectSessionEventStream } from '@/projects/session-index-client';
 import { getControlPlaneBaseUrl, getControlPlaneKey, subscribeControlPlaneChanged } from '@/lib/control-plane';
 import { canUseElectronDesktopIPC, invokeDesktop } from '@/lib/desktop';
 import { getRuntimeBearerTokenSync, getRuntimeExtraHeadersSync } from '@/lib/runtime-auth';
@@ -22,7 +22,7 @@ type MiniChatPresenceMessage = {
   type?: string;
   sessionId?: string;
   directory?: string;
-  workspaceId?: string;
+  projectId?: string;
   viewed?: boolean;
 };
 
@@ -60,7 +60,7 @@ const MiniChatPresenceBridge: React.FC = () => {
       const viewed = data.viewed !== false;
       setExternallyViewedSession(data.directory, data.sessionId, viewed);
       if (viewed) {
-        markSessionViewed(data.sessionId, data.workspaceId ?? useSessionUIStore.getState().currentWorkspaceId);
+        markSessionViewed(data.sessionId, data.projectId ?? useSessionUIStore.getState().currentProjectId);
       }
     };
 
@@ -105,14 +105,14 @@ const DesktopRuntimeSyncBridge: React.FC = () => {
   return null;
 };
 
-// Hydrates the unified workspace catalog on boot. The catalog belongs to the
+// Hydrates the unified project catalog on boot. The catalog belongs to the
 // LOCAL control plane and its client is pinned to it, so a runtime endpoint
 // change (switching the active remote server) must NOT re-fetch or swap the
 // catalog — "one local unified catalog" is the whole point. Reads only;
 // mutations flow through the catalog store.
-const WorkspaceCatalogBridge: React.FC = () => {
+const ProjectCatalogBridge: React.FC = () => {
   React.useEffect(() => {
-    void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
+    void useProjectCatalogStore.getState().refresh().catch(() => undefined);
   }, []);
   return null;
 };
@@ -123,14 +123,14 @@ const WorkspaceCatalogBridge: React.FC = () => {
 // whole client; the server keeps at most one upstream stream per connection.
 // Like the catalog, the session index lives on the LOCAL control plane and is
 // pinned there, so runtime endpoint changes never re-fetch or swap it.
-const SessionIndexBridge: React.FC = () => {
+const ProjectSessionIndexBridge: React.FC = () => {
   React.useEffect(() => {
-    const store = useWorkspaceSessionIndexStore.getState();
+    const store = useProjectSessionIndexStore.getState();
     void store.refresh().catch(() => undefined);
-    const stop = openWorkspaceSessionEventStream((event) => {
-      useWorkspaceSessionIndexStore.getState().applyEvent(event);
-      if (useWorkspaceSessionIndexStore.getState().consumeRevisionGap()) {
-        void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
+    const stop = openProjectSessionEventStream((event) => {
+      useProjectSessionIndexStore.getState().applyEvent(event);
+      if (useProjectSessionIndexStore.getState().consumeRevisionGap()) {
+        void useProjectSessionIndexStore.getState().refresh().catch(() => undefined);
       }
     }, new AbortController().signal);
     return () => {
@@ -143,21 +143,21 @@ const SessionIndexBridge: React.FC = () => {
 /**
  * Bootstraps the control-plane-owned Catalog and Session Index for secondary
  * Electron surfaces. These stores are independent of the full SyncProvider,
- * so a workspace-targeted Mini Chat can resolve its handle before mounting
+ * so a project-targeted Mini Chat can resolve its handle before mounting
  * session sync without inheriting the ambient runtime.
  */
-export const WorkspaceCatalogSessionIndexEffects: React.FC = () => (
+export const ProjectCatalogSessionIndexEffects: React.FC = () => (
   <>
-    <WorkspaceCatalogBridge />
-    <SessionIndexBridge />
+    <ProjectCatalogBridge />
+    <ProjectSessionIndexBridge />
   </>
 );
 
-export function SyncAppEffects({ embeddedBackgroundWorkEnabled, includeWorkspaceState = true }: {
+export function SyncAppEffects({ embeddedBackgroundWorkEnabled, includeProjectState = true }: {
   embeddedBackgroundWorkEnabled: boolean;
   /** Set false when the Catalog/Session Index bridges are mounted above a
-   * workspace runtime gate so they can hydrate the handle before Sync mounts. */
-  includeWorkspaceState?: boolean;
+   * project runtime gate so they can hydrate the handle before Sync mounts. */
+  includeProjectState?: boolean;
 }) {
   usePwaManifestSync();
   useWindowControlsOverlayLayout();
@@ -168,7 +168,7 @@ export function SyncAppEffects({ embeddedBackgroundWorkEnabled, includeWorkspace
       <SyncRuntimeEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} />
       <MiniChatPresenceBridge />
       <DesktopRuntimeSyncBridge />
-      {includeWorkspaceState ? <WorkspaceCatalogSessionIndexEffects /> : null}
+      {includeProjectState ? <ProjectCatalogSessionIndexEffects /> : null}
     </>
   );
 }

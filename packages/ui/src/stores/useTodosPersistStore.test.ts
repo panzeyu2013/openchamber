@@ -23,8 +23,8 @@ describe('useTodosPersistStore', () => {
 
         const key = getTodosPersistenceKey('', '/repo', 'session-1');
         expect(useTodosPersistStore.getState().sessions[key]?.todos).toEqual([todo('active')]);
-        expect(getTodosPersistenceKey('workspace:ws-a', '/repo', 'session-1'))
-            .not.toBe(getTodosPersistenceKey('workspace:ws-b', '/repo', 'session-1'));
+        expect(getTodosPersistenceKey('project:ws-a', '/repo', 'session-1'))
+            .not.toBe(getTodosPersistenceKey('project:ws-b', '/repo', 'session-1'));
     });
 
     test('removes only the matching composite session', () => {
@@ -40,7 +40,7 @@ describe('useTodosPersistStore', () => {
     test('clears only the explicitly owned scope', () => {
         const store = useTodosPersistStore.getState();
         store.setSessionTodos('/repo', 'session-1', [todo('active')]);
-        store.clearSessionTodos('workspace:other', '/repo', 'session-1');
+        store.clearSessionTodos('project:other', '/repo', 'session-1');
         expect(useTodosPersistStore.getState().getSessionTodos('/repo', 'session-1')).toEqual([todo('active')]);
 
         store.clearSessionTodos('', '/repo/', 'session-1');

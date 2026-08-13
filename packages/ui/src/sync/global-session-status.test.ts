@@ -72,10 +72,10 @@ describe("global session status index", () => {
     expect(useGlobalSessionStatusStore.getState().statusById.has("session-a")).toBe(false)
   })
 
-  test("keeps equal session ids in separate workspace status partitions", () => {
+  test("keeps equal session ids in separate project status partitions", () => {
     const defaultScope = useGlobalSessionStatusStore.getState().scopeKey
-    const firstScope = "workspace:status-a"
-    const secondScope = "workspace:status-b"
+    const firstScope = "project:status-a"
+    const secondScope = "project:status-b"
 
     useGlobalSessionStatusStore.getState().bindScope(firstScope)
     applyGlobalSessionStatusEvent("/repo/a", {

@@ -57,11 +57,11 @@ export type EventPipelineInput = {
   /** Called when transport switches (e.g. WS timeout → SSE fallback) without actual disconnection. */
   onTransportSwitch?: () => void
   transport?: "auto" | "ws" | "sse"
-  /** Workspace-bound sync: always use the bound SDK's SSE stream
-   * (`sdk.global.event`, which lands on the workspace runtime proxy) and
-   * never open a WebSocket. The workspace proxy pipes `text/event-stream`;
+  /** Project-bound sync: always use the bound SDK's SSE stream
+   * (`sdk.global.event`, which lands on the project runtime proxy) and
+   * never open a WebSocket. The project proxy pipes `text/event-stream`;
    * keeping this pipeline on SSE also avoids consulting the GLOBAL runtime
-   * URL builder, while workspace terminal/realtime consumers use their own
+   * URL builder, while project terminal/realtime consumers use their own
    * scoped WebSocket paths. */
   forceSse?: boolean
   heartbeatTimeoutMs?: number

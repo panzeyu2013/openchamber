@@ -54,8 +54,8 @@ const session = (
   time: { created: updated - 1, updated },
 } as Session)
 
-const scopeA = "workspace:ws-a"
-const scopeB = "workspace:ws-b"
+const scopeA = "project:ws-a"
+const scopeB = "project:ws-b"
 
 beforeEach(() => {
   storage = new TestStorage()
@@ -107,7 +107,7 @@ describe("persisted directory sessions", () => {
     expect(cached.map((item) => item.id)).toEqual(sessions.slice(-cached.length).map((item) => item.id))
   })
 
-  test("isolates snapshots by workspace scope and directory", async () => {
+  test("isolates snapshots by project scope and directory", async () => {
     const otherDirectory = "/other-repo"
     persistSessions(directory, [session(1, 1, "scope A")], scopeA)
     persistSessions(otherDirectory, [session(2, 2, "other directory", otherDirectory)], scopeA)
@@ -146,7 +146,7 @@ describe("persisted directory sessions", () => {
     expect(readDirCache(directory, scopeA).sessions).toEqual([])
   })
 
-  test("a pending snapshot for another workspace scope never replaces the committed one", async () => {
+  test("a pending snapshot for another project scope never replaces the committed one", async () => {
     persistSessions(directory, [session(1, 1, "scope A")], scopeA)
     persistSessions(directory, [session(2, 2, "scope B")], scopeB)
 

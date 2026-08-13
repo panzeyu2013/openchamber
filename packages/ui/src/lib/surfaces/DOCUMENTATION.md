@@ -3,7 +3,7 @@
 ## Purpose
 
 `packages/ui/src/lib/surfaces` owns the declarative registry of context panel
-surfaces — the desktop workspaces switched by the vertical rail on the right
+surfaces — the desktop projects switched by the vertical rail on the right
 edge (`components/layout/ContextPanelRail.tsx`) and rendered by
 `components/layout/ContextPanel.tsx`.
 

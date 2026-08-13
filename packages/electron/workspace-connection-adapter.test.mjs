@@ -78,7 +78,7 @@ describe('Electron SSH workspace connection adapter', () => {
     const origin = `http://127.0.0.1:${port}`;
     const sshManager = {
       async statusesWithDefaults(id) {
-        return [{ id, status: connected ? 'connected' : 'idle', localUrl: connected ? origin : null }];
+        return [{ id, phase: connected ? 'ready' : 'idle', localUrl: connected ? origin : null }];
       },
       runtimeCredentialsForInstance: () => ({ clientToken: 'ssh-runtime-token' }),
     };
@@ -126,7 +126,7 @@ describe('Electron SSH workspace connection adapter', () => {
     let connected = false;
     const sshManager = {
       async statusesWithDefaults(id) {
-        return [{ id, status: connected ? 'connected' : 'idle', localUrl: connected ? 'http://127.0.0.1:1' : null }];
+        return [{ id, phase: connected ? 'ready' : 'idle', localUrl: connected ? 'http://127.0.0.1:1' : null }];
       },
     };
     const adapter = createSshWorkspaceConnectionAdapter({

@@ -26,8 +26,21 @@ export function buildSessionBootstrapDemands(input: {
   collapsedGroups: ReadonlySet<string>
   currentDirectory: string | null
   currentSessionDirectory: string | null
+  /**
+   * When a project sync scope is mounted, live bootstrap is only valid for
+   * the bound project directory: every request goes through the project
+   * handle, and other projects' directories are rejected server-side (403).
+   * Their sessions are served by the session index snapshot instead, so the
+   * demand set is narrowed to this root and its subdirectories.
+   */
+  allowedRootDirectory?: string | null
 }): DirectoryBootstrapDemand[] {
   const byDirectory = new Map<string, DirectoryBootstrapDemand>()
+  const allowedRoot = input.allowedRootDirectory ? normalizePath(input.allowedRootDirectory) : null
+  const isAllowed = (directory: string): boolean => {
+    if (!allowedRoot) return true
+    return directory === allowedRoot || directory.startsWith(`${allowedRoot}/`)
+  }
   const add = (
     directory: string | null | undefined,
     priority: DirectoryBootstrapPriority,
@@ -35,6 +48,7 @@ export function buildSessionBootstrapDemands(input: {
   ) => {
     const normalizedDirectory = normalizePath(directory ?? null)
     if (!normalizedDirectory) return
+    if (!isAllowed(normalizedDirectory)) return
     const existing = byDirectory.get(normalizedDirectory)
     if (existing && PRIORITY_RANK[existing.priority] <= PRIORITY_RANK[priority]) return
     byDirectory.set(normalizedDirectory, { directory: normalizedDirectory, priority, reason })

@@ -18,8 +18,8 @@ import {
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import {
   EMPTY_SESSION_ORDER_RANKS,
@@ -52,7 +52,7 @@ import { useI18n } from '@/lib/i18n';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { buildCommandPaletteFileSearchKey, scoreCommandPaletteFiles } from './commandPaletteFilesState';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type CommandEntry = {
   id: string;
@@ -96,7 +96,7 @@ export const CommandPalette: React.FC = () => {
   const openNewSessionDraft = useSessionUIStore((s) => s.openNewSessionDraft);
   const setCurrentSession = useSessionUIStore((s) => s.setCurrentSession);
 
-  const activeSessions = useWorkspaceSessionIndexStore(React.useCallback(
+  const activeSessions = useProjectSessionIndexStore(React.useCallback(
     (state) => isCommandPaletteOpen
       ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary)
       : EMPTY_SESSIONS,
@@ -112,7 +112,7 @@ export const CommandPalette: React.FC = () => {
   ));
   const currentDirectory = useDirectoryStore((s) => s.currentDirectory);
   const activeProject = useProjectsStore((s) => s.getActiveProject());
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const projects = useProjectsStore((s) => s.projects);
   const effectiveDirectory = useEffectiveDirectory();
   const searchFiles = useScopedFileSearch();
@@ -257,7 +257,7 @@ export const CommandPalette: React.FC = () => {
           void invokeDesktop('desktop_open_draft_mini_chat_window', {
             directory: normalizePath(currentDirectory || activeProject?.path || ''),
             projectId: activeProject?.id ?? null,
-            workspaceId: activeWorkspaceId ?? null,
+            workspaceId: activeProjectId ?? null,
             ...getDesktopRuntimeEndpointArgs(),
           }).catch((error) => {
             console.warn('[command-palette] failed to open draft mini chat window', error);
@@ -280,7 +280,7 @@ export const CommandPalette: React.FC = () => {
     setSettingsDialogOpen,
     activeProject?.id,
     activeProject?.path,
-    activeWorkspaceId,
+    activeProjectId,
   ]);
 
   // ---------------------------------------------------------------------------
@@ -294,6 +294,7 @@ export const CommandPalette: React.FC = () => {
   const settingsEntries = React.useMemo<CommandEntry[]>(() => {
     return SETTINGS_PAGE_METADATA
       .filter((p) => p.slug !== 'home')
+      .filter((p) => !p.hiddenInNav)
       .filter((p) => (p.isAvailable ? p.isAvailable(settingsRuntimeCtx) : true))
       .map((page) => {
         const iconName = getSettingsNavIcon(page.slug) ?? 'settings-3';
@@ -456,9 +457,9 @@ export const CommandPalette: React.FC = () => {
   const handleOpenSession = React.useCallback(
     (session: Session) => {
       close();
-      setCurrentSession(session.id, resolveSessionDirectory(session), activeWorkspaceId);
+      setCurrentSession(session.id, resolveSessionDirectory(session), activeProjectId);
     },
-    [activeWorkspaceId, close, setCurrentSession],
+    [activeProjectId, close, setCurrentSession],
   );
 
   const handleOpenFile = React.useCallback(

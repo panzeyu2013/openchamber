@@ -3,13 +3,13 @@ import type { Session } from '@opencode-ai/sdk/v2';
 import type { ProjectEntry } from '@/lib/api/types';
 import { useUIStore } from '@/stores/useUIStore';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { getNotificationSessionKey, useNotificationStore } from '@/sync/notification-store';
 import { compareSessionsByLifecycleOrder, useSessionOrderingStore } from '@/sync/session-ordering';
 import { getControlPlaneKey } from '@/lib/control-plane';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
 
 /**
  * Builds the lightweight session overview the native iOS widgets render (home medium,
@@ -73,7 +73,7 @@ const projectLabelForDirectory = (directory: string | null, projects: ProjectEnt
 };
 
 export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
-  const indexedSessions = useWorkspaceSessionIndexStore.getState().snapshot;
+  const indexedSessions = useProjectSessionIndexStore.getState().snapshot;
   const sessions = selectSessionsForConnection(indexedSessions, 'local').map(sessionFromSummary);
   const unseenBySession = useNotificationStore.getState().index.session.unseenCount;
   const notifyOnSubtasks = useUIStore.getState().notifyOnSubtasks;
@@ -86,12 +86,12 @@ export const buildMobileWidgetSnapshot = (): MobileWidgetSnapshot => {
 
   for (const session of sessions) {
     const isSubtask = parentIdOf(session) !== null;
-    const workspaceId = resolveActiveWorkspaceId(
+    const projectId = resolveActiveProjectId(
       indexedSessions?.sessions,
       session.id,
       resolveSessionDirectory(session),
     );
-    const unseenCount = unseenBySession[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
+    const unseenCount = unseenBySession[getNotificationSessionKey(session.id, projectId)] ?? 0;
     const needsAttention = unseenCount > 0 && (!isSubtask || notifyOnSubtasks);
     if (needsAttention) {
       attentionCount += 1;

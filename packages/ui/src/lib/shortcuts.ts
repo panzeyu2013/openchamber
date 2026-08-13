@@ -273,20 +273,6 @@ const SHORTCUT_ACTIONS: ReadonlyArray<ShortcutAction> = [
     customizable: true,
   },
   {
-    id: 'toggle_services_menu',
-    defaultCombo: 'mod+shift+s',
-    label: 'Toggle services menu',
-    description: 'Open or close the services menu',
-    customizable: true,
-  },
-  {
-    id: 'cycle_services_tab',
-    defaultCombo: 'mod+shift+[',
-    label: 'Cycle services tab',
-    description: 'Cycle through tabs in the services menu',
-    customizable: true,
-  },
-  {
     id: 'cycle_theme',
     defaultCombo: 'mod+/',
     label: 'Cycle theme',

@@ -7,8 +7,8 @@
 // is the byte-identical re-home of that role, renamed from
 // "runtime endpoint" vocabulary to "control plane".
 //
-// Distinguish it from `workspaces/control-plane-fetch.ts`: that module owns
-// the PINNED window-origin resolution used by the Workspace Catalog / Session
+// Distinguish it from `projects/control-plane-fetch.ts`: that module owns
+// the PINNED window-origin resolution used by the Project Catalog / Session
 // Index (which control plane served THIS page), while this module owns the
 // ACTIVE endpoint the rest of the UI talks to. Both concepts coexist; they
 // are not interchangeable.
@@ -118,7 +118,7 @@ const readInjectedApiBaseUrl = (): string => {
 
 /** The ACTIVE control-plane base URL (explicit selection or sanitized boot
  * injection). Distinguish from the pinned window-origin resolution in
- * `workspaces/control-plane-fetch.ts`. */
+ * `projects/control-plane-fetch.ts`. */
 export const getControlPlaneBaseUrl = (): string => activeApiBaseUrl || readInjectedApiBaseUrl();
 
 // `getControlPlaneKey` keys caches, stores, and persisted state across the whole
@@ -149,8 +149,8 @@ const readRawRuntimeGlobal = (key: '__OPENCHAMBER_API_BASE_URL__' | '__OPENCHAMB
 };
 
 /** Control-plane identity key for cache partitioning (host keys, 'local',
- * 'mobile-disconnected'). NOT the workspace scope key; workspace-bound sync
- * partitions on explicit workspace scope keys instead. */
+ * 'mobile-disconnected'). NOT the project scope key; project-bound sync
+ * partitions on explicit project scope keys instead. */
 export const getControlPlaneKey = (): string => {
   if (activeRuntimeKey) return activeRuntimeKey;
 

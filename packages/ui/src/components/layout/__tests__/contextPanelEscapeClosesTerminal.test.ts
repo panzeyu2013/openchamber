@@ -12,8 +12,8 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const contextPanelSource = readFileSync(join(__dirname, '..', 'ContextPanel.tsx'), 'utf-8');
-const mobileWorkspaceDrawerSource = readFileSync(
-  join(__dirname, '..', '..', '..', 'apps', 'MobileWorkspaceDrawer.tsx'),
+const mobileProjectDrawerSource = readFileSync(
+  join(__dirname, '..', '..', '..', 'apps', 'MobileProjectDrawer.tsx'),
   'utf-8',
 );
 
@@ -49,9 +49,9 @@ describe('issue #2644: Escape in terminal must not close the context panel', () 
   });
 
   test('mobile drawer keeps its terminal Escape exception', () => {
-    const handlerStart = mobileWorkspaceDrawerSource.indexOf("if (event.key === 'Escape'");
+    const handlerStart = mobileProjectDrawerSource.indexOf("if (event.key === 'Escape'");
     expect(handlerStart).toBeGreaterThan(-1);
-    const handler = mobileWorkspaceDrawerSource.slice(handlerStart, handlerStart + 200);
+    const handler = mobileProjectDrawerSource.slice(handlerStart, handlerStart + 200);
     expect(handler).toContain("tabRef.current !== 'terminal'");
   });
 });

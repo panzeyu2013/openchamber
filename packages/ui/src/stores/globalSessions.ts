@@ -1,6 +1,6 @@
 import type { OpencodeClient, Session } from "@opencode-ai/sdk/v2";
 import { runBackgroundNetworkTask } from '@/lib/background-network';
-import { retry } from "@/sync/retry";
+import { isTransientError, retry } from "@/sync/retry";
 import { stripSessionListDetails } from "@/sync/sanitize";
 import { startSessionLoadPerformanceEvent } from "@/sync/session-load-performance";
 
@@ -155,7 +155,7 @@ export async function listGlobalSessionPages(
                     .map((session) => stripSessionListDetails(session) as GlobalSessionRecord);
                 return { response, payload };
             },
-            { attempts: 3, delay: 500, retryIf: () => true },
+            { attempts: 3, delay: 500, retryIf: isTransientError },
         )).catch((error) => {
             finishPerformanceEvent("error", { retryCount: Math.max(0, attempts - 1) });
             throw error;

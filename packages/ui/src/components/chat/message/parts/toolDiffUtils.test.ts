@@ -16,25 +16,25 @@ describe('toolDiffUtils', () => {
     test('prefers the absolute apply_patch path over its worktree-relative label', () => {
         expect(getPrimaryToolPath('apply_patch', undefined, {
             files: [{
-                filePath: '/workspace/project/src/file.ts',
-                relativePath: 'workspace/project/src/file.ts',
+                filePath: '/project/project/src/file.ts',
+                relativePath: 'project/project/src/file.ts',
                 type: 'update',
             }],
-        })).toBe('/workspace/project/src/file.ts');
+        })).toBe('/project/project/src/file.ts');
     });
 
     test('opens the move destination and skips deleted apply_patch files', () => {
         expect(getPrimaryToolPath('apply_patch', undefined, {
             files: [
-                { filePath: '/workspace/deleted.ts', relativePath: 'deleted.ts', type: 'delete' },
+                { filePath: '/project/deleted.ts', relativePath: 'deleted.ts', type: 'delete' },
                 {
-                    filePath: '/workspace/old.ts',
+                    filePath: '/project/old.ts',
                     relativePath: 'new.ts',
-                    movePath: '/workspace/new.ts',
+                    movePath: '/project/new.ts',
                     type: 'move',
                 },
             ],
-        })).toBe('/workspace/new.ts');
+        })).toBe('/project/new.ts');
     });
 
     test('falls back to the relative apply_patch path for legacy metadata', () => {
@@ -45,30 +45,30 @@ describe('toolDiffUtils', () => {
 
     test('resolves each apply_patch file independently', () => {
         expect(getApplyPatchFilePath({
-            filePath: '/workspace/project/src/first.ts',
-            relativePath: 'workspace/project/src/first.ts',
-        })).toBe('/workspace/project/src/first.ts');
+            filePath: '/project/project/src/first.ts',
+            relativePath: 'project/project/src/first.ts',
+        })).toBe('/project/project/src/first.ts');
         expect(getApplyPatchFilePath({
-            filePath: '/workspace/project/src/old.ts',
-            movePath: '/workspace/project/src/second.ts',
+            filePath: '/project/project/src/old.ts',
+            movePath: '/project/project/src/second.ts',
             relativePath: 'src/second.ts',
-        })).toBe('/workspace/project/src/second.ts');
+        })).toBe('/project/project/src/second.ts');
     });
 
     test('lists every apply_patch mutation path, including both sides of a move', () => {
         expect(getMutatedToolPaths('apply_patch', undefined, {
             files: [
-                { filePath: '/workspace/project/src/deleted.ts', type: 'delete' },
+                { filePath: '/project/project/src/deleted.ts', type: 'delete' },
                 {
-                    filePath: '/workspace/project/src/old.ts',
-                    movePath: '/workspace/project/src/new.ts',
+                    filePath: '/project/project/src/old.ts',
+                    movePath: '/project/project/src/new.ts',
                     type: 'move',
                 },
             ],
         })).toEqual([
-            '/workspace/project/src/deleted.ts',
-            '/workspace/project/src/new.ts',
-            '/workspace/project/src/old.ts',
+            '/project/project/src/deleted.ts',
+            '/project/project/src/new.ts',
+            '/project/project/src/old.ts',
         ]);
     });
 
@@ -84,14 +84,14 @@ describe('toolDiffUtils', () => {
             patch: deletedPatch,
             files: [
                 {
-                    filePath: '/workspace/project/src/deleted.ts',
+                    filePath: '/project/project/src/deleted.ts',
                     relativePath: 'src/deleted.ts',
                     patch: deletedPatch,
                     type: 'delete',
                 },
                 {
-                    filePath: '/workspace/project/src/old.ts',
-                    movePath: '/workspace/project/src/moved.ts',
+                    filePath: '/project/project/src/old.ts',
+                    movePath: '/project/project/src/moved.ts',
                     relativePath: 'src/moved.ts',
                     patch: movedPatch,
                     type: 'move',
@@ -99,9 +99,9 @@ describe('toolDiffUtils', () => {
             ],
         };
 
-        expect(getPrimaryDiffFromMetadata('apply_patch', metadata, '/workspace/project/src/moved.ts'))
+        expect(getPrimaryDiffFromMetadata('apply_patch', metadata, '/project/project/src/moved.ts'))
             .toBe(movedPatch);
-        expect(getFirstChangedLineFromMetadata('apply_patch', metadata, '/workspace/project/src/moved.ts'))
+        expect(getFirstChangedLineFromMetadata('apply_patch', metadata, '/project/project/src/moved.ts'))
             .toBe(42);
     });
 
@@ -167,14 +167,14 @@ describe('toolDiffUtils', () => {
         ].join('\n');
         const entries = getDiffPatchEntries({
             files: [
-                { filePath: '/workspace/project/src/first.ts', relativePath: 'src/first.ts', patch },
-                { filePath: '/workspace/project/src/second.ts', relativePath: 'src/second.ts', patch },
+                { filePath: '/project/project/src/first.ts', relativePath: 'src/first.ts', patch },
+                { filePath: '/project/project/src/second.ts', relativePath: 'src/second.ts', patch },
             ],
         }, undefined, identity);
 
         expect(entries.map((entry) => entry.filePath)).toEqual([
-            '/workspace/project/src/first.ts',
-            '/workspace/project/src/second.ts',
+            '/project/project/src/first.ts',
+            '/project/project/src/second.ts',
         ]);
     });
 

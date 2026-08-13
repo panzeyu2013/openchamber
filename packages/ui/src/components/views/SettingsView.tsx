@@ -24,7 +24,10 @@ import { SkillsSidebar } from '@/components/sections/skills/SkillsSidebar';
 import { SkillsPage } from '@/components/sections/skills/SkillsPage';
 import { ProjectsSidebar } from '@/components/sections/projects/ProjectsSidebar';
 import { ProjectsPage } from '@/components/sections/projects/ProjectsPage';
+import { ServersSidebar } from '@/components/sections/servers/ServersSidebar';
+import { ServersPage } from '@/components/sections/servers/ServersPage';
 import { RemoteInstancesPage } from '@/components/sections/remote-instances/RemoteInstancesPage';
+import { DevicesPage } from '@/components/sections/devices/DevicesPage';
 import { ProvidersSidebar } from '@/components/sections/providers/ProvidersSidebar';
 import { ProvidersPage } from '@/components/sections/providers/ProvidersPage';
 import { UsageSidebar } from '@/components/sections/usage/UsageSidebar';
@@ -34,6 +37,8 @@ import { MagicPromptsPage } from '@/components/sections/magic-prompts/MagicPromp
 import { SnippetsSidebar } from '@/components/sections/snippets/SnippetsSidebar';
 import { SnippetsPage } from '@/components/sections/snippets/SnippetsPage';
 import { GitPage } from '@/components/sections/git-identities/GitPage';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import type { OpenChamberSection } from '@/components/sections/openchamber/types';
 import { OpenChamberPage } from '@/components/sections/openchamber/OpenChamberPage';
 import { AboutSettings } from '@/components/sections/openchamber/AboutSettings';
@@ -96,8 +101,10 @@ const pageOrder: SettingsPageSlug[] = [
   'voice',
   'usage',
   'about',
-  // 'projects' group — Workspace
+  // 'projects' group — Project
   'projects',
+  'servers',
+  'devices',
   'remote-instances',
   'tunnel',
   'git',
@@ -238,6 +245,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     const allowedPages = visiblePageSlugs ? new Set<SettingsPageSlug>(visiblePageSlugs) : null;
     return SETTINGS_PAGE_METADATA
       .filter((page) => page.slug !== 'home')
+      .filter((page) => !page.hiddenInNav)
       .filter((page) => !allowedPages || allowedPages.has(page.slug))
       .filter((page) => isPageAvailable(page, runtimeCtx))
       .filter((page) => !(runtimeCtx.isVSCode && page.slug === 'projects'))
@@ -282,6 +290,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     if (settingsSlug === 'snippets') {
       void useSnippetsStore.getState().loadSnippets();
     }
+    if (settingsSlug === 'servers') {
+      // Fresh catalog + session-index snapshot + capability flag so the page
+      // reflects connections registered since the last bridge refresh.
+      void useProjectCatalogStore.getState().refresh();
+      void useProjectSessionIndexStore.getState().refresh().catch(() => undefined);
+      void useProjectSessionIndexStore.getState().refreshCapabilities().catch(() => undefined);
+    }
   }, [activeProjectId, isSettingsDialogOpen, isWindowed, runtimeCtx.isVSCode, settingsSlug]);
 
   const openPage = React.useCallback((slug: SettingsPageSlug) => {
@@ -321,6 +336,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
         return t('settings.page.general.title');
       case 'projects':
         return t('settings.page.projects.title');
+      case 'servers':
+        return t('settings.page.servers.title');
+      case 'devices':
+        return t('settings.page.devices.title');
       case 'remote-instances':
         return t('settings.page.remoteInstances.title');
       case 'providers':
@@ -582,6 +601,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     switch (slug) {
       case 'projects':
         return <ProjectsSidebar onItemSelect={opts.onItemSelect} />;
+      case 'servers':
+        return <ServersSidebar onItemSelect={opts.onItemSelect} />;
       case 'agents':
         return <AgentsSidebar onItemSelect={opts.onItemSelect} />;
       case 'commands':
@@ -614,6 +635,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ onClose, forceMobile
     switch (slug) {
       case 'projects':
         return <ProjectsPage />;
+      case 'servers':
+        return <ServersPage />;
+      case 'devices':
+        return <DevicesPage />;
       case 'remote-instances':
         return <RemoteInstancesPage />;
       case 'agents':

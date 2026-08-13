@@ -64,7 +64,10 @@ export const createSshWorkspaceConnectionAdapter = (dependencies) => {
     const status = Array.isArray(statuses)
       ? statuses.find((entry) => entry?.id === sshInstanceId) ?? null
       : statuses?.[sshInstanceId] ?? null;
-    if (!status || status.status !== 'connected' || typeof status.localUrl !== 'string' || status.localUrl.length === 0) {
+    // ssh-manager statuses carry a `phase` (ready = tunnel connected), not a
+    // `status` field; only a non-empty localUrl with phase 'ready' is a
+    // forwardable tunnel.
+    if (!status || status.phase !== 'ready' || typeof status.localUrl !== 'string' || status.localUrl.length === 0) {
       const error = new Error('SSH tunnel is not connected');
       error.code = 'capability_unavailable';
       error.status = 503;

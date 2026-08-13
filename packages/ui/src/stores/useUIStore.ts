@@ -11,8 +11,8 @@ import type { TerminalShell } from '@/lib/api/types';
 import { useFilesViewTabsStore } from './useFilesViewTabsStore';
 import { isWindowsArm64 } from '@/lib/platform';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
 
 export type MainTab = 'chat' | 'plan' | 'git' | 'diff' | 'terminal' | 'files' | 'context' | 'diagram';
 export type PendingDiffScope = 'working' | 'staged' | 'turn';
@@ -133,9 +133,9 @@ const runtimeMemoryKey = (value?: string | null): string => {
 
 const resolveContextPanelScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 
 const initialContextPanelScopeKey = '';
@@ -683,7 +683,6 @@ interface UIStore {
   settingsPage: string;
   settingsHasOpenedOnce: boolean;
   settingsProjectsSelectedId: string | null;
-  settingsRemoteInstancesSelectedId: string | null;
   eventStreamStatus: EventStreamStatus;
   eventStreamHint: string | null;
   showReasoningTraces: boolean;
@@ -856,7 +855,6 @@ interface UIStore {
   setSidebarSection: (section: SidebarSection) => void;
   setSettingsPage: (slug: string) => void;
   setSettingsProjectsSelectedId: (projectId: string | null) => void;
-  setSettingsRemoteInstancesSelectedId: (instanceId: string | null) => void;
   setEventStreamStatus: (status: EventStreamStatus, hint?: string | null) => void;
   setShowReasoningTraces: (value: boolean) => void;
   setSessionRecapEnabled: (value: boolean) => void;
@@ -1023,7 +1021,6 @@ export const useUIStore = create<UIStore>()(
         settingsPage: 'home',
         settingsHasOpenedOnce: false,
         settingsProjectsSelectedId: null,
-        settingsRemoteInstancesSelectedId: null,
         eventStreamStatus: 'idle',
         eventStreamHint: null,
         showReasoningTraces: true,
@@ -1769,10 +1766,6 @@ export const useUIStore = create<UIStore>()(
 
         setSettingsProjectsSelectedId: (projectId) => {
           set({ settingsProjectsSelectedId: projectId });
-        },
-
-        setSettingsRemoteInstancesSelectedId: (instanceId) => {
-          set({ settingsRemoteInstancesSelectedId: instanceId });
         },
 
         setEventStreamStatus: (status, hint) => {
@@ -2590,7 +2583,6 @@ export const useUIStore = create<UIStore>()(
           settingsPage: state.settingsPage,
           settingsHasOpenedOnce: state.settingsHasOpenedOnce,
           settingsProjectsSelectedId: state.settingsProjectsSelectedId,
-          settingsRemoteInstancesSelectedId: state.settingsRemoteInstancesSelectedId,
           isSessionCreateDialogOpen: state.isSessionCreateDialogOpen,
           // Note: isSettingsDialogOpen intentionally NOT persisted
           showReasoningTraces: state.showReasoningTraces,
@@ -2713,7 +2705,7 @@ const installContextPanelScopeSubscription = (): void => {
       }
     };
     useSessionUIStore?.subscribe?.(check);
-    useWorkspaceSessionIndexStore?.subscribe?.(check);
+    useProjectSessionIndexStore?.subscribe?.(check);
   });
 };
 installContextPanelScopeSubscription();

@@ -21,7 +21,7 @@ export type ViewTarget = 'files' | 'mcp' | 'instances' | 'update';
  * that keeps the "blocks" composable without leaking ad-hoc URL parsing into features.
  */
 export type DeepLinkIntent =
-  | { type: 'session'; sessionId: string; directory?: string; workspaceId?: string }
+  | { type: 'session'; sessionId: string; directory?: string; projectId?: string }
   | { type: 'new-session'; directory?: string; projectId?: string; agent?: string; model?: string }
   | { type: 'sessions'; filter?: SessionsFilter }
   | { type: 'status' }
@@ -86,7 +86,7 @@ export function parseDeepLink(raw: string | null | undefined): DeepLinkIntent | 
         type: 'session',
         sessionId,
         directory: query.get('dir') ?? undefined,
-        workspaceId: query.get('workspace') ?? undefined,
+        projectId: query.get('workspace') ?? undefined,
       };
     }
 
@@ -160,7 +160,7 @@ export function buildDeepLink(intent: DeepLinkIntent): string {
     case 'session':
       return withQuery(`session/${encodeURIComponent(intent.sessionId)}`, {
         dir: intent.directory,
-        workspace: intent.workspaceId,
+        workspace: intent.projectId,
       });
     case 'new-session':
       return withQuery('new', {

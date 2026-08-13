@@ -239,7 +239,7 @@ export const base64UrlToBytes = (value) => {
 
 /**
  * Client (initiator) handshake. This is the server-side mirror used by the
- * workspace Relay adapter. The host encryption public key is supplied by the
+ * project Relay adapter. The host encryption public key is supplied by the
  * saved connection credential and is the trust anchor for the channel.
  *
  * @param {JsonWebKey} hostEncPubJwk

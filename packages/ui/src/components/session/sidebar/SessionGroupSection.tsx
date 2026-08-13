@@ -412,7 +412,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
   );
   const folderScopeKey = group.folderScopeKey ?? normalizePath(group.directory ?? null);
   // Merged flat groups list every contributing scope; single-scope groups
-  // (archived buckets, VS Code workspaces) fall back to folderScopeKey.
+  // (archived buckets, VS Code projects) fall back to folderScopeKey.
   const folderScopes = React.useMemo<Array<{ scopeKey: string; directory: string | null }>>(() => {
     if (group.folderScopes && group.folderScopes.length > 0) return group.folderScopes;
     return folderScopeKey ? [{ scopeKey: folderScopeKey, directory: group.directory ?? null }] : [];
@@ -1048,7 +1048,7 @@ function SessionGroupSectionBase(props: Props): React.ReactNode {
               )
               : bootstrapFailureNotice
                 ? bootstrapFailureNotice
-            : t('sessions.sidebar.group.empty.noSessionsInWorkspace')}
+            : t('sessions.sidebar.group.empty.noSessionsInProject')}
         </div>
       ) : null}
       {totalSessions > 0 && bootstrapFailureNotice ? (

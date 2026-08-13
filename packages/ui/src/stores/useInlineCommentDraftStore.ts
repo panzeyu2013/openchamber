@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
+import { legacyScopeKeyForProjectKey } from '@/projects/identity';
 import { normalizePath } from '@/lib/pathNormalization';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 
@@ -64,13 +65,26 @@ const EMPTY_ENVELOPE_BYTES = encoder.encode(JSON.stringify({ drafts: {}, touched
 export const getInlineCommentDraftKey = (scopeKey: string, directory: string, sessionKey: string): string | null => {
   const normalizedDirectory = normalizePath(directory);
   // The empty scope is the legitimate unscoped bucket for sessions the
-  // session index does not map to a workspace.
+  // session index does not map to a project.
   if (typeof scopeKey !== 'string' || !normalizedDirectory || !sessionKey) return null;
   return JSON.stringify([scopeKey, normalizedDirectory, sessionKey]);
 };
 
 const getCurrentKey = (target: InlineCommentDraftTarget): string | null =>
   getInlineCommentDraftKey(resolveSessionScopeKey(target.sessionKey, target.directory), target.directory, target.sessionKey);
+
+/** P-MIG: drafts written before the workspace→project rename keyed their
+ * records with the `workspace:` scope prefix. Reads fall back to that legacy
+ * key so pre-upgrade drafts stay visible; writes always use the current key. */
+const getCurrentKeyWithLegacy = (target: InlineCommentDraftTarget): [string | null, string | null] => {
+  const scopeKey = resolveSessionScopeKey(target.sessionKey, target.directory);
+  const key = getInlineCommentDraftKey(scopeKey, target.directory, target.sessionKey);
+  const legacyScopeKey = legacyScopeKeyForProjectKey(scopeKey);
+  const legacyKey = legacyScopeKey
+    ? getInlineCommentDraftKey(legacyScopeKey, target.directory, target.sessionKey)
+    : null;
+  return [key, legacyKey];
+};
 
 const serializedEntryBytes = (key: string, value: unknown): number =>
   encoder.encode(`${JSON.stringify(key)}:${JSON.stringify(value)}`).byteLength;
@@ -251,15 +265,18 @@ export const useInlineCommentDraftStore = create<InlineCommentDraftStore>()(
           });
         },
         getDrafts: (target) => {
-          const key = getCurrentKey(target);
+          const [key, legacyKey] = getCurrentKeyWithLegacy(target);
           if (!key) return EMPTY_INLINE_COMMENT_DRAFTS;
-          return get().drafts[key] ?? EMPTY_INLINE_COMMENT_DRAFTS;
+          return get().drafts[key] ?? (legacyKey ? get().drafts[legacyKey] : undefined) ?? EMPTY_INLINE_COMMENT_DRAFTS;
         },
         consumeDrafts: (target) => {
-          const key = getCurrentKey(target);
+          const [key, legacyKey] = getCurrentKeyWithLegacy(target);
           if (!key) return [];
-          const drafts = [...(get().drafts[key] ?? [])].sort((left, right) => left.createdAt - right.createdAt);
-          if (drafts.length > 0) set((state) => removeDraftKey(state, key));
+          const current = get().drafts[key];
+          const legacy = legacyKey ? get().drafts[legacyKey] : undefined;
+          const drafts = [...(current ?? legacy ?? [])].sort((left, right) => left.createdAt - right.createdAt);
+          if (current && drafts.length > 0) set((state) => removeDraftKey(state, key));
+          else if (legacyKey && legacy && drafts.length > 0) set((state) => removeDraftKey(state, legacyKey));
           return drafts;
         },
         restoreDrafts: (target, draftsToRestore) => {

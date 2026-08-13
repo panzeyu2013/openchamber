@@ -4,6 +4,7 @@ import { getDeferredSafeStorage, getSafeStorage } from './utils/safeStorage';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
+import { legacyScopeKeyForProjectKey } from '@/projects/identity';
 
 // --- Types ---
 
@@ -35,8 +36,8 @@ interface SessionFoldersActions {
   removeSessionsFromFolders: (scopeKey: string, sessionIds: string[]) => void;
   toggleFolderCollapse: (folderId: string) => void;
   getSessionFolderId: (scopeKey: string, sessionId: string) => string | null;
-  /** Switches the active persisted bucket to the given scope key (workspace
-   * scope for workspace sessions, ambient runtime key otherwise). */
+  /** Switches the active persisted bucket to the given scope key (project
+   * scope for project sessions, ambient runtime key otherwise). */
   activateScope: (scopeKey: string) => void;
 }
 
@@ -65,7 +66,7 @@ let folderRuntimeGeneration = 0;
 let folderMutationRevision = 0;
 const lastDiskUpdatedAtByScope = new Map<string, number>();
 
-/** Active persisted bucket for the folders store: the workspace scope of the
+/** Active persisted bucket for the folders store: the project scope of the
  * current session. */
 export const getActiveFolderScopeKey = (): string => activeFolderScopeKey;
 
@@ -147,7 +148,15 @@ const schedulePersistToDisk = (foldersMap: SessionFoldersMap, collapsedFolderIds
 const readPersistedFolders = (scopeKey = activeFolderScopeKey): SessionFoldersMap => {
   try {
     const parsed = readFoldersBucket(runtimeStorageKey(FOLDERS_STORAGE_KEY, scopeKey));
-    return parsed ?? {};
+    if (parsed) return parsed;
+    // P-MIG: pre-rename builds persisted buckets under `workspace:`-prefixed
+    // scope keys; fall back so folders survive the scope-key rename.
+    const legacyScopeKey = legacyScopeKeyForProjectKey(scopeKey);
+    if (legacyScopeKey) {
+      const legacyParsed = readFoldersBucket(runtimeStorageKey(FOLDERS_STORAGE_KEY, legacyScopeKey));
+      if (legacyParsed) return legacyParsed;
+    }
+    return {};
   } catch {
     return {};
   }
@@ -191,10 +200,18 @@ const readFoldersBucket = (storageKey: string): SessionFoldersMap | null => {
 const readPersistedCollapsed = (scopeKey = activeFolderScopeKey): Set<string> => {
   try {
     const raw = safeStorage.getItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, scopeKey));
-    if (!raw) {
-      return new Set();
+    let parsed: unknown = null;
+    if (raw) {
+      parsed = JSON.parse(raw) as unknown;
+    } else {
+      // P-MIG: fall back to the bucket persisted under the legacy
+      // `workspace:`-prefixed scope key by pre-rename builds.
+      const legacyScopeKey = legacyScopeKeyForProjectKey(scopeKey);
+      if (legacyScopeKey) {
+        const legacyRaw = safeStorage.getItem(runtimeStorageKey(COLLAPSED_STORAGE_KEY, legacyScopeKey));
+        if (legacyRaw) parsed = JSON.parse(legacyRaw) as unknown;
+      }
     }
-    const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) {
       return new Set();
     }
@@ -557,8 +574,8 @@ export const useSessionFoldersStore = create<SessionFoldersStore>()(
         if (!sessionId) return;
         // The identity must belong to the ACTIVE scope: either it carries the
         // active scope key directly (legacy runtime-keyed cleanup), or the
-        // session resolves to the active workspace scope. Removal never
-        // touches another workspace's folder bucket.
+        // session resolves to the active project scope. Removal never
+        // touches another project's folder bucket.
         const resolvedScope = resolveSessionScopeKey(sessionId);
         const belongsToActiveScope = scopeKey === activeFolderScopeKey
           || resolvedScope === activeFolderScopeKey;

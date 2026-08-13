@@ -63,7 +63,7 @@ describe('mergeCommandAutocompleteItems', () => {
     const builtIn: Item = {
       name: 'review',
       source: 'opencode',
-      description: 'Review workspace changes',
+      description: 'Review project changes',
       isBuiltIn: true,
     };
     const skill: Item = {

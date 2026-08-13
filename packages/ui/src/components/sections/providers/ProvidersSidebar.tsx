@@ -44,7 +44,7 @@ export const ProvidersSidebar: React.FC<ProvidersSidebarProps> = ({ onItemSelect
   const setSelectedProvider = useConfigStore((state) => state.setSelectedProvider);
   const [sourcesByProvider, setSourcesByProvider] = React.useState<Record<string, ProviderSources>>({});
   // The bound service is read during render so a provider/config refresh also
-  // re-evaluates the directory after a workspace scope changes.
+  // re-evaluates the directory after a project scope changes.
   const directory = getCurrentDirectory();
 
   React.useEffect(() => {

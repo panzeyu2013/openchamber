@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { devtools, persist } from 'zustand/middleware';
 import type { Todo } from '@opencode-ai/sdk/v2/client';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
+import { legacyScopeKeyForProjectKey } from '@/projects/identity';
 import { normalizePath } from '@/lib/pathNormalization';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 
@@ -25,6 +26,22 @@ export const getTodosPersistenceKey = (scopeKey: string, directory: string, sess
 const getCurrentSessionKey = (directory: string, sessionId: string): string | null => {
     if (!directory || !sessionId) return null;
     return getTodosPersistenceKey(resolveSessionScopeKey(sessionId, directory), directory, sessionId);
+};
+
+/** P-MIG: todos written before the workspace→project rename keyed their
+ * records with the `workspace:` scope prefix; reads fall back to that legacy
+ * key so pre-upgrade todos stay visible. Writes always use the current key. */
+const readTodosWithLegacyFallback = (
+    sessions: Record<string, SessionTodosRecord>,
+    scopeKey: string,
+    directory: string,
+    sessionId: string,
+): SessionTodosRecord | undefined => {
+    const current = sessions[getTodosPersistenceKey(scopeKey, directory, sessionId)];
+    if (current) return current;
+    const legacyScopeKey = legacyScopeKeyForProjectKey(scopeKey);
+    if (!legacyScopeKey) return undefined;
+    return sessions[getTodosPersistenceKey(legacyScopeKey, directory, sessionId)];
 };
 
 const evictOldest = (sessions: Record<string, SessionTodosRecord>): Record<string, SessionTodosRecord> => {
@@ -63,7 +80,8 @@ export const useTodosPersistStore = create<TodosPersistState>()(
                 getSessionTodos: (directory, sessionId) => {
                     const key = getCurrentSessionKey(directory, sessionId);
                     if (!key) return undefined;
-                    return get().sessions[key]?.todos;
+                    const [scopeKey] = JSON.parse(key) as [string, string, string];
+                    return readTodosWithLegacyFallback(get().sessions, scopeKey, directory, sessionId)?.todos;
                 },
                 clearSessionTodos: (scopeKey, directory, sessionId) => {
                     if (typeof scopeKey !== 'string' || !directory || !sessionId) return;

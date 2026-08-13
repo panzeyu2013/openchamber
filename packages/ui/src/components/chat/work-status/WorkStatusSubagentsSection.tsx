@@ -8,7 +8,7 @@ import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedC
 import { WorkStatusCollapsibleSection, WorkStatusRow, WorkStatusValue } from './WorkStatusPrimitives';
 import { useReportWorkStatusPresence } from './presenceContext';
 import type { State } from '@/sync/types';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type Props = {
   sessionId: string | null;
@@ -40,7 +40,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
 
   const openContextPanelTab = useUIStore((state) => state.openContextPanelTab);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const setSectionExpanded = useUIStore((state) => state.setWorkStatusSectionExpanded);
 
   // Subagents appearing where there were none is the one moment this section
@@ -59,7 +59,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
   const openChildSession = React.useCallback((childId: string, label: string) => {
     if (!directory) return;
     if (isEmbeddedSessionChat() || isMobile || isVSCodeRuntime()) {
-      setCurrentSession(childId, directory, activeWorkspaceId);
+      setCurrentSession(childId, directory, activeProjectId);
       return;
     }
     openContextPanelTab(directory, {
@@ -68,7 +68,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
       label,
       readOnly: true,
     });
-  }, [activeWorkspaceId, directory, isMobile, openContextPanelTab, setCurrentSession]);
+  }, [activeProjectId, directory, isMobile, openContextPanelTab, setCurrentSession]);
 
   useReportWorkStatusPresence('subagents', children.length > 0);
 

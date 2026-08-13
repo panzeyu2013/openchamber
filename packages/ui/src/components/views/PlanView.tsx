@@ -45,7 +45,7 @@ import { Icon } from "@/components/icon/Icon";
 import { useMessageTTS } from '@/hooks/useMessageTTS';
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { useI18n } from '@/lib/i18n';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type PlanViewProps = {
   targetPath?: string | null;
@@ -158,12 +158,12 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
   const initializeNewOpenChamberSession = useSessionUIStore((state) => state.initializeNewOpenChamberSession);
   const sendMessage = useSessionUIStore((state) => state.sendMessage);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const sessions = useSessions();
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
   const planModeEnabled = useFeatureFlagsStore((state) => state.planModeEnabled);
   const projects = useProjectsStore((state) => state.projects);
-  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const legacyActiveProjectId = useProjectsStore((state) => state.activeProjectId);
   const gitDirectories = useGitStore((state) => state.directories);
   const effectiveDirectory = useEffectiveDirectory() ?? '';
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
@@ -186,8 +186,8 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
     [effectiveDirectory, sessionDirectory],
   );
   const currentProjectRef = React.useMemo(
-    () => resolveProjectRefForDirectory(projectDirectory, projects, activeProjectId),
-    [activeProjectId, projectDirectory, projects],
+    () => resolveProjectRefForDirectory(projectDirectory, projects, legacyActiveProjectId),
+    [legacyActiveProjectId, projectDirectory, projects],
   );
   const canCreateWorktree = React.useMemo(
     () => (currentProjectRef ? gitDirectories.get(currentProjectRef.path)?.isGitRepo === true : false),
@@ -600,7 +600,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
           );
         }
 
-        setCurrentSession(sessionId, directoryHint, activeWorkspaceId);
+        setCurrentSession(sessionId, directoryHint, activeProjectId);
         // "Run as goal" rides the same arm mechanism as the composer target
         // button; set explicitly either way so a stray armed flag cannot
         // leak into a non-goal plan send. The objective override carries the
@@ -639,7 +639,7 @@ export const PlanView: React.FC<PlanViewProps> = ({ targetPath = null, onNavigat
         setIsPlanSendSubmitting(false);
       }
     },
-    [activeWorkspaceId, canCreateWorktree, content, createSession, currentProjectRef, initializeNewOpenChamberSession, pendingPlanSend, resolvedPath, routeToChat, sendMessage, sendPromptTitle, setCurrentSession]
+    [activeProjectId, canCreateWorktree, content, createSession, currentProjectRef, initializeNewOpenChamberSession, pendingPlanSend, resolvedPath, routeToChat, sendMessage, sendPromptTitle, setCurrentSession]
   );
 
   const blockWidgets = React.useMemo(() => {

@@ -7,7 +7,7 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { noteDeferredRestartFromPayload } from '@/lib/opencode/deferredRestart';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 export type PluginScope = 'user' | 'project';
 type PluginParsedKind = 'npm' | 'path';
@@ -111,9 +111,9 @@ type PluginFileContent = {
 const getConfigDirectory = (): string | null => {
   try {
     const boundService = getSyncOpencodeService();
-    if (isWorkspaceRuntimeActive()) {
-      // Plugin config/file CRUD has no workspace-owned route yet. Keep the
-      // unavailable request workspace-scoped instead of borrowing a project.
+    if (isProjectRuntimeActive()) {
+      // Plugin config/file CRUD has no project-owned route yet. Keep the
+      // unavailable request project-scoped instead of borrowing a project.
       return boundService.getDirectory()?.trim() || null;
     }
 

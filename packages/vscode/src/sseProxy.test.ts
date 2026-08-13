@@ -126,7 +126,7 @@ describe('VS Code SSE proxy control plane', () => {
       const controller = new AbortController();
       const proxy = await openSseProxy({
         manager,
-        path: '/api/workspace-sessions/events?revision=0',
+        path: '/api/project-sessions/events?revision=0',
         signal: controller.signal,
         controlPlane: true,
         controlPlaneOrigin: 'http://control.test:3000',
@@ -137,7 +137,7 @@ describe('VS Code SSE proxy control plane', () => {
       await assert.doesNotReject(proxy.run);
       assert.deepEqual(chunks, ['data: {"revision":1}\n\n', 'data: {"revision":2}\n\n']);
       assert.equal(calls.length, 1);
-      assert.equal(calls[0]?.url, 'http://control.test:3000/api/workspace-sessions/events?revision=0');
+      assert.equal(calls[0]?.url, 'http://control.test:3000/api/project-sessions/events?revision=0');
       const headers = new Headers(calls[0]?.init.headers);
       assert.equal(headers.get('authorization'), 'Bearer control-token');
       assert.equal(headers.get('accept'), 'text/event-stream');
@@ -163,7 +163,7 @@ describe('VS Code SSE proxy control plane', () => {
       const controller = new AbortController();
       const proxy = await openSseProxy({
         manager: createManager(),
-        path: '/api/workspace-sessions/events',
+        path: '/api/project-sessions/events',
         signal: controller.signal,
         controlPlane: true,
         controlPlaneOrigin: 'http://host:8080/chamber/',
@@ -171,7 +171,7 @@ describe('VS Code SSE proxy control plane', () => {
       });
 
       await assert.doesNotReject(proxy.run);
-      assert.deepEqual(calls, ['http://host:8080/chamber/api/workspace-sessions/events']);
+      assert.deepEqual(calls, ['http://host:8080/chamber/api/project-sessions/events']);
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -192,7 +192,7 @@ describe('VS Code SSE proxy control plane', () => {
       await assert.rejects(
         openSseProxy({
           manager: createManager(),
-          path: '/api/workspace-sessions/events',
+          path: '/api/project-sessions/events',
           signal: controller.signal,
           controlPlane: true,
           controlPlaneOrigin: 'http://control.test',
@@ -221,7 +221,7 @@ describe('VS Code SSE proxy control plane', () => {
       await assert.rejects(
         openSseProxy({
           manager: createManager(),
-          path: '/api/workspace-sessions/events',
+          path: '/api/project-sessions/events',
           signal: controller.signal,
           controlPlane: true,
           controlPlaneOrigin: null,

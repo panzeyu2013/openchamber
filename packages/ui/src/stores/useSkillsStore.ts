@@ -13,7 +13,7 @@ import { runBackgroundNetworkTask } from "@/lib/background-network";
 import { noteDeferredRestartFromPayload } from "@/lib/opencode/deferredRestart";
 import { useProjectsStore } from "@/stores/useProjectsStore";
 
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { filterSkillsByRuntimeFlags } from './skillVisibility';
 
@@ -24,12 +24,12 @@ import { filterSkillsByRuntimeFlags } from './skillVisibility';
 const getRequestDirectory = (): string | null => {
   try {
     const boundService = getSyncOpencodeService();
-    if (isWorkspaceRuntimeActive()) {
-      // Workspace config/skills CRUD has no workspace-owned API contract yet.
+    if (isProjectRuntimeActive()) {
+      // Project config/skills CRUD has no project-owned API contract yet.
       // Keep the directory bound for diagnostics/typed-unavailable responses,
       // but never borrow the legacy project or ambient client directory.
-      const workspaceDirectory = boundService.getDirectory();
-      return workspaceDirectory?.trim() || null;
+      const projectDirectory = boundService.getDirectory();
+      return projectDirectory?.trim() || null;
     }
 
     const projectsStore = useProjectsStore.getState();

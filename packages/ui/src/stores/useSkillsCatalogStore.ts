@@ -14,7 +14,7 @@ import type {
 } from '@/lib/api/types';
 
 import { invalidateSkillsLoadCache, refreshSkillsAfterOpenCodeRestart, useSkillsStore } from '@/stores/useSkillsStore';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { startConfigUpdate } from '@/lib/configUpdate';
@@ -51,12 +51,12 @@ const getSkillsCatalogCacheKey = (directory: string | null): string => {
 const getRequestDirectory = (): string | null => {
   try {
     const boundService = getSyncOpencodeService();
-    if (isWorkspaceRuntimeActive()) {
+    if (isProjectRuntimeActive()) {
       // Skills catalog/scan/install are still legacy config routes. If a
-      // workspace reaches them, runtimeFetch returns typed unavailable; do
+      // project reaches them, runtimeFetch returns typed unavailable; do
       // not let directory discovery select an unrelated ambient project.
-      const workspaceDirectory = boundService.getDirectory();
-      return workspaceDirectory?.trim() || null;
+      const projectDirectory = boundService.getDirectory();
+      return projectDirectory?.trim() || null;
     }
 
     const projectsStore = useProjectsStore.getState();

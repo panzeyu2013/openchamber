@@ -6,19 +6,19 @@ import { SessionMessageLoader } from "../session-message-loader"
 describe("child store scope isolation", () => {
   test("equal directory paths in different scopes never share a child store", () => {
     const manager = new ChildStoreManager("ambient-runtime")
-    const workspaceA = manager.ensureChild("/repo", { bootstrap: false, scopeKey: "workspace:ws-a" })
-    const workspaceB = manager.ensureChild("/repo", { bootstrap: false, scopeKey: "workspace:ws-b" })
+    const projectA = manager.ensureChild("/repo", { bootstrap: false, scopeKey: "project:ws-a" })
+    const projectB = manager.ensureChild("/repo", { bootstrap: false, scopeKey: "project:ws-b" })
     const ambient = manager.ensureChild("/repo", { bootstrap: false, scopeKey: "ambient-runtime" })
 
-    expect(workspaceA).not.toBe(workspaceB)
-    expect(workspaceA).not.toBe(ambient)
-    expect(workspaceB).not.toBe(ambient)
+    expect(projectA).not.toBe(projectB)
+    expect(projectA).not.toBe(ambient)
+    expect(projectB).not.toBe(ambient)
 
     // Same scope + same directory resolves to the SAME store (no duplicate
     // creation), so per-scope behavior is unchanged.
-    expect(manager.ensureChild("/repo", { bootstrap: false, scopeKey: "workspace:ws-a" })).toBe(workspaceA)
-    expect(manager.getChild("/repo", "workspace:ws-a")).toBe(workspaceA)
-    expect(manager.getChild("/repo", "workspace:ws-b")).toBe(workspaceB)
+    expect(manager.ensureChild("/repo", { bootstrap: false, scopeKey: "project:ws-a" })).toBe(projectA)
+    expect(manager.getChild("/repo", "project:ws-a")).toBe(projectA)
+    expect(manager.getChild("/repo", "project:ws-b")).toBe(projectB)
 
     // entries() reports real directories, not composite keys.
     const directories = new Set(manager.entries().map(([directory]) => directory))
@@ -27,7 +27,7 @@ describe("child store scope isolation", () => {
     manager.disposeAll()
   })
 
-  test("the default scope is the manager scope (ambient runtime key in non-workspace mode)", () => {
+  test("the default scope is the manager scope (ambient runtime key in non-project mode)", () => {
     const manager = new ChildStoreManager("runtime-xyz")
     const store = manager.ensureChild("/repo", { bootstrap: false })
     expect(manager.getChild("/repo")).toBe(store)
@@ -51,8 +51,8 @@ describe("child store scope isolation", () => {
       },
     } as unknown as OpencodeClient)
 
-    const loaderA = new SessionMessageLoader(manager, { sdk: createSdk(["a"]), scopeKey: "workspace:ws-a" })
-    const loaderB = new SessionMessageLoader(manager, { sdk: createSdk(["b"]), scopeKey: "workspace:ws-b" })
+    const loaderA = new SessionMessageLoader(manager, { sdk: createSdk(["a"]), scopeKey: "project:ws-a" })
+    const loaderB = new SessionMessageLoader(manager, { sdk: createSdk(["b"]), scopeKey: "project:ws-b" })
 
     const target = { directory: "/repo", sessionID: "session" }
     await loaderA.ensure(target)
@@ -60,9 +60,9 @@ describe("child store scope isolation", () => {
 
     // Each loader materialized into ITS OWN child store despite the equal
     // directory + session ID.
-    expect(manager.getChild("/repo", "workspace:ws-a")?.getState().message.session?.map((m) => m.id)).toEqual(["msg-0"])
-    expect(manager.getChild("/repo", "workspace:ws-b")?.getState().message.session?.map((m) => m.id)).toEqual(["msg-0"])
-    expect(manager.getChild("/repo", "workspace:ws-a")).not.toBe(manager.getChild("/repo", "workspace:ws-b"))
+    expect(manager.getChild("/repo", "project:ws-a")?.getState().message.session?.map((m) => m.id)).toEqual(["msg-0"])
+    expect(manager.getChild("/repo", "project:ws-b")?.getState().message.session?.map((m) => m.id)).toEqual(["msg-0"])
+    expect(manager.getChild("/repo", "project:ws-a")).not.toBe(manager.getChild("/repo", "project:ws-b"))
 
     expect(loaderA.getSnapshot(target).status).toBe("ready")
     expect(loaderB.getSnapshot(target).status).toBe("ready")

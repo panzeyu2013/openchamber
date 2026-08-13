@@ -204,22 +204,22 @@ describe("issue #2270 — nested Git projects: child directory wins when overrid
 describe("issue #2270 — registered child project wins over a leaked ancestor worktree", () => {
   test("resolves a nested child repository directly instead of through a sibling project's ancestor worktree", () => {
     const projects = [
-      { id: "project-a", path: "/workspace/project-a" },
-      { id: "project-b", path: "/workspace/project-b" },
-      { id: "project-c", path: "/workspace/project-c" },
+      { id: "project-a", path: "/project/project-a" },
+      { id: "project-b", path: "/project/project-b" },
+      { id: "project-c", path: "/project/project-c" },
     ] as ProjectEntry[]
     const leakedParentWorktree = {
-      path: "/workspace",
-      projectDirectory: "/workspace",
+      path: "/project",
+      projectDirectory: "/project",
     } as WorktreeMetadata
     const availableWorktreesByProject = new Map<string, WorktreeMetadata[]>([
-      ["/workspace/project-a", [leakedParentWorktree]],
+      ["/project/project-a", [leakedParentWorktree]],
     ])
 
     const resolved = resolveProjectForSessionDirectory(
       projects,
       availableWorktreesByProject,
-      "/workspace/project-b/src",
+      "/project/project-b/src",
     )
 
     expect(resolved?.id).toBe("project-b")
@@ -227,15 +227,15 @@ describe("issue #2270 — registered child project wins over a leaked ancestor w
 
   test("still resolves an external worktree through its owning project", () => {
     const projects = [
-      { id: "project-a", path: "/workspace/project-a" },
-      { id: "project-b", path: "/workspace/project-b" },
+      { id: "project-a", path: "/project/project-a" },
+      { id: "project-b", path: "/project/project-b" },
     ] as ProjectEntry[]
     const externalWorktree = {
       path: "/worktrees/project-b-feature",
-      projectDirectory: "/workspace/project-b",
+      projectDirectory: "/project/project-b",
     } as WorktreeMetadata
     const availableWorktreesByProject = new Map<string, WorktreeMetadata[]>([
-      ["/workspace/project-b", [externalWorktree]],
+      ["/project/project-b", [externalWorktree]],
     ])
 
     const resolved = resolveProjectForSessionDirectory(

@@ -35,6 +35,7 @@ export interface DraftTargetProject {
     color?: string | null;
     iconImage?: { mime: string; updatedAt: number; source: 'custom' | 'auto' } | null;
     iconBackground?: string | null;
+    connectionId?: string;
 }
 
 /** A project's display name, falling back to its directory name. */
@@ -43,7 +44,16 @@ export function getProjectDisplayLabel(project: { label?: string; path: string }
 }
 
 export function useDraftTarget(enabled: boolean) {
-    const projects = useProjectsStore((state) => state.projects) as DraftTargetProject[];
+    const allProjects = useProjectsStore((state) => state.projects) as DraftTargetProject[];
+    // The ambient draft runs on the local runtime: remote catalog projects
+    // have no directory on this machine, so they must never be offered as
+    // draft targets (selecting one would write a remote path into the
+    // ambient directory). Project-targeted drafts (sidebar "+") carry an
+    // explicit projectId and never reach this selector.
+    const projects = React.useMemo(
+        () => allProjects.filter((project) => project.connectionId === undefined || project.connectionId === 'local'),
+        [allProjects],
+    );
     const activeProjectId = useProjectsStore((state) => state.activeProjectId);
     const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
     const newSessionDraft = useSessionUIStore((s) => s.newSessionDraft);

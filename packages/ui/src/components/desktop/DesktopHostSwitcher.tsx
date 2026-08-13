@@ -238,7 +238,7 @@ type DesktopHostSwitcherDialogProps = {
   onHostSwitched?: () => void;
 };
 
-export function DesktopHostSwitcherDialog({
+function DesktopHostSwitcherDialog({
   open,
   onOpenChange,
   embedded = false,

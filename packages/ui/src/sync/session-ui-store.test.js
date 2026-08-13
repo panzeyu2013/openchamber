@@ -431,28 +431,28 @@ describe('openNewSessionDraft project binding', () => {
     expect(draft.selectedProjectId).toBe(projectB.id);
   });
 
-  test('keeps an explicit workspace draft out of the ambient project and directory scope', () => {
+  test('keeps an explicit project draft out of the ambient project and directory scope', () => {
     const before = useDirectoryStore.getState().currentDirectory;
 
     useSessionUIStore.getState().openNewSessionDraft({
-      workspaceId: 'workspace-draft',
+      projectId: 'workspace-draft',
       directoryOverride: '/workspace-draft/project',
       selectedProjectId: projectA.id,
     });
 
     const draft = useSessionUIStore.getState().newSessionDraft;
-    expect(draft.workspaceId).toBe('workspace-draft');
+    expect(draft.projectId).toBe('workspace-draft');
     expect(draft.selectedProjectId).toBeNull();
     expect(draft.directoryOverride).toBe('/workspace-draft/project');
     expect(useDirectoryStore.getState().currentDirectory).toBe(before);
   });
 
-  test('keeps later workspace draft target updates out of the ambient directory', () => {
+  test('keeps later project draft target updates out of the ambient directory', () => {
     const before = useDirectoryStore.getState().currentDirectory;
     useSessionUIStore.setState({
       newSessionDraft: {
         open: true,
-        workspaceId: 'workspace-draft',
+        projectId: 'workspace-draft',
         directoryOverride: '/workspace-draft/project',
         parentID: null,
       },
@@ -642,8 +642,8 @@ describe('routeMessage skill invocation', () => {
   });
 });
 
-describe('workspace session directory boundary', () => {
-  test('does not mutate the ambient directory when selecting a workspace session', () => {
+describe('project session directory boundary', () => {
+  test('does not mutate the ambient directory when selecting a project session', () => {
     const childStores = { children: new Map() };
     const serviceDirectories = [];
     const boundService = {
@@ -659,14 +659,14 @@ describe('workspace session directory boundary', () => {
       '/workspace/project',
       undefined,
       boundService,
-      'workspace:workspace-boundary',
+      'project:workspace-boundary',
     );
 
     try {
       useSessionUIStore.setState({
         currentSessionId: null,
         currentSessionDirectory: null,
-        currentWorkspaceId: null,
+        currentProjectId: null,
         newSessionDraft: { open: false, directoryOverride: null, parentID: null },
       });
       useSessionUIStore.getState().setCurrentSession(
@@ -677,12 +677,12 @@ describe('workspace session directory boundary', () => {
 
       expect(useDirectoryStore.getState().currentDirectory).toBe(before);
       expect(serviceDirectories).toEqual(['/workspace/project']);
-      expect(useSessionUIStore.getState().currentWorkspaceId).toBe('workspace-boundary');
+      expect(useSessionUIStore.getState().currentProjectId).toBe('workspace-boundary');
     } finally {
       useSessionUIStore.setState({
         currentSessionId: null,
         currentSessionDirectory: null,
-        currentWorkspaceId: null,
+        currentProjectId: null,
       });
       clearSyncRefs(sdk, childStores);
     }

@@ -564,8 +564,16 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['worktree', 'setup commands', 'bootstrap', 'wait'],
   },
   {
+    id: 'servers.add',
+    page: 'servers',
+    titleKey: 'settings.servers.page.actions.addServer',
+    descriptionKey: 'settings.servers.page.actions.addServerDescription',
+    keywords: ['add server', 'server url', 'connection', 'token', 'register', 'project catalog'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'remote-instances.client-auth',
-    page: 'remote-instances',
+    page: 'devices',
     titleKey: 'settings.remoteInstances.clientAuth.title',
     descriptionKey: 'settings.remoteInstances.clientAuth.description',
     keywords: ['pairing link', 'client token', 'connect desktop', 'remote access', 'server', 'server connections', 'relay', 'devices', 'connect from anywhere'],

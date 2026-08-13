@@ -2,17 +2,17 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
 describe('VS Code webview control-plane path handling', () => {
-  test('recognizes workspace catalog paths', async () => {
+  test('recognizes project catalog paths', async () => {
     const { isControlPlaneApiPath } = await import('./controlPlane');
-    assert.equal(isControlPlaneApiPath('/api/workspaces'), true);
-    assert.equal(isControlPlaneApiPath('/api/workspaces/ws-1'), true);
-    assert.equal(isControlPlaneApiPath('/api/workspaces/ws-1/runtime/api/session'), true);
+    assert.equal(isControlPlaneApiPath('/api/projects'), true);
+    assert.equal(isControlPlaneApiPath('/api/projects/p-1'), true);
+    assert.equal(isControlPlaneApiPath('/api/projects/p-1/runtime/api/session'), true);
   });
 
   test('recognizes session index and connection paths', async () => {
     const { isControlPlaneApiPath } = await import('./controlPlane');
-    assert.equal(isControlPlaneApiPath('/api/workspace-sessions/snapshot'), true);
-    assert.equal(isControlPlaneApiPath('/api/workspace-sessions/events'), true);
+    assert.equal(isControlPlaneApiPath('/api/project-sessions/snapshot'), true);
+    assert.equal(isControlPlaneApiPath('/api/project-sessions/events'), true);
     assert.equal(isControlPlaneApiPath('/api/connections'), true);
     assert.equal(isControlPlaneApiPath('/api/connections/conn-1/probe'), true);
   });

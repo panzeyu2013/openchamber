@@ -10,11 +10,11 @@ import { opencodeClient, type OpencodeService } from "@/lib/opencode/client"
 import type { ChildStoreManager } from "./child-store"
 import { getSessionMaterializationStatus } from "./materialization"
 import type { State } from "./types"
+import { getActiveSyncScopeKey, setActiveSyncScopeKey } from "./active-scope"
 
 let _childStores: ChildStoreManager | null = null
 let _sdk: OpencodeClient | null = null
 let _service: OpencodeService | null = null
-let _scopeKey: string | null = null
 let _directory: string = ""
 let _registerSessionDirectory: ((sessionID: string, directory: string) => void) | null = null
 const configListeners = new Set<(directory: string, config: Config) => void>()
@@ -33,7 +33,7 @@ export function setSyncRefs(
 ) {
   _sdk = sdk
   _service = service ?? opencodeClient
-  _scopeKey = scopeKey ?? ""
+  setActiveSyncScopeKey(scopeKey ?? "")
   _childStores = childStores
   if (cachedSessionManager !== childStores) {
     cachedSessionManager = null
@@ -59,13 +59,13 @@ export function getSyncSdk(): OpencodeClient | null {
 
 /** Scope identity of the currently mounted sync provider. */
 export function getSyncScopeKey(): string {
-  return _scopeKey ?? ""
+  return getActiveSyncScopeKey()
 }
 
 /**
  * Clear imperative refs only when they still belong to the provider that is
- * being unmounted. A workspace switch must not leave actions pointing at the
- * previous workspace while the next provider is mounting.
+ * being unmounted. A project switch must not leave actions pointing at the
+ * previous project while the next provider is mounting.
  */
 export function clearSyncRefs(
   sdk?: OpencodeClient,
@@ -75,7 +75,7 @@ export function clearSyncRefs(
   if (childStores && _childStores !== childStores) return
   _sdk = null
   _service = null
-  _scopeKey = null
+  setActiveSyncScopeKey(null)
   _childStores = null
   _directory = ""
   _registerSessionDirectory = null

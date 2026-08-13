@@ -294,6 +294,7 @@ export class AgentManagerPanelProvider {
       panelType: 'agentManager',
       extensionVersion: String(this._context.extension?.packageJSON?.version || ''),
       devServerUrl: this._webviewDevServerUrl,
+      apiUrl: readConfiguredControlPlaneOrigin(),
     });
   }
 }

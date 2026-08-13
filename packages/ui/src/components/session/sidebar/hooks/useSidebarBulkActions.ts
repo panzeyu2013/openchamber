@@ -106,7 +106,7 @@ export const useSidebarBulkActions = (args: Args) => {
     if (projectScopes && projectScopes.length > 0) {
       return projectScopes.map((scope) => scope.scopeKey);
     }
-    // Fallback: the scope is already a directory (e.g. VS Code workspaces).
+    // Fallback: the scope is already a directory (e.g. VS Code projects).
     return [derivedSelectionScope];
   }, [derivedSelectionScope, folderScopesByProject]);
 

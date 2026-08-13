@@ -21,7 +21,7 @@ import { runtimeFetch } from "@/lib/runtime-fetch";
 import { markStartupTrace, measureStartupTrace } from "@/lib/startupTrace";
 import { normalizePath } from "@/lib/pathNormalization";
 import { getSyncConfig, getSyncOpencodeService, getSyncScopeKey, subscribeToSyncConfigChanges } from "@/sync/sync-refs";
-import { workspaceIdFromScopeKey } from "@/workspaces/identity";
+import { projectIdFromScopeKey } from "@/projects/identity";
 
 const MODELS_DEV_API_URL = "https://models.dev/api.json";
 const MODELS_DEV_PROXY_URL = "/api/openchamber/models-metadata";
@@ -705,15 +705,28 @@ const toDirectoryKey = (directory: string | null | undefined): string => {
 
 const fromDirectoryKey = (key: string): string | null => (key === DIRECTORY_KEY_GLOBAL ? null : key);
 
+// The directory store can still be mid-evaluation while this module's
+// persist name is resolved at module load (circular import via
+// session-ui-store → useDirectoryStore → useFileSearchStore / lib/persistence).
+// Reading its binding then throws a TDZ ReferenceError and breaks app boot.
+// initializeApp re-resolves the directory from live state right after startup.
+const getInitialDirectoryStoreSnapshot = (): string | null => {
+    try {
+        return useDirectoryStore.getState().currentDirectory ?? null;
+    } catch {
+        return null;
+    }
+};
+
 const resolveInitialDirectoryKey = (): string => {
     if (typeof window === 'undefined') {
         return DIRECTORY_KEY_GLOBAL;
     }
 
     const scopeKey = getSyncScopeKey();
-    const directory = isWorkspaceConfigScope(scopeKey)
+    const directory = isProjectConfigScope(scopeKey)
         ? getSyncOpencodeService().getDirectory()
-        : opencodeClient.getDirectory() ?? useDirectoryStore.getState().currentDirectory;
+        : opencodeClient.getDirectory() ?? getInitialDirectoryStoreSnapshot();
     return toConfigDirectoryKey(directory);
 };
 
@@ -855,7 +868,7 @@ const _providersLoadedAt = new Map<string, number>();
 const _agentsLoadedAt = new Map<string, number>();
 const scopedConfigLoadKey = (scopeKey: string, directoryKey: string): string => `${scopeKey}\u0000${directoryKey}`;
 const isCurrentConfigScope = (scopeKey: string): boolean => getSyncScopeKey() === scopeKey;
-const isWorkspaceConfigScope = (scopeKey: string): boolean => workspaceIdFromScopeKey(scopeKey) !== null;
+const isProjectConfigScope = (scopeKey: string): boolean => projectIdFromScopeKey(scopeKey) !== null;
 const CONFIG_REFRESH_TTL_MS = 30_000;
 const PROJECT_CONFIG_PREWARM_DELAY_MS = 1_000;
 const isConfigFresh = (loadedAt: Map<string, number>, key: string): boolean => {
@@ -1125,9 +1138,9 @@ interface ConfigStore {
     getVisibleAgents: () => Agent[];
 }
 
-// Workspace scope changes clear the live provider/agent view, but the
+// Project scope changes clear the live provider/agent view, but the
 // compatibility persistence record still belongs to the ambient runtime. Keep
-// the last ambient payload aside so mounting a workspace cannot overwrite
+// the last ambient payload aside so mounting a project cannot overwrite
 // legacy settings with an empty snapshot, and returning to the ambient mount
 // can restore it without another cold-start fetch.
 const ambientConfigByScope = new Map<string, Partial<ConfigStore>>();
@@ -1435,13 +1448,13 @@ export const useConfigStore = create<ConfigStore>()(
                     if (get().scopeKey === nextScopeKey) return;
 
                     const currentState = get();
-                    if (!isWorkspaceConfigScope(currentState.scopeKey)) {
+                    if (!isProjectConfigScope(currentState.scopeKey)) {
                         ambientConfigByScope.set(currentState.scopeKey, sanitizePersistedConfigState(currentState));
                     }
 
                     // Providers, agents and OpenCode defaults belong to the
                     // mounted SyncProvider. Clear the visible snapshot before
-                    // a workspace can read it; the next directory activation
+                    // a project can read it; the next directory activation
                     // will repopulate it through the bound service.
                     const nextState: Partial<ConfigStore> = {
                         scopeKey: nextScopeKey,
@@ -1461,7 +1474,7 @@ export const useConfigStore = create<ConfigStore>()(
                         selectionSource: "auto",
                     };
                     const ambientConfig = ambientConfigByScope.get(nextScopeKey);
-                    if (!isWorkspaceConfigScope(nextScopeKey) && ambientConfig) {
+                    if (!isProjectConfigScope(nextScopeKey) && ambientConfig) {
                         Object.assign(nextState, ambientConfig);
                     }
                     nextState.scopeKey = nextScopeKey;
@@ -1474,7 +1487,7 @@ export const useConfigStore = create<ConfigStore>()(
                     // working directory (opencodeClient.getDirectory()) is separate.
                     const scopeKey = getSyncScopeKey();
                     const configDirectory = resolveConfigDirectory(directory, {
-                        allowUnregistered: isWorkspaceConfigScope(scopeKey),
+                        allowUnregistered: isProjectConfigScope(scopeKey),
                     });
                     if (!configDirectory) {
                         markStartupTrace('activateDirectory:skippedUnknownDirectory', { directory });
@@ -1612,7 +1625,7 @@ export const useConfigStore = create<ConfigStore>()(
                     // Providers are project-scoped: resolve a worktree to its project
                     // so it reuses one shared snapshot instead of its own.
                     const configDirectory = resolveConfigDirectory(requestedDirectory, {
-                        allowUnregistered: isWorkspaceConfigScope(operationScopeKey),
+                        allowUnregistered: isProjectConfigScope(operationScopeKey),
                     });
                     if (!configDirectory) {
                         markStartupTrace('loadProviders:skippedUnknownDirectory', { requestedDirectory, source: options?.source ?? 'unknown' });
@@ -1754,6 +1767,13 @@ export const useConfigStore = create<ConfigStore>()(
                                 attempt: attempt + 1,
                                 error: error instanceof Error ? error.message : String(error),
                             });
+                            // A project runtime reports config as unavailable
+                            // by design (501 capability_unavailable). It is a
+                            // permanent condition, not a warm-up failure:
+                            // retrying only produces repeated error spam.
+                            if ((error as { code?: string })?.code === 'capability_unavailable') {
+                                return;
+                            }
                             const waitMs = 200 * (attempt + 1);
                             await new Promise((resolve) => setTimeout(resolve, waitMs));
                         }
@@ -2054,7 +2074,7 @@ export const useConfigStore = create<ConfigStore>()(
                     // Agents are project-scoped: resolve a worktree to its project
                     // so it reuses one shared snapshot instead of its own.
                     const configDirectory = resolveConfigDirectory(requestedDirectory, {
-                        allowUnregistered: isWorkspaceConfigScope(operationScopeKey),
+                        allowUnregistered: isProjectConfigScope(operationScopeKey),
                     });
                     if (!configDirectory) {
                         markStartupTrace('loadAgents:skippedUnknownDirectory', { requestedDirectory, source: options?.source ?? 'unknown' });
@@ -2416,6 +2436,11 @@ export const useConfigStore = create<ConfigStore>()(
                                 attempt: attempt + 1,
                                 error: error instanceof Error ? error.message : String(error),
                             });
+                            // Same permanent-condition handling as loadProviders:
+                            // 501 capability_unavailable must not be retried.
+                            if ((error as { code?: string })?.code === 'capability_unavailable') {
+                                return false;
+                            }
                             const waitMs = 200 * (attempt + 1);
                             await new Promise((resolve) => setTimeout(resolve, waitMs));
                         }
@@ -3241,8 +3266,8 @@ export const useConfigStore = create<ConfigStore>()(
                             // project's key so the initial draft — which activates the project — finds
                             // a ready snapshot instead of triggering a second provider/agent load.
                             const operationScopeKey = getSyncScopeKey();
-                            const workspaceScoped = isWorkspaceConfigScope(operationScopeKey);
-                            const initialDirectory = workspaceScoped
+                            const projectScoped = isProjectConfigScope(operationScopeKey);
+                            const initialDirectory = projectScoped
                                 ? getSyncOpencodeService().getDirectory()
                                     ?? fromDirectoryKey(get().activeDirectoryKey)
                                 : opencodeClient.getDirectory()
@@ -3255,16 +3280,16 @@ export const useConfigStore = create<ConfigStore>()(
                             );
                             const resolvedInitialDirectory = resolveConfigDirectory(
                                 resolvedProject?.path ?? initialDirectory ?? null,
-                                { allowUnregistered: workspaceScoped },
+                                { allowUnregistered: projectScoped },
                             );
                             const configDirectory = resolvedInitialDirectory
-                                ?? (workspaceScoped ? normalizeConfigPath(initialDirectory) : getFallbackProjectDirectory());
+                                ?? (projectScoped ? normalizeConfigPath(initialDirectory) : getFallbackProjectDirectory());
                             if (!configDirectory) {
                                 markStartupTrace('initializeApp:noProjectConfigDirectory');
                                 set({ isInitialized: true, isConnected: true, hasEverConnected: true, connectionPhase: "connected" });
                                 return;
                             }
-                            if (!workspaceScoped && !resolvedInitialDirectory && initialDirectory !== configDirectory) {
+                            if (!projectScoped && !resolvedInitialDirectory && initialDirectory !== configDirectory) {
                                 markStartupTrace('initializeApp:normalizedUnknownDirectoryToProject', {
                                     initialDirectory,
                                     configDirectory,
@@ -3312,6 +3337,13 @@ export const useConfigStore = create<ConfigStore>()(
 
                 prewarmProjectConfigs: async (initialDirectory?: string | null) => {
                     if (!get().isConnected) {
+                        return;
+                    }
+                    // A project runtime has no provider/agent config
+                    // contract (501 capability_unavailable is permanent);
+                    // prewarming every catalog project would only fire a
+                    // failing request per directory.
+                    if (isProjectConfigScope(getSyncScopeKey())) {
                         return;
                     }
 
@@ -3429,7 +3461,7 @@ export const useConfigStore = create<ConfigStore>()(
                 // success) and by the provider/agent config-change subscriptions.
                 partialize: (state) => {
                     const current = sanitizePersistedConfigState(state);
-                    if (!isWorkspaceConfigScope(state.scopeKey)) {
+                    if (!isProjectConfigScope(state.scopeKey)) {
                         ambientConfigByScope.set(state.scopeKey, current);
                         return current;
                     }
@@ -3502,15 +3534,25 @@ if (!unsubscribeConfigStoreSyncConfigChanges) {
     });
 }
 
-if (typeof window !== "undefined" && !unsubscribeConfigStoreDirectoryChanges) {
-    unsubscribeConfigStoreDirectoryChanges = useDirectoryStore.subscribe((state, prevState) => {
-        const nextKey = toDirectoryKey(state.currentDirectory);
-        const prevKey = toDirectoryKey(prevState.currentDirectory);
-        if (nextKey === prevKey) {
+// Subscribing here at module load touches the useDirectoryStore binding while
+// it may still be mid-evaluation (circular import, see
+// getInitialDirectoryStoreSnapshot). Defer one microtask so the whole module
+// graph settles first; directory changes before then are impossible because
+// the module-eval stack itself blocks startup.
+if (typeof window !== "undefined") {
+    queueMicrotask(() => {
+        if (unsubscribeConfigStoreDirectoryChanges) {
             return;
         }
+        unsubscribeConfigStoreDirectoryChanges = useDirectoryStore.subscribe((state, prevState) => {
+            const nextKey = toDirectoryKey(state.currentDirectory);
+            const prevKey = toDirectoryKey(prevState.currentDirectory);
+            if (nextKey === prevKey) {
+                return;
+            }
 
-        markStartupTrace('directoryStore:changed', { previous: prevKey, next: nextKey });
-        void useConfigStore.getState().activateDirectory(state.currentDirectory);
+            markStartupTrace('directoryStore:changed', { previous: prevKey, next: nextKey });
+            void useConfigStore.getState().activateDirectory(state.currentDirectory);
+        });
     });
 }

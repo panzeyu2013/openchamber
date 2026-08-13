@@ -1,7 +1,7 @@
 # FS Module Documentation
 
 ## Purpose
-Own filesystem API behavior for the web server runtime, including workspace-bound file operations, directory listing, reveal, and background command execution jobs.
+Own filesystem API behavior for the web server runtime, including project-bound file operations, directory listing, reveal, and background command execution jobs.
 
 ## Entrypoints and structure
 - `packages/web/server/lib/fs/routes.js`: route registration and runtime-owned state for `/api/fs/*` endpoints.
@@ -23,7 +23,7 @@ Own filesystem API behavior for the web server runtime, including workspace-boun
     - `GET /api/fs/exec/:jobId`
     - `GET /api/fs/list`
   - Owns exec job queue state (`execJobs`) and lifecycle/TTL pruning.
-  - Enforces workspace boundary checks with active project + worktree fallback support.
+  - Enforces project boundary checks with active project + worktree fallback support.
 - `createFsSearchRuntime({ fsPromises, path, spawn, resolveGitBinaryForSpawn })` from `search.js`
   - Returns `{ searchFilesystemFiles(rootPath, options) }`.
   - Supports fuzzy matching, hidden-file handling, and optional `git check-ignore` filtering.
@@ -33,7 +33,7 @@ Own filesystem API behavior for the web server runtime, including workspace-boun
 - `index.js` no longer owns FS route handlers or FS exec job state.
 
 ## Notes for contributors
-- Keep filesystem policy (workspace root checks, error mapping, exec timeout behavior) inside this module, not in the composition root.
-- Filesystem `EPERM`/`EACCES` failures use the stable `reason: "os-permission"` response marker. Policy denials such as workspace-boundary or missing-grant failures must not use that marker because a native folder picker cannot remediate them.
+- Keep filesystem policy (project root checks, error mapping, exec timeout behavior) inside this module, not in the composition root.
+- Filesystem `EPERM`/`EACCES` failures use the stable `reason: "os-permission"` response marker. Policy denials such as project-boundary or missing-grant failures must not use that marker because a native folder picker cannot remediate them.
 - If adding new `/api/fs/*` endpoints, add them in `routes.js` and extend this document.
-- `GET /api/fs/list` may resolve symlinks with `realpath` to read directory contents, but the response `path` and each entry `path` must stay in the caller's requested path space (`path.join(requestedPath, name)`). Returning real paths breaks file-tree expansion for directories reached through workspace symlinks.
+- `GET /api/fs/list` may resolve symlinks with `realpath` to read directory contents, but the response `path` and each entry `path` must stay in the caller's requested path space (`path.join(requestedPath, name)`). Returning real paths breaks file-tree expansion for directories reached through project symlinks.

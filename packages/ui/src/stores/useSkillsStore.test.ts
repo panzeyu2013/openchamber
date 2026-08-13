@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-const activeProjectPath = '/workspace/project-with-agents-skills';
+const activeProjectPath = '/project/project-with-agents-skills';
 
 let runtimeFetchCalls: Array<{ url: string; headers?: HeadersInit }> = [];
 let runtimeFetchImpl: (url: string, init?: RequestInit) => Promise<Response> = async () => (

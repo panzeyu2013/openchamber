@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
 import type { ProjectFileSearchHit } from '@/lib/opencode/client';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -127,10 +127,10 @@ describe('useFileSearchStore', () => {
     expect(await secondPromise).toEqual([{ path: 'second.ts' }]);
   });
 
-  test('isolates cache and in-flight ownership by workspace scope', async () => {
-    setWorkspaceSession('ws-a');
+  test('isolates cache and in-flight ownership by project scope', async () => {
+    setProjectSession('ws-a');
     const firstPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     const secondPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
     expect(searchRequests).toHaveLength(2);
 
@@ -139,19 +139,19 @@ describe('useFileSearchStore', () => {
     searchRequests[0].resolve([{ path: 'ws-a.ts' }]);
     await firstPromise;
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(await useFileSearchStore.getState().searchFiles('/project', 'foo')).toEqual([{ path: 'ws-b.ts' }]);
     expect(searchRequests).toHaveLength(2);
   });
 });
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
-  const upstreamSessionId = `ses-${workspaceId}`;
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => {
+  const upstreamSessionId = `ses-${projectId}`;
   return {
     revision: 1,
     sessions: [{
-      key: `${workspaceId}\u0000${upstreamSessionId}`,
-      workspaceId,
+      key: `${projectId}\u0000${upstreamSessionId}`,
+      projectId,
       connectionId: 'conn',
       upstreamSessionId,
       directory: '/project',
@@ -164,31 +164,31 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
   };
 };
 
-const setWorkspaceSession = (workspaceId: string) => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
-  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/project' });
+const setProjectSession = (projectId: string) => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${projectId}`, currentSessionDirectory: '/project' });
 };
 
-const clearWorkspaceSession = () => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = () => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-describe('useFileSearchStore workspace scope', () => {
+describe('useFileSearchStore project scope', () => {
   beforeEach(() => {
     searchRequests.length = 0;
     boundSearchRequests.length = 0;
     runtimeKey = 'runtime-a';
     useFileSearchStore.setState({ cache: {}, cacheKeys: [], inFlight: {} });
-    clearWorkspaceSession();
+    clearProjectSession();
   });
 
-  afterEach(clearWorkspaceSession);
+  afterEach(clearProjectSession);
 
-  test('isolates cache and in-flight ownership per workspace', async () => {
-    setWorkspaceSession('ws-a');
+  test('isolates cache and in-flight ownership per project', async () => {
+    setProjectSession('ws-a');
     const firstPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     const secondPromise = useFileSearchStore.getState().searchFiles('/project', 'foo');
     expect(searchRequests).toHaveLength(2);
 
@@ -201,15 +201,15 @@ describe('useFileSearchStore workspace scope', () => {
     expect(searchRequests).toHaveLength(2);
   });
 
-  test('uses the bound workspace transport instead of the ambient client', async () => {
-    setWorkspaceSession('ws-a');
+  test('uses the bound project transport instead of the ambient client', async () => {
+    setProjectSession('ws-a');
     const promise = useFileSearchStore.getState().searchFiles(
       '/project',
       'foo',
       60,
       undefined,
       {
-        scopeKey: workspaceScopeKey('ws-a'),
+        scopeKey: projectScopeKey('ws-a'),
         transport: { searchFiles: boundSearchFilesMock },
       },
     );
@@ -220,14 +220,14 @@ describe('useFileSearchStore workspace scope', () => {
     expect(await promise).toEqual([{ name: 'bound.ts', path: 'bound.ts', relativePath: 'bound.ts' }]);
   });
 
-  test('invalidateDirectory clears only the active workspace scope', async () => {
-    setWorkspaceSession('ws-a');
+  test('invalidateDirectory clears only the active project scope', async () => {
+    setProjectSession('ws-a');
     const searchA = useFileSearchStore.getState().searchFiles('/project', 'foo');
     searchRequests[0].resolve([{ path: 'first.ts' }]);
     await searchA;
     expect(Object.values(useFileSearchStore.getState().cache)).toHaveLength(1);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     const searchB = useFileSearchStore.getState().searchFiles('/project', 'foo');
     searchRequests[1].resolve([{ path: 'second.ts' }]);
     await searchB;

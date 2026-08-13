@@ -68,8 +68,8 @@ type LoadPerformanceDetails = {
 
 type LoaderConfiguration = {
   sdk: OpencodeClient
-  /** Sync scope: workspace scope key in workspace mode, ambient runtime key
-   * otherwise (byte-identical to the legacy runtime key in non-workspace
+  /** Sync scope: project scope key in project mode, ambient runtime key
+   * otherwise (byte-identical to the legacy runtime key in non-project
    * mode). Equal session IDs in different scopes never share loader state. */
   scopeKey: string
 }

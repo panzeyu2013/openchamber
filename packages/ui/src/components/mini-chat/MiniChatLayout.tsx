@@ -18,8 +18,8 @@ import { useGitBranchLabel, useGitStore } from '@/stores/useGitStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Icon } from "@/components/icon/Icon";
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useActiveProjectId } from '@/projects/useActiveProject';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
 import type { SessionContextUsage } from '@/stores/types/sessionTypes';
 
 type MiniChatMode = 'session' | 'draft';
@@ -61,8 +61,8 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
   const sessions = useSessions();
   const currentSessionMessages = useSessionMessages(currentSessionId ?? '');
   const runtimeApis = useRuntimeAPIs();
-  const activeWorkspaceId = useActiveWorkspaceId();
-  const { handle: workspaceHandle } = useWorkspaceRuntime();
+  const activeProjectId = useActiveProjectId();
+  const { handle: projectHandle } = useProjectRuntime();
   const ensureGitStatus = useGitStore((state) => state.ensureStatus);
   const worktreePath = useSessionUIStore((state) => currentSessionId ? state.worktreeMetadata.get(currentSessionId)?.path ?? '' : '');
   const worktreeMetadataBranch = useSessionUIStore((state) => currentSessionId ? state.worktreeMetadata.get(currentSessionId)?.branch?.trim() ?? null : null);
@@ -104,7 +104,7 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
   const openDirectory = worktreeDirectory
     || sessionDirectory
     || draftDirectory
-    || (activeWorkspaceId ? normalizePath(workspaceHandle?.directory) : currentDirectoryNormalized);
+    || (activeProjectId ? normalizePath(projectHandle?.directory) : currentDirectoryNormalized);
   const directoryLabel = compactPath(openDirectory);
   const catalogWorktreeBranch = useSessionUIStore((state) => {
     const candidateDirectory = normalizePath(worktreeDirectory || sessionDirectory || '');
@@ -245,18 +245,18 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
   }, [pinned]);
 
   const handleOpenMainApp = React.useCallback(() => {
-    const workspaceSafeDirectory = activeWorkspaceId ? openDirectory : currentDirectory;
+    const projectSafeDirectory = activeProjectId ? openDirectory : currentDirectory;
     const payload = currentSessionId
       ? {
         sessionId: currentSessionId,
-        directory: (session as { directory?: string | null } | null)?.directory ?? workspaceSafeDirectory ?? '',
-        workspaceId: activeWorkspaceId ?? null,
+        directory: (session as { directory?: string | null } | null)?.directory ?? projectSafeDirectory ?? '',
+        projectId: activeProjectId ?? null,
       }
       : {
         mode: 'draft',
-        directory: workspaceSafeDirectory || '',
+        directory: projectSafeDirectory || '',
         projectId: draftProjectId,
-        workspaceId: activeWorkspaceId ?? null,
+        workspaceId: activeProjectId ?? null,
       };
     void invokeDesktop<{ focused?: boolean }>('desktop_focus_main_window', payload)
       .then((result) => {
@@ -265,7 +265,7 @@ const MiniChatHeader: React.FC<{ mode: MiniChatMode }> = ({ mode }) => {
         }
         return null;
       });
-  }, [activeWorkspaceId, currentDirectory, currentSessionId, draftProjectId, openDirectory, session]);
+  }, [activeProjectId, currentDirectory, currentSessionId, draftProjectId, openDirectory, session]);
 
   return (
     <header

@@ -34,12 +34,12 @@ Pairing v2 is implemented by `packages/web/server/lib/client-auth/pairing.js`. I
 
 Short-lived URL tokens (`oc_url_`, minted via `POST /auth/url-token`) are
 capability-scoped: GET-only (plus allowlisted WebSocket upgrades) on a fixed
-path allowlist. The workspace catalog read paths are token-readable
-(`/api/workspaces`, `/api/workspaces/capabilities`,
-`/api/workspaces/diagnostics`, `/api/workspaces/:id/children`,
-`/api/connections`, `/api/workspace-sessions/snapshot`,
-`/api/workspace-sessions/events`) so mini-chat/tray surfaces that may only
-hold a token can render the unified tree. Read-only workspace runtime
+path allowlist. The project catalog read paths are token-readable
+(`/api/projects`, `/api/projects/capabilities`,
+`/api/projects/diagnostics`, `/api/projects/:id/children`,
+`/api/connections`, `/api/project-sessions/snapshot`,
+`/api/project-sessions/events`) so mini-chat/tray surfaces that may only
+hold a token can render the unified tree. Read-only project runtime
 SDK/Files/Git/permission/question/event paths are also token-readable for
 cookie-less mobile/tray HTTP and SSE clients; runtime mutations and
 control-plane namespaces remain excluded.
@@ -47,9 +47,9 @@ Catalog and session-index MUTATIONS are never token-usable; the security tests
 in `ui-auth.test.js` pin both sides of that contract.
 WebSocket upgrades are token-readable only on the socket allowlist
 (`isUrlAuthWebSocketPath`): the non-prefixed sockets plus their
-workspace-prefixed runtime variants
-(`/api/workspaces/:id/runtime/api/{event,global/event,terminal}/ws`), which
-the central workspace upgrade dispatcher authenticates exactly like the
+project-prefixed runtime variants
+(`/api/projects/:id/runtime/api/{event,global/event,terminal}/ws`), which
+the central project upgrade dispatcher authenticates exactly like the
 non-prefixed paths.
 
 ## Public exports (ui-passkeys.js)

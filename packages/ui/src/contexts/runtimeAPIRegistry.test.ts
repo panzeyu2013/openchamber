@@ -2,10 +2,10 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import type { RuntimeAPIs } from '@/lib/api/types';
 import {
   getRegisteredRuntimeAPIs,
-  isWorkspaceRuntimeActive,
+  isProjectRuntimeActive,
   registerRuntimeAPIs,
-  registerWorkspaceRuntimeAPIs,
-  setWorkspaceRuntimeActive,
+  registerProjectRuntimeAPIs,
+  setProjectRuntimeActive,
 } from './runtimeAPIRegistry';
 
 const baseApis = {
@@ -31,31 +31,31 @@ const expectCapabilityUnavailable = async (operation: Promise<unknown>): Promise
 };
 
 afterEach(() => {
-  registerWorkspaceRuntimeAPIs(null);
+  registerProjectRuntimeAPIs(null);
   registerRuntimeAPIs(null);
-  setWorkspaceRuntimeActive(false);
+  setProjectRuntimeActive(false);
 });
 
-describe('runtime API registry workspace boundary', () => {
-  test('overlays workspace APIs without replacing the ambient registration', async () => {
+describe('runtime API registry project boundary', () => {
+  test('overlays project APIs without replacing the ambient registration', async () => {
     registerRuntimeAPIs(baseApis);
-    const workspaceApis = { ...baseApis, runtime: { ...baseApis.runtime, isVSCode: true } };
-    registerWorkspaceRuntimeAPIs(workspaceApis);
+    const projectApis = { ...baseApis, runtime: { ...baseApis.runtime, isVSCode: true } };
+    registerProjectRuntimeAPIs(projectApis);
 
-    expect(getRegisteredRuntimeAPIs()).toBe(workspaceApis);
+    expect(getRegisteredRuntimeAPIs()).toBe(projectApis);
     expect(getRegisteredRuntimeAPIs()?.runtime.isVSCode).toBe(true);
 
-    registerWorkspaceRuntimeAPIs(null);
+    registerProjectRuntimeAPIs(null);
     expect(getRegisteredRuntimeAPIs()).toBe(baseApis);
   });
 
-  test('exposes typed unavailable settings while a workspace is active before the handle is ready', async () => {
+  test('exposes typed unavailable settings while a project is active before the handle is ready', async () => {
     registerRuntimeAPIs(baseApis);
-    setWorkspaceRuntimeActive(true);
+    setProjectRuntimeActive(true);
 
     const settings = getRegisteredRuntimeAPIs()?.settings;
     await expectCapabilityUnavailable(settings?.load() ?? Promise.resolve());
     await expectCapabilityUnavailable(settings?.save({ theme: 'dark' }) ?? Promise.resolve());
-    expect(isWorkspaceRuntimeActive()).toBe(true);
+    expect(isProjectRuntimeActive()).toBe(true);
   });
 });

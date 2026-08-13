@@ -1,5 +1,6 @@
 import type { WorktreeMetadata } from "@/types/worktree"
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
+import { legacyScopeKeyForProjectKey } from "@/projects/identity"
 
 const STORAGE_KEY = "oc.worktreeMap.v2"
 const MAX_RUNTIME_TOPOLOGIES = 8
@@ -60,6 +61,13 @@ export function readPersistedWorktreeTopology(
   const envelope = readEnvelope(storage)
   const topology = envelope.runtimes[scopeKey]
   if (topology) return new Map(topology.entries)
+  // P-MIG: a `project:` scope key must also find the topology persisted under
+  // the legacy `workspace:` prefix by pre-rename builds.
+  const legacyKey = legacyScopeKeyForProjectKey(scopeKey)
+  if (legacyKey) {
+    const legacyTopology = envelope.runtimes[legacyKey]
+    if (legacyTopology) return new Map(legacyTopology.entries)
+  }
   return new Map()
 }
 

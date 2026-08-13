@@ -12,14 +12,14 @@ type ApiProxyRequestPayload = {
   path?: string;
   headers?: Record<string, string>;
   bodyBase64?: string;
-  /** Control-plane-owned request (workspace catalog / session index /
+  /** Control-plane-owned request (project catalog / session index /
    * connections). The extension host must NEVER forward these to the opencode
    * binary: when no OpenChamber control plane is configured, it answers
    * `capability_unavailable` explicitly. Backward compatible — existing
    * callers omit the field. */
   controlPlane?: boolean;
-  /** Forward-compat workspace scope for a future control-plane proxy. */
-  workspaceId?: string;
+  /** Forward-compat project scope for a future control-plane proxy. */
+  projectId?: string;
 };
 
 type ApiSessionMessageRequestPayload = {
@@ -115,7 +115,7 @@ export type ProxyRuntimeDeps = {
 const proxyAbortControllers = new Map<string, AbortController>();
 
 // Control-plane proxy forward: the target origin is the explicitly configured
-// `openchamber.apiUrl` (the same origin `bridge-workspace-runtime.ts` reads the
+// `openchamber.apiUrl` (the same origin `bridge-project-runtime.ts` reads the
 // catalog from). The timeout mirrors that catalog read's 8s abort, and the
 // per-request controller keeps `api:proxy:abort` working like the binary path.
 const CONTROL_PLANE_PROXY_TIMEOUT_MS = 8000;
@@ -239,7 +239,7 @@ export async function handleProxyBridgeMessage(
     }
 
     case 'api:proxy': {
-      const { method, path: requestPath, headers, bodyBase64, controlPlane, workspaceId } = (payload || {}) as ApiProxyRequestPayload;
+      const { method, path: requestPath, headers, bodyBase64, controlPlane, projectId } = (payload || {}) as ApiProxyRequestPayload;
       const normalizedMethod = typeof method === 'string' && method.trim() ? method.trim().toUpperCase() : 'GET';
       const normalizedPath =
         typeof requestPath === 'string' && requestPath.trim().length > 0
@@ -257,7 +257,7 @@ export async function handleProxyBridgeMessage(
         return { id, type, success: true, data };
       }
 
-      // Control-plane-owned requests (workspace catalog / session index /
+      // Control-plane-owned requests (project catalog / session index /
       // connections) must NEVER reach the opencode binary. With an explicitly
       // configured control plane (`openchamber.apiUrl`, the same origin the
       // descriptor resolution reads the catalog from) the request is forwarded
@@ -301,7 +301,7 @@ export async function handleProxyBridgeMessage(
             bodyText: JSON.stringify({
               error: 'Control plane is not available in the VS Code runtime',
               code: 'capability_unavailable',
-              ...(typeof workspaceId === 'string' && workspaceId.length > 0 ? { workspaceId } : {}),
+              ...(typeof projectId === 'string' && projectId.length > 0 ? { projectId } : {}),
             }),
           };
           return { id, type, success: true, data };

@@ -32,7 +32,7 @@ const normalizePath = (value: string): string => {
   return replaced.replace(/\/+$/, '') || replaced;
 };
 
-function isWithinWorktreeRoot(candidate: string | null, worktreeRoot: string | null): boolean {
+export function isWithinWorktreeRoot(candidate: string | null, worktreeRoot: string | null): boolean {
   if (!candidate || !worktreeRoot) return false;
   const c = normalizePath(candidate);
   const r = normalizePath(worktreeRoot);

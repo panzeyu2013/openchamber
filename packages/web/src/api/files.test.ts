@@ -53,7 +53,7 @@ describe('createWebFilesAPI', () => {
     });
   });
 
-  it('uses per-call workspace directory for stat and read requests', async () => {
+  it('uses per-call project directory for stat and read requests', async () => {
     const { createWebFilesAPI } = await import('./files');
     const api = createWebFilesAPI({ urls, getDirectory: () => '/stale-workspace' });
 
@@ -75,7 +75,7 @@ describe('createWebFilesAPI', () => {
     });
   });
 
-  it('sends the workspace directory header for downloads', async () => {
+  it('sends the project directory header for downloads', async () => {
     const { createWebFilesAPI } = await import('./files');
     const api = createWebFilesAPI({ urls, getDirectory: () => '/current-workspace' });
 

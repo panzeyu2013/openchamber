@@ -15,7 +15,7 @@ import { useSnippetsStore } from './useSnippetsStore';
 
 import { getMultiRunSessionTitle } from '@/lib/multirun/title';
 import { getSyncChildStores, getSyncOpencodeService, getSyncScopeKey, registerSessionDirectory } from '@/sync/sync-refs';
-import { workspaceIdFromScopeKey } from '@/workspaces/identity';
+import { projectIdFromScopeKey } from '@/projects/identity';
 
 const toGitSafeSlug = (value: string): string => {
   return value
@@ -81,10 +81,10 @@ const registerCreatedSession = (session: Session, directory: string): Session =>
 
 const resolveActiveProject = (): ProjectRef | null => {
   const scopeKey = getSyncScopeKey();
-  const workspaceId = workspaceIdFromScopeKey(scopeKey);
-  if (workspaceId) {
+  const projectId = projectIdFromScopeKey(scopeKey);
+  if (projectId) {
     const directory = getSyncOpencodeService().getDirectory()?.trim();
-    return directory ? { id: workspaceId, path: directory } : null;
+    return directory ? { id: projectId, path: directory } : null;
   }
 
   const projectsState = useProjectsStore.getState();
@@ -156,7 +156,7 @@ export const useMultiRunStore = create<MultiRunStore>()(
         const operationService = getSyncOpencodeService();
         const assertCurrentScope = (): void => {
           if (getSyncScopeKey() !== operationScopeKey) {
-            throw new Error('Multi-Run was cancelled because the workspace changed.');
+            throw new Error('Multi-Run was cancelled because the project changed.');
           }
         };
 

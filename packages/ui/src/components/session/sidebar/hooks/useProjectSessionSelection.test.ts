@@ -60,19 +60,19 @@ function computeProjectMeta(projectSections: ProjectSection[]) {
 const makeSession = (id: string, directory?: string): Session =>
   ({ id, directory } as unknown as Session);
 
-const rootSession1 = makeSession('root-session-1', '/workspace/project');
-const rootSession2 = makeSession('root-session-2', '/workspace/project');
-const worktreeSession1 = makeSession('wt-session-1', '/workspace/project-wt');
+const rootSession1 = makeSession('root-session-1', '/project/project');
+const rootSession2 = makeSession('root-session-2', '/project/project');
+const worktreeSession1 = makeSession('wt-session-1', '/project/project-wt');
 
-const project2Session1 = makeSession('project-2-session-1', '/workspace/project-2');
-const project2Session2 = makeSession('project-2-session-2', '/workspace/project-2');
+const project2Session1 = makeSession('project-2-session-1', '/project/project-2');
+const project2Session2 = makeSession('project-2-session-2', '/project/project-2');
 
-const WORKTREE_PATH = '/workspace/project-wt';
+const WORKTREE_PATH = '/project/project-wt';
 
 // staleSections: root group only, no worktree group
 const staleSections: ProjectSection[] = [
   {
-    project: { id: 'project-1', normalizedPath: '/workspace/project' },
+    project: { id: 'project-1', normalizedPath: '/project/project' },
     groups: [
       {
         id: 'root',
@@ -81,7 +81,7 @@ const staleSections: ProjectSection[] = [
         description: null,
         isMain: true,
         worktree: null,
-        directory: '/workspace/project',
+        directory: '/project/project',
         sessions: [
           { session: rootSession1, children: [], worktree: null },
           { session: rootSession2, children: [], worktree: null },
@@ -94,7 +94,7 @@ const staleSections: ProjectSection[] = [
 // updatedSections: includes the worktree group
 const updatedSections: ProjectSection[] = [
   {
-    project: { id: 'project-1', normalizedPath: '/workspace/project' },
+    project: { id: 'project-1', normalizedPath: '/project/project' },
     groups: [
       {
         id: 'root',
@@ -103,7 +103,7 @@ const updatedSections: ProjectSection[] = [
         description: null,
         isMain: true,
         worktree: null,
-        directory: '/workspace/project',
+        directory: '/project/project',
         sessions: [
           { session: rootSession1, children: [], worktree: null },
           { session: rootSession2, children: [], worktree: null },
@@ -115,10 +115,10 @@ const updatedSections: ProjectSection[] = [
         branch: 'feature-branch',
         description: 'Worktree at ' + WORKTREE_PATH,
         isMain: false,
-        worktree: { path: WORKTREE_PATH, projectDirectory: '/workspace/project', branch: 'feature-branch', label: 'feature-branch' },
+        worktree: { path: WORKTREE_PATH, projectDirectory: '/project/project', branch: 'feature-branch', label: 'feature-branch' },
         directory: WORKTREE_PATH,
         sessions: [
-          { session: worktreeSession1, children: [], worktree: { path: WORKTREE_PATH, projectDirectory: '/workspace/project', branch: 'feature-branch', label: 'feature-branch' } },
+          { session: worktreeSession1, children: [], worktree: { path: WORKTREE_PATH, projectDirectory: '/project/project', branch: 'feature-branch', label: 'feature-branch' } },
         ],
       },
     ],
@@ -128,7 +128,7 @@ const updatedSections: ProjectSection[] = [
 // project-2Sections: separate project for project-switching tests
 const project2Sections: ProjectSection[] = [
   {
-    project: { id: 'project-2', normalizedPath: '/workspace/project-2' },
+    project: { id: 'project-2', normalizedPath: '/project/project-2' },
     groups: [
       {
         id: 'root',
@@ -137,7 +137,7 @@ const project2Sections: ProjectSection[] = [
         description: null,
         isMain: true,
         worktree: null,
-        directory: '/workspace/project-2',
+        directory: '/project/project-2',
         sessions: [
           { session: project2Session1, children: [], worktree: null },
           { session: project2Session2, children: [], worktree: null },
@@ -243,7 +243,7 @@ describe('useProjectSessionSelection — worktree session click race', () => {
     // Empty project: no groups/sessions in projectSections
     const emptySections: ProjectSection[] = [
       {
-        project: { id: 'empty-project', normalizedPath: '/workspace/empty' },
+        project: { id: 'empty-project', normalizedPath: '/project/empty' },
         groups: [],
       },
     ];

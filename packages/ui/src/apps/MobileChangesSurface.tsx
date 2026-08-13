@@ -20,7 +20,7 @@ import {
   useGitStatus,
   useIsGitRepo,
   useGitLoadingStatus,
-  resolveActiveWorkspaceScopeKey,
+  resolveActiveProjectScopeKey,
 } from '@/stores/useGitStore';
 
 type SyncAction = 'fetch' | 'pull' | 'push' | 'sync' | null;
@@ -203,7 +203,7 @@ export const MobileChangesSurface: React.FC<MobileChangesSurfaceProps> = ({ onCl
     }
 
     let cancelled = false;
-    const runtimeKey = resolveActiveWorkspaceScopeKey();
+    const runtimeKey = resolveActiveProjectScopeKey();
     setDiffLoadError(null);
     void git.getGitFileDiff(currentDirectory, { path: route.path, staged: route.staged || undefined })
       .then((response) => {

@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 
 const { useFilesViewTabsStore } = await import('./useFilesViewTabsStore');
 
 describe('useFilesViewTabsStore', () => {
   beforeEach(() => {
-    useFilesViewTabsStore.setState({ byRoot: {}, activeRuntimeKey: 'runtime-a', runtimeSnapshots: {} });
+    useFilesViewTabsStore.setState({ byRoot: {}, activeScopeKey: 'scope-a', scopeSnapshots: {} });
   });
 
   test('ignores runtime paths outside the requested root', () => {
@@ -33,17 +33,17 @@ describe('useFilesViewTabsStore', () => {
     expect(useFilesViewTabsStore.getState().byRoot[root]?.expandedPaths).toEqual(['/repo/src']);
   });
 
-  test('rejects realpath children of workspace symlinks (issue 2627)', () => {
-    const root = '/workspace';
+  test('rejects realpath children of project symlinks (issue 2627)', () => {
+    const root = '/project';
     const store = useFilesViewTabsStore.getState();
 
-    store.toggleExpandedPath(root, '/workspace/pkg');
+    store.toggleExpandedPath(root, '/project/pkg');
     store.toggleExpandedPath(root, '/real/pkg/src');
-    store.toggleExpandedPath(root, '/workspace/pkg/src');
+    store.toggleExpandedPath(root, '/project/pkg/src');
 
     expect(useFilesViewTabsStore.getState().byRoot[root]?.expandedPaths).toEqual([
-      '/workspace/pkg',
-      '/workspace/pkg/src',
+      '/project/pkg',
+      '/project/pkg/src',
     ]);
   });
 
@@ -66,27 +66,27 @@ describe('useFilesViewTabsStore', () => {
     expect(state?.expandedPaths).toEqual(['/repo/src', '/repo/other']);
   });
 
-  test('restores independent active projections across workspace scope switches', () => {
-    setWorkspaceSession('ws-a');
+  test('restores independent active projections across project scope switches', () => {
+    setProjectSession('ws-a');
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/a.ts');
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useFilesViewTabsStore.getState().byRoot).toEqual({});
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/b.ts');
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/b.ts']);
   });
 });
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
-  const upstreamSessionId = `ses-${workspaceId}`;
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => {
+  const upstreamSessionId = `ses-${projectId}`;
   return {
     revision: 1,
     sessions: [{
-      key: `${workspaceId}\u0000${upstreamSessionId}`,
-      workspaceId,
+      key: `${projectId}\u0000${upstreamSessionId}`,
+      projectId,
       connectionId: 'conn',
       upstreamSessionId,
       directory: '/repo',
@@ -99,35 +99,35 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
   };
 };
 
-const setWorkspaceSession = (workspaceId: string) => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
-  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+const setProjectSession = (projectId: string) => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${projectId}`, currentSessionDirectory: '/repo' });
 };
 
-const clearWorkspaceSession = () => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = () => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-describe('useFilesViewTabsStore workspace scope', () => {
+describe('useFilesViewTabsStore project scope', () => {
   beforeEach(() => {
-    clearWorkspaceSession();
-    useFilesViewTabsStore.setState({ byRoot: {}, activeRuntimeKey: 'runtime-a', runtimeSnapshots: {} });
+    clearProjectSession();
+    useFilesViewTabsStore.setState({ byRoot: {}, activeScopeKey: 'scope-a', scopeSnapshots: {} });
   });
 
-  afterEach(clearWorkspaceSession);
+  afterEach(clearProjectSession);
 
-  test('keeps open tabs isolated per workspace for the same directory', () => {
-    setWorkspaceSession('ws-a');
+  test('keeps open tabs isolated per project for the same directory', () => {
+    setProjectSession('ws-a');
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/a.ts');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useFilesViewTabsStore.getState().byRoot['/repo'] ?? undefined).toBe(undefined);
     useFilesViewTabsStore.getState().addOpenPath('/repo', '/repo/b.ts');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/b.ts']);
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useFilesViewTabsStore.getState().byRoot['/repo']?.openPaths).toEqual(['/repo/a.ts']);
   });
 });

@@ -89,7 +89,7 @@ export const createProjectDirectoryRuntime = (dependencies) => {
     // away from the project that was last "clicked" in the sidebar (e.g. via
     // `go to parent`, directory picker, or a deep link), leaving
     // activeProjectId stale. Fetches scoped to the stale project would 400
-    // with "Path is outside of active workspace".
+    // with "Path is outside of active project".
     if (typeof settings.lastDirectory === 'string' && settings.lastDirectory.trim()) {
       const validated = await validateDirectoryPath(settings.lastDirectory);
       if (validated.ok) {

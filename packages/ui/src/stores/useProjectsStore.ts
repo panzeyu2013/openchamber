@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { opencodeClient } from '@/lib/opencode/client';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { DesktopSettings } from '@/lib/desktop';
 import { updateDesktopSettings } from '@/lib/persistence';
@@ -11,8 +11,8 @@ import { streamDebugEnabled } from '@/stores/utils/streamDebug';
 import { PROJECT_COLORS } from '@/lib/projectMeta';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { runtimeFetch } from '@/lib/runtime-fetch';
-import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
-import type { WorkspaceCatalogSnapshot, WorkspaceDescriptor } from '@/workspaces/types';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import type { ConnectionProfileSummary, ProjectCatalogSnapshot, ProjectDescriptor } from '@/projects/types';
 
 /** Pick a color key that's least used among existing projects */
 const pickAutoColor = (projects: ProjectEntry[]): string => {
@@ -78,8 +78,8 @@ let synchronizeProjectsFromCatalog: () => void = () => {};
 const getProjectsStorageKey = (): string => PROJECTS_STORAGE_KEY;
 const getActiveProjectStorageKey = (): string => ACTIVE_PROJECT_STORAGE_KEY;
 
-const getReadyCatalogSnapshot = (): WorkspaceCatalogSnapshot | null => {
-  const catalog = useWorkspaceCatalogStore.getState();
+const getReadyCatalogSnapshot = (): ProjectCatalogSnapshot | null => {
+  const catalog = useProjectCatalogStore.getState();
   return catalog.status === 'ready' && catalog.snapshot
     ? catalog.snapshot
     : null;
@@ -87,17 +87,26 @@ const getReadyCatalogSnapshot = (): WorkspaceCatalogSnapshot | null => {
 
 /**
  * Project metadata remains a compatibility surface, but it must not mutate
- * the ambient OpenCode directory while a composite workspace/session target
- * is mounted. The workspace-bound SyncProvider owns that directory instead.
+ * the ambient OpenCode directory while a composite project/session target
+ * is mounted. The project-bound SyncProvider owns that directory instead.
  */
-const hasActiveWorkspaceSession = (): boolean => {
+const hasActiveProjectSession = (): boolean => {
   const sessionState = useSessionUIStore.getState();
   return Boolean(
-    sessionState.currentWorkspaceId
-    || (sessionState.newSessionDraft?.open && sessionState.newSessionDraft.workspaceId)
-    || isWorkspaceRuntimeActive(),
+    sessionState.currentProjectId
+    || (sessionState.newSessionDraft?.open && sessionState.newSessionDraft.projectId)
+    || isProjectRuntimeActive(),
   );
 };
+
+/**
+ * A project has an ambient local directory only when it belongs to the local
+ * connection (or predates the catalog, where connectionId is absent). Remote
+ * catalog projects have no directory on this machine, so activating one must
+ * never rewrite the ambient OpenCode directory.
+ */
+const isLocalDirectoryProject = (project: Pick<ProjectEntry, 'connectionId'> | null | undefined): boolean =>
+  !project || project.connectionId === undefined || project.connectionId === 'local';
 
 const resolveTildePath = (value: string, homeDir?: string | null): string => {
   const trimmed = value.trim();
@@ -160,7 +169,7 @@ const normalizeProjectPath = (value: string): string => {
   return normalized.length > 1 ? normalized.replace(/\/+$/, '') : normalized;
 };
 
-const compareCatalogOrder = (left: WorkspaceDescriptor, right: WorkspaceDescriptor, leftIndex: number, rightIndex: number): number => {
+const compareCatalogOrder = (left: ProjectDescriptor, right: ProjectDescriptor, leftIndex: number, rightIndex: number): number => {
   const leftOrder = left.orderKey.trim();
   const rightOrder = right.orderKey.trim();
   if (leftOrder && rightOrder) {
@@ -172,25 +181,30 @@ const compareCatalogOrder = (left: WorkspaceDescriptor, right: WorkspaceDescript
   return leftIndex - rightIndex;
 };
 
-const projectFromCatalogWorkspace = (workspace: WorkspaceDescriptor): ProjectEntry => {
-  const normalizedPath = normalizeProjectPath(workspace.path);
+const projectFromCatalogProject = (
+  project: ProjectDescriptor,
+  connections: ConnectionProfileSummary[],
+): ProjectEntry => {
+  const normalizedPath = normalizeProjectPath(project.path);
+  const connection = connections.find((entry) => entry.id === project.connectionId);
   return {
-    id: workspace.id,
+    id: project.id,
     path: normalizedPath,
-    label: workspace.label,
-    color: workspace.color,
-    addedAt: workspace.createdAt,
-    lastOpenedAt: workspace.updatedAt,
+    label: project.label,
+    color: project.color,
+    addedAt: project.createdAt,
+    lastOpenedAt: project.updatedAt,
+    connectionId: project.connectionId,
+    connectionLabel: connection?.label,
   };
 };
 
-const catalogProjectsFromSnapshot = (snapshot: WorkspaceCatalogSnapshot): ProjectEntry[] => {
-  const localWorkspaces = snapshot.workspaces
-    .map((workspace, index) => ({ workspace, index }))
-    .filter(({ workspace }) => workspace.connectionId === 'local')
-    .sort((left, right) => compareCatalogOrder(left.workspace, right.workspace, left.index, right.index))
-    .map(({ workspace }) => projectFromCatalogWorkspace(workspace));
-  return localWorkspaces;
+const catalogProjectsFromSnapshot = (snapshot: ProjectCatalogSnapshot): ProjectEntry[] => {
+  const projects = snapshot.projects
+    .map((project, index) => ({ project, index }))
+    .sort((left, right) => compareCatalogOrder(left.project, right.project, left.index, right.index))
+    .map(({ project }) => projectFromCatalogProject(project, snapshot.connections));
+  return projects;
 };
 
 const deriveProjectLabel = (path: string): string => {
@@ -263,7 +277,10 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
 
   const result: ProjectEntry[] = [];
   const seenIds = new Set<string>();
-  const seenPaths = new Set<string>();
+  // Two remote projects on different connections can share a path; only
+  // the (connectionId, path) pair is unique. Legacy entries without a
+  // connectionId keep path-only dedupe.
+  const seenKeys = new Set<string>();
 
   for (const entry of value) {
     if (!entry || typeof entry !== 'object') continue;
@@ -275,21 +292,34 @@ const sanitizeProjects = (value: unknown): ProjectEntry[] => {
     const normalizedPath = normalizeProjectPath(rawPath);
     if (!normalizedPath) continue;
 
-    // The id arrives from the Catalog projection (workspace id) or the
+    // The id arrives from the Catalog projection (project id) or the
     // legacy settings surface; it is never re-derived from the path.
     const id = typeof candidate.id === 'string' && candidate.id.trim().length > 0
       ? candidate.id.trim()
       : '';
     if (!id) continue;
 
-    if (seenIds.has(id) || seenPaths.has(normalizedPath)) continue;
+    const connectionId = typeof candidate.connectionId === 'string' ? candidate.connectionId.trim() : '';
+    const dedupeKey = connectionId ? `${connectionId}\n${normalizedPath}` : normalizedPath;
+    if (seenIds.has(id) || seenKeys.has(dedupeKey)) continue;
     seenIds.add(id);
-    seenPaths.add(normalizedPath);
+    seenKeys.add(dedupeKey);
 
     const project: ProjectEntry = {
       id,
       path: normalizedPath,
     };
+
+    // Catalog-projected entries carry the connection identity. It must
+    // survive the persistence round-trip: a remote project that loses its
+    // connectionId on re-read would be treated as a local-directory project
+    // and could rewrite the ambient OpenCode directory.
+    if (connectionId) {
+      project.connectionId = connectionId;
+    }
+    if (typeof candidate.connectionLabel === 'string' && candidate.connectionLabel.trim().length > 0) {
+      project.connectionLabel = candidate.connectionLabel.trim();
+    }
 
     if (typeof candidate.label === 'string' && candidate.label.trim().length > 0) {
       project.label = candidate.label.trim();
@@ -401,10 +431,10 @@ const queueCatalogOrderPersistence = (projects: ProjectEntry[]): void => {
   const orderedIds = projects.map((project) => project.id);
   catalogOrderWriteChain = catalogOrderWriteChain
     .then(async () => {
-      for (const [index, workspaceId] of orderedIds.entries()) {
-        const catalog = useWorkspaceCatalogStore.getState();
-        if (!catalog.snapshot?.workspaces.some((workspace) => workspace.id === workspaceId)) continue;
-        await catalog.updateWorkspace(workspaceId, {
+      for (const [index, projectId] of orderedIds.entries()) {
+        const catalog = useProjectCatalogStore.getState();
+        if (!catalog.snapshot?.projects.some((project) => project.id === projectId)) continue;
+        await catalog.updateProject(projectId, {
           orderKey: String(index).padStart(12, '0'),
         });
       }
@@ -457,15 +487,15 @@ export const useProjectsStore = create<ProjectsStore>()(
 
       const catalogSnapshot = getReadyCatalogSnapshot();
       if (catalogSnapshot) {
-        const existingWorkspace = catalogSnapshot.workspaces.find((workspace) => (
-          workspace.connectionId === 'local' && normalizeProjectPath(workspace.path) === normalizedPath
+        const existingProject = catalogSnapshot.projects.find((project) => (
+          project.connectionId === 'local' && normalizeProjectPath(project.path) === normalizedPath
         ));
-        if (existingWorkspace) {
+        if (existingProject) {
           synchronizeProjectsFromCatalog();
-          const existingProject = get().projects.find((project) => project.id === existingWorkspace.id)
-            ?? projectFromCatalogWorkspace(existingWorkspace);
-          get().setActiveProject(existingProject.id);
-          return existingProject;
+          const projectEntry = get().projects.find((project) => project.id === existingProject.id)
+            ?? projectFromCatalogProject(existingProject, catalogSnapshot.connections);
+          get().setActiveProject(projectEntry.id);
+          return projectEntry;
         }
 
         const now = Date.now();
@@ -476,12 +506,13 @@ export const useProjectsStore = create<ProjectsStore>()(
           color: pickAutoColor(get().projects),
           addedAt: now,
           lastOpenedAt: now,
+          connectionId: 'local',
         };
         const nextProjects = [...get().projects, provisional];
         set({ projects: nextProjects });
         get().setActiveProject(provisional.id);
 
-        void useWorkspaceCatalogStore.getState().createWorkspace({
+        void useProjectCatalogStore.getState().createProject({
           connectionId: 'local',
           path: normalizedPath,
           label: provisional.label,
@@ -510,7 +541,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       const label = options?.label?.trim() || deriveProjectLabel(normalizedPath);
       // Catalog unavailable fallback: a path-derived id is a local
       // compatibility id until the Catalog projection replaces the entry
-      // with the workspace id.
+      // with the project id.
       const id = options?.id ?? normalizedPath;
       const entry: ProjectEntry = {
         id,
@@ -546,9 +577,9 @@ export const useProjectsStore = create<ProjectsStore>()(
       const nextManualOrder = get().manualProjectOrder.filter((oid) => oid !== id);
       set({ projects: nextProjects, activeProjectId: nextActiveId, manualProjectOrder: nextManualOrder });
       const catalogSnapshot = getReadyCatalogSnapshot();
-      const catalogWorkspace = catalogSnapshot?.workspaces.find((workspace) => workspace.id === id);
-      if (catalogWorkspace) {
-        void useWorkspaceCatalogStore.getState().deleteWorkspace(id).catch(() => undefined);
+      const catalogProject = catalogSnapshot?.projects.find((project) => project.id === id);
+      if (catalogProject) {
+        void useProjectCatalogStore.getState().deleteProject(id).catch(() => undefined);
       } else {
         persistProjects(nextProjects, nextActiveId, nextManualOrder);
       }
@@ -563,13 +594,13 @@ export const useProjectsStore = create<ProjectsStore>()(
         });
       }
 
-      if (!hasActiveWorkspaceSession() && nextActiveId) {
+      if (!hasActiveProjectSession() && nextActiveId) {
         const nextActive = nextProjects.find((project) => project.id === nextActiveId);
-        if (nextActive) {
+        if (nextActive && isLocalDirectoryProject(nextActive)) {
           opencodeClient.setDirectory(nextActive.path);
           useDirectoryStore.getState().setDirectory(nextActive.path, { showOverlay: false });
         }
-      } else if (!hasActiveWorkspaceSession()) {
+      } else if (!hasActiveProjectSession()) {
         void useDirectoryStore.getState().goHome();
       }
     },
@@ -590,11 +621,11 @@ export const useProjectsStore = create<ProjectsStore>()(
       );
 
       set({ projects: nextProjects, activeProjectId: id });
-      if (!getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
+      if (!getReadyCatalogSnapshot()?.projects.some((project) => project.id === id)) {
         persistProjects(nextProjects, id, get().manualProjectOrder);
       }
 
-      if (!hasActiveWorkspaceSession()) {
+      if (!hasActiveProjectSession() && isLocalDirectoryProject(target)) {
         opencodeClient.setDirectory(target.path);
         useDirectoryStore.getState().setDirectory(target.path, { showOverlay: false });
       }
@@ -616,7 +647,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       );
 
       set({ projects: nextProjects, activeProjectId: id });
-      if (!getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
+      if (!getReadyCatalogSnapshot()?.projects.some((project) => project.id === id)) {
         persistProjects(nextProjects, id, get().manualProjectOrder);
       }
     },
@@ -632,8 +663,8 @@ export const useProjectsStore = create<ProjectsStore>()(
         project.id === id ? { ...project, label: trimmed } : project
       );
       set({ projects: nextProjects });
-      if (getReadyCatalogSnapshot()?.workspaces.some((workspace) => workspace.id === id)) {
-        void useWorkspaceCatalogStore.getState().updateWorkspace(id, { label: trimmed }).catch(() => undefined);
+      if (getReadyCatalogSnapshot()?.projects.some((project) => project.id === id)) {
+        void useProjectCatalogStore.getState().updateProject(id, { label: trimmed }).catch(() => undefined);
       } else {
         persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
       }
@@ -670,8 +701,8 @@ export const useProjectsStore = create<ProjectsStore>()(
         return updated;
       });
       set({ projects: nextProjects });
-      const catalogWorkspace = getReadyCatalogSnapshot()?.workspaces.find((workspace) => workspace.id === id);
-      if (catalogWorkspace) {
+      const catalogProject = getReadyCatalogSnapshot()?.projects.find((project) => project.id === id);
+      if (catalogProject) {
         const patch: { label?: string; color?: string | null } = {};
         if (meta.label !== undefined) {
           const trimmed = meta.label.trim();
@@ -679,7 +710,7 @@ export const useProjectsStore = create<ProjectsStore>()(
         }
         if (meta.color !== undefined) patch.color = meta.color;
         if (Object.keys(patch).length > 0) {
-          void useWorkspaceCatalogStore.getState().updateWorkspace(id, patch).catch(() => undefined);
+          void useProjectCatalogStore.getState().updateProject(id, patch).catch(() => undefined);
         }
         persistProjects(nextProjects, activeProjectId, get().manualProjectOrder);
       } else {
@@ -809,7 +840,7 @@ export const useProjectsStore = create<ProjectsStore>()(
       const newOrder = nextProjects.map((p) => p.id);
       set({ projects: nextProjects, manualProjectOrder: newOrder });
       const catalogSnapshot = getReadyCatalogSnapshot();
-      if (catalogSnapshot && nextProjects.every((project) => catalogSnapshot.workspaces.some((workspace) => workspace.id === project.id))) {
+      if (catalogSnapshot && nextProjects.every((entry) => catalogSnapshot.projects.some((candidate) => candidate.id === entry.id))) {
         queueCatalogOrderPersistence(nextProjects);
       } else {
         persistProjects(nextProjects, activeProjectId, newOrder);
@@ -841,9 +872,11 @@ export const useProjectsStore = create<ProjectsStore>()(
       cacheProjects(incomingProjects, incomingActive);
       persistManualProjectOrder(cleanedOrder);
 
-      if (incomingActive && !hasActiveWorkspaceSession()) {
+      if (incomingActive && !hasActiveProjectSession()) {
         const activeProject = incomingProjects.find((project) => project.id === incomingActive);
-        if (activeProject) {
+        // Remote catalog projects have no directory on this machine; only a
+        // local-directory project may install the ambient OpenCode directory.
+        if (activeProject && isLocalDirectoryProject(activeProject)) {
           opencodeClient.setDirectory(activeProject.path);
           useDirectoryStore.getState().setDirectory(activeProject.path, { showOverlay: false });
         }
@@ -869,11 +902,13 @@ synchronizeProjectsFromCatalog = () => {
   const current = useProjectsStore.getState();
   const currentActiveProject = current.projects.find((project) => project.id === current.activeProjectId) ?? null;
   const currentDirectory = normalizeProjectPath(useDirectoryStore.getState().currentDirectory);
-  const activeProject = (currentActiveProject
-    ? nextProjects.find((project) => project.path === normalizeProjectPath(currentActiveProject.path))
+  const activeProject = (current.activeProjectId
+    ? nextProjects.find((project) => project.id === current.activeProjectId)
     : null)
+    ?? (currentActiveProject
+      ? nextProjects.find((project) => project.path === normalizeProjectPath(currentActiveProject.path))
+      : null)
     ?? nextProjects.find((project) => project.path === currentDirectory)
-    ?? (current.activeProjectId ? nextProjects.find((project) => project.id === current.activeProjectId) : null)
     ?? nextProjects[0]
     ?? null;
   const nextActiveProjectId = activeProject?.id ?? null;
@@ -896,7 +931,7 @@ synchronizeProjectsFromCatalog = () => {
 // Catalog refreshes are authoritative only when they succeed. A failed
 // control-plane refresh leaves the legacy projection untouched, preserving
 // the old projects view for recovery and compatibility.
-useWorkspaceCatalogStore.subscribe((state) => {
+useProjectCatalogStore.subscribe((state) => {
   if (state.status === 'ready' && state.snapshot) {
     synchronizeProjectsFromCatalog();
   }

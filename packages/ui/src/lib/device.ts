@@ -375,18 +375,18 @@ export function useOrientation(): Orientation {
  */
 const TABLET_LAYOUT_MIN_SHORT_SIDE_PX = 600;
 /**
- * Width below which the workspace cannot become a side panel: the sessions
+ * Width below which the project cannot become a side panel: the sessions
  * sidebar (~320) plus the panel (~380) plus a chat column that is still worth
  * reading. Unfolded book foldables land under this even "landscape", so they
  * keep the full-cover drawer in both orientations — which is the whole point,
  * their wide side is barely wider than a tablet's narrow one.
  */
-const WORKSPACE_PANEL_MIN_WIDTH_PX = 1000;
+const PROJECT_PANEL_MIN_WIDTH_PX = 1000;
 
 export interface TabletLayout {
   /** Sessions become a persistent sidebar, dropdowns become anchored popovers. */
   enabled: boolean;
-  /** There is room for the workspace beside the chat instead of over it. */
+  /** There is room for the project beside the chat instead of over it. */
   roomyForPanels: boolean;
 }
 
@@ -400,7 +400,7 @@ export const readTabletLayout = (): TabletLayout => {
   const enabled = isIPadApp() || Math.min(width, height) >= TABLET_LAYOUT_MIN_SHORT_SIDE_PX;
   return {
     enabled,
-    roomyForPanels: enabled && width > height && width >= WORKSPACE_PANEL_MIN_WIDTH_PX,
+    roomyForPanels: enabled && width > height && width >= PROJECT_PANEL_MIN_WIDTH_PX,
   };
 };
 

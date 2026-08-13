@@ -287,11 +287,11 @@ Transport-triggered health checks share the periodic monitor's failure accountin
   - `POST /api/config/reload` — applies accumulated deferred OpenCode config changes. Managed OpenCode restarts and returns `requiresReload: true`. External OpenCode returns `requiresManualRestart: true` (changes are already on disk; the connected server must be restarted outside OpenChamber).
 - `registerCommonRequestMiddleware(app, dependencies)`: registers shared request middleware stack:
   - conditional JSON body parser behavior for `/api/*` vs non-API requests. The
-    parsed-prefix allowlist includes the workspace catalog and connection paths
-    (`/api/workspaces`, `/api/connections`) so their JSON bodies are parsed
-    before the routes see them; the workspace-session mutation routes live
-    under `/api/workspaces/:id/sessions*` (covered by the `/api/workspaces`
-    prefix), while `/api/workspace-sessions/*` carries only GET snapshot/SSE
+    parsed-prefix allowlist includes the project catalog and connection paths
+    (`/api/projects`, `/api/connections`) so their JSON bodies are parsed
+    before the routes see them; the project-session mutation routes live
+    under `/api/projects/:id/sessions*` (covered by the `/api/projects`
+    prefix), while `/api/project-sessions/*` carries only GET snapshot/SSE
     reads that need no body parsing.
   - URL-encoded parser setup
   - request logging middleware
@@ -403,9 +403,9 @@ an authoritative loopback callback URL even when OpenChamber binds port `0`.
   - Windows `/session` merge fallback path behavior
   - OpenCode readiness gate for proxied `/api` requests
 
-The generic proxy is registered LAST; workspace catalog/session-index routes
-and the workspace runtime proxy (`/api/workspaces/*`,
-`/api/workspace-sessions/*`) register BEFORE it (after the auth gate) and
+The generic proxy is registered LAST; project catalog/session-index routes
+and the project runtime proxy (`/api/projects/*`,
+`/api/project-sessions/*`) register BEFORE it (after the auth gate) and
 must never be captured by the fall-through.
 
 ## Public exports (watcher.js)

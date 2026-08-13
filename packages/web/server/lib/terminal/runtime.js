@@ -11,7 +11,7 @@ import { sanitizeTerminalHistoryChunk } from './history.js';
 import { consumeTerminalThemeQueries, terminalThemeModeReport } from './theme-response.js';
 import { createTerminalShellResolver, getTerminalShellLoginArgs, normalizeTerminalShell } from './shells.js';
 import { stripAppImageArgv0Leak, resolveLinuxPtyLaunch } from '../inherited-env.js';
-import { WORKSPACE_RUNTIME_UPGRADE_MARKER, parseWorkspaceRuntimePath } from '../workspaces/runtime-proxy.js';
+import { PROJECT_RUNTIME_UPGRADE_MARKER, parseProjectRuntimePath } from '../projects/runtime-proxy.js';
 
 const MAX_SESSIONS = 20;
 const MAX_HISTORY_BYTES = 512 * 1024;
@@ -182,15 +182,15 @@ export function createTerminalRuntime({
     if (!stats?.isDirectory()) throw new Error('Invalid working directory');
   };
 
-  const assertWorkspaceCwd = async (cwd, canonicalPath) => {
+  const assertProjectCwd = async (cwd, canonicalPath) => {
     if (!canonicalPath) return;
     if (typeof cwd !== 'string' || !cwd.trim()) return;
     const root = path.resolve(canonicalPath);
     const candidate = path.resolve(cwd);
     const lexicalRelative = path.relative(root, candidate);
     if (lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative)) {
-      const error = new Error('Working directory is outside the workspace');
-      error.code = 'catalog_path_outside_workspace';
+      const error = new Error('Working directory is outside the project');
+      error.code = 'catalog_path_outside_project';
       error.status = 403;
       throw error;
     }
@@ -200,8 +200,8 @@ export function createTerminalRuntime({
     const [realRoot, realCandidate] = await Promise.all([realpath(root), realpath(candidate)]);
     const realRelative = path.relative(realRoot, realCandidate);
     if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
-      const error = new Error('Working directory is outside the workspace');
-      error.code = 'catalog_path_outside_workspace';
+      const error = new Error('Working directory is outside the project');
+      error.code = 'catalog_path_outside_project';
       error.status = 403;
       throw error;
     }
@@ -229,35 +229,35 @@ export function createTerminalRuntime({
     wire(session, spawned.process);
   };
 
-  const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false, workspaceId = null, canonicalPath = null }) => {
+  const createSession = async ({ sessionId, cwd, cols = 80, rows = 24, themeMode, terminalBackground, terminalForeground, shell = 'auto', loginShell = false, projectId = null, canonicalPath = null }) => {
     if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
     if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
     const normalizedShell = normalizeTerminalShell(shell);
     if (!normalizedShell) throw new Error('Invalid terminal shell');
-    if (workspaceId && !canonicalPath) {
-      const error = new Error('Workspace directory is unavailable');
-      error.code = 'catalog_workspace_directory_unavailable';
+    if (projectId && !canonicalPath) {
+      const error = new Error('Project directory is unavailable');
+      error.code = 'catalog_project_directory_unavailable';
       error.status = 403;
       throw error;
     }
-    await assertWorkspaceCwd(cwd, canonicalPath);
+    await assertProjectCwd(cwd, canonicalPath);
     const id = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : randomUUID();
     if (id.length > 128) throw new Error('Invalid terminal session id');
-    // Workspace binding: sessions created through a workspace-prefixed path
-    // (workspaceId) belong to that workspace and are never reachable from any
-    // other scope; `null` keeps the legacy non-workspace behavior.
-    const boundWorkspaceId = workspaceId ?? null;
+    // Project binding: sessions created through a project-prefixed path
+    // (projectId) belong to that project and are never reachable from any
+    // other scope; `null` keeps the legacy non-project behavior.
+    const boundProjectId = projectId ?? null;
     const existing = sessions.get(id);
     const resolvedCwd = path.resolve(cwd);
     if (existing?.status === 'running') {
-      if (existing.workspaceId !== boundWorkspaceId) throw new Error('Terminal session belongs to a different workspace');
+      if (existing.projectId !== boundProjectId) throw new Error('Terminal session belongs to a different project');
       if (path.resolve(existing.cwd) !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
       applyAppearance(existing, { themeMode, terminalBackground, terminalForeground });
       return existing;
     }
     const pending = pendingSessionCreates.get(id);
     if (pending) {
-      if (pending.workspaceId !== boundWorkspaceId) throw new Error('Terminal session belongs to a different workspace');
+      if (pending.projectId !== boundProjectId) throw new Error('Terminal session belongs to a different project');
       if (pending.cwd !== resolvedCwd) throw new Error('Terminal session belongs to a different working directory');
       if (pending.shell !== normalizedShell) throw new Error('Terminal session is already being created with a different shell');
       if (pending.loginShell !== loginShell) throw new Error('Terminal session is already being created with a different login mode');
@@ -268,20 +268,20 @@ export function createTerminalRuntime({
     if (!existing && sessions.size + pendingSessionCreates.size >= MAX_SESSIONS) throw new Error('Maximum terminal sessions reached');
     const creation = (async () => {
       const session = existing ?? { id, sequence: 0, history: '', pendingHistoryControlSequence: '', pendingThemeControlSequence: '', eventQueue: [], draining: false };
-      session.workspaceId = boundWorkspaceId;
+      session.projectId = boundProjectId;
       session.canonicalPath = canonicalPath ?? null;
       await startSession(session, { cwd, cols, rows, themeMode, terminalBackground, terminalForeground, shell: normalizedShell, loginShell });
       sessions.set(id, session);
       return session;
     })();
-    const pendingEntry = { cwd: resolvedCwd, shell: normalizedShell, loginShell, workspaceId: boundWorkspaceId, promise: creation };
+    const pendingEntry = { cwd: resolvedCwd, shell: normalizedShell, loginShell, projectId: boundProjectId, promise: creation };
     pendingSessionCreates.set(id, pendingEntry);
     try { return await creation; }
     finally { if (pendingSessionCreates.get(id) === pendingEntry) pendingSessionCreates.delete(id); }
   };
 
-  wsServer.on('connection', (socket, _req, workspaceId) => {
-    const connection = { socket, attachments: new Map(), workspaceId: workspaceId ?? null };
+  wsServer.on('connection', (socket, _req, projectId) => {
+    const connection = { socket, attachments: new Map(), projectId: projectId ?? null };
     connections.add(connection);
     send(socket, { t: 'hello', v: 3 });
     const heartbeat = setInterval(() => { try { socket.ping(); } catch { /* closed */ } }, TERMINAL_INPUT_WS_HEARTBEAT_INTERVAL_MS);
@@ -296,11 +296,11 @@ export function createTerminalRuntime({
       if (message.t === 'detach') { connection.attachments.delete(id); return; }
       const session = sessions.get(id);
       if (!session) { send(socket, { t: 'error', v: 3, s: id, code: 'SESSION_NOT_FOUND', message: 'Terminal session not found', fatal: true }); return; }
-      // A session bound to a workspace is only reachable from an upgrade that
-      // arrived through the SAME workspace prefix; cross-workspace and legacy
+      // A session bound to a project is only reachable from an upgrade that
+      // arrived through the SAME project prefix; cross-project and legacy
       // connections cannot touch it (and vice versa).
-      if (session.workspaceId !== connection.workspaceId) {
-        send(socket, { t: 'error', v: 3, s: id, code: 'WORKSPACE_SCOPE_MISMATCH', message: 'Terminal session belongs to a different workspace', fatal: false });
+      if (session.projectId !== connection.projectId) {
+        send(socket, { t: 'error', v: 3, s: id, code: 'PROJECT_SCOPE_MISMATCH', message: 'Terminal session belongs to a different project', fatal: false });
         return;
       }
       if (message.t === 'attach') {
@@ -324,14 +324,14 @@ export function createTerminalRuntime({
 
   const upgradeHandler = (req, socket, head) => {
     const pathname = parseRequestPathname(req.url);
-    const parsedWorkspace = parseWorkspaceRuntimePath(pathname);
-    const terminalPath = parsedWorkspace ? parsedWorkspace.restPath : pathname;
+    const parsedProject = parseProjectRuntimePath(pathname);
+    const terminalPath = parsedProject ? parsedProject.restPath : pathname;
     if (terminalPath !== TERMINAL_WS_PATH) return;
-    // Workspace-prefixed upgrades are owned by the central workspace upgrade
+    // Project-prefixed upgrades are owned by the central project upgrade
     // dispatcher when it is installed (it registers first and marks the
     // request); this listener never double-handles the same upgrade.
-    if (parsedWorkspace && req?.[WORKSPACE_RUNTIME_UPGRADE_MARKER]) return;
-    const workspaceId = parsedWorkspace?.workspaceId ?? null;
+    if (parsedProject && req?.[PROJECT_RUNTIME_UPGRADE_MARKER]) return;
+    const projectId = parsedProject?.projectId ?? null;
     void (async () => {
       try {
         if (uiAuthController?.enabled) {
@@ -339,45 +339,45 @@ export function createTerminalRuntime({
           if (!await isRequestOriginAllowed(req)) { rejectWebSocketUpgrade(socket, 403, 'Invalid origin'); return; }
         }
         if (!wsServer) { rejectWebSocketUpgrade(socket, 500, 'Terminal WebSocket unavailable'); return; }
-        wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req, workspaceId));
+        wsServer.handleUpgrade(req, socket, head, (ws) => wsServer.emit('connection', ws, req, projectId));
       } catch { rejectWebSocketUpgrade(socket, 500, 'Upgrade failed'); }
     })();
   };
   server.on('upgrade', upgradeHandler);
 
-  /** Extracts the workspace binding from a workspace-prefixed request path
-   * (`/api/workspaces/:workspaceId/runtime/api/terminal/...`). Non-prefixed
+  /** Extracts the project binding from a project-prefixed request path
+   * (`/api/projects/:projectId/runtime/api/terminal/...`). Non-prefixed
    * requests (legacy control-plane terminals) resolve to a null binding. The
    * canonical path is read from the `x-opencode-directory` header, which the
-   * workspace runtime proxy overwrites with the workspace canonical path. */
-  const resolveWorkspaceScope = (req) => {
+   * project runtime proxy overwrites with the project canonical path. */
+  const resolveProjectScope = (req) => {
     const rawUrl = req?.originalUrl || req?.url;
     if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
-      return { workspaceId: null, canonicalPath: null };
+      return { projectId: null, canonicalPath: null };
     }
     let pathname;
     try {
       pathname = new URL(rawUrl, 'http://localhost').pathname;
     } catch {
-      return { workspaceId: null, canonicalPath: null };
+      return { projectId: null, canonicalPath: null };
     }
-    const parsed = parseWorkspaceRuntimePath(pathname);
-    if (!parsed) return { workspaceId: null, canonicalPath: null };
+    const parsed = parseProjectRuntimePath(pathname);
+    if (!parsed) return { projectId: null, canonicalPath: null };
     const directoryHeader = req?.headers?.['x-opencode-directory'];
     return {
-      workspaceId: parsed.workspaceId,
+      projectId: parsed.projectId,
       canonicalPath: typeof directoryHeader === 'string' && directoryHeader.length > 0 ? directoryHeader : null,
     };
   };
 
-  /** Session lookup that also enforces the workspace scope of the request:
-   * a session bound to a workspace is only reachable through that workspace's
+  /** Session lookup that also enforces the project scope of the request:
+   * a session bound to a project is only reachable through that project's
    * prefix, and legacy requests only reach legacy sessions. */
   const findSessionForRequest = (req, sessionId) => {
     const session = sessions.get(sessionId);
     if (!session) return null;
-    const { workspaceId } = resolveWorkspaceScope(req);
-    if (session.workspaceId !== workspaceId) return null;
+    const { projectId } = resolveProjectScope(req);
+    if (session.projectId !== projectId) return null;
     return session;
   };
 
@@ -391,11 +391,11 @@ export function createTerminalRuntime({
   });
   app.post('/api/terminal/create', async (req, res) => {
     try {
-      const scope = resolveWorkspaceScope(req);
-      if (scope.workspaceId && !scope.canonicalPath) {
-        return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+      const scope = resolveProjectScope(req);
+      if (scope.projectId && !scope.canonicalPath) {
+        return res.status(403).json({ error: 'Project directory is unavailable', code: 'catalog_project_directory_unavailable' });
       }
-      const session = await createSession({ ...(req.body ?? {}), workspaceId: scope.workspaceId, canonicalPath: scope.canonicalPath });
+      const session = await createSession({ ...(req.body ?? {}), projectId: scope.projectId, canonicalPath: scope.canonicalPath });
       res.json({ sessionId: session.id, cols: session.cols, rows: session.rows, status: session.status });
     }
     catch (error) {
@@ -420,9 +420,9 @@ export function createTerminalRuntime({
   app.post('/api/terminal/:sessionId/restart', async (req, res) => {
     const session = findSessionForRequest(req, req.params.sessionId);
     if (!session) return res.status(404).json({ error: 'Terminal session not found' });
-    const scope = resolveWorkspaceScope(req);
-    if (scope.workspaceId && !scope.canonicalPath) {
-      return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+    const scope = resolveProjectScope(req);
+    if (scope.projectId && !scope.canonicalPath) {
+      return res.status(403).json({ error: 'Project directory is unavailable', code: 'catalog_project_directory_unavailable' });
     }
     const cwd = req.body?.cwd ?? session.cwd;
     const cols = req.body?.cols ?? session.cols;
@@ -434,7 +434,7 @@ export function createTerminalRuntime({
     const loginShell = req.body?.loginShell ?? false;
     const previousRestart = pendingSessionRestarts.get(session.id) ?? Promise.resolve();
     const restart = previousRestart.catch(() => {}).then(async () => {
-      await assertWorkspaceCwd(cwd, scope.canonicalPath);
+      await assertProjectCwd(cwd, scope.canonicalPath);
       await validateCwd(cwd);
       if (!validateSize(cols, 1000) || !validateSize(rows, 500)) throw new Error('Invalid terminal dimensions');
       if (typeof loginShell !== 'boolean') throw new Error('Invalid terminal login mode');
@@ -463,14 +463,14 @@ export function createTerminalRuntime({
     res.json({ success: true });
   });
   app.post('/api/terminal/force-kill', (req, res) => {
-    const scope = resolveWorkspaceScope(req);
-    if (scope.workspaceId && !scope.canonicalPath) {
-      return res.status(403).json({ error: 'Workspace directory is unavailable', code: 'catalog_workspace_directory_unavailable' });
+    const scope = resolveProjectScope(req);
+    if (scope.projectId && !scope.canonicalPath) {
+      return res.status(403).json({ error: 'Project directory is unavailable', code: 'catalog_project_directory_unavailable' });
     }
     const { sessionId, cwd } = req.body ?? {}; let killedCount = 0;
     const killedSessionIds = [];
     for (const [id, session] of sessions) {
-      if (session.workspaceId !== scope.workspaceId) continue;
+      if (session.projectId !== scope.projectId) continue;
       if ((sessionId && id !== sessionId) || (!sessionId && cwd && session.cwd !== cwd)) continue;
       sessions.delete(id); closeAttachments(id, 'KILLED', 'Terminal was killed'); void terminateProcess(session.process, true); killedSessionIds.push(id); killedCount += 1;
     }

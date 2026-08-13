@@ -5,7 +5,7 @@ import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useDetectedWorktreeMetadata } from '@/hooks/useDetectedWorktreeRoot';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSessionWorktreeStore } from '@/sync/session-worktree-store';
-import { resolveActiveWorkspaceScopeKey, useGitStatus, useGitBranches, useGitStore } from '@/stores/useGitStore';
+import { resolveActiveProjectScopeKey, useGitStatus, useGitBranches, useGitStore } from '@/stores/useGitStore';
 import { useShallow } from 'zustand/react/shallow';
 import { getRootBranch } from '@/lib/worktrees/worktreeStatus';
 import type { GitRemote } from '@/lib/api/types';
@@ -35,7 +35,7 @@ export const PullRequestView: React.FC = () => {
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const currentDirectory = useEffectiveDirectory();
-  const scopeKey = resolveActiveWorkspaceScopeKey();
+  const scopeKey = resolveActiveProjectScopeKey();
   const status = useGitStatus(currentDirectory ?? null);
   const branches = useGitBranches(currentDirectory ?? null);
   const { ensureAll } = useGitStore(useShallow((state) => ({ ensureAll: state.ensureAll })));

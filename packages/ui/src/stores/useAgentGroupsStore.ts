@@ -2,11 +2,11 @@ import { create } from 'zustand';
 import { listProjectWorktrees, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from './useDirectoryStore';
 import { useProjectsStore } from './useProjectsStore';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import { deleteSessionInDirectory } from '@/sync/session-actions';
 import { retry } from '@/sync/retry';
 import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
-import { workspaceIdFromScopeKey } from '@/workspaces/identity';
+import { projectIdFromScopeKey } from '@/projects/identity';
 import type { WorktreeMetadata } from '@/types/worktree';
 import type { Session } from '@opencode-ai/sdk/v2';
 
@@ -83,10 +83,10 @@ function parseSessionTitle(title: string | undefined): {
 // ---------------------------------------------------------------------------
 
 function resolveProjectRef(): { id: string; path: string } | null {
-  const workspaceId = workspaceIdFromScopeKey(getSyncScopeKey());
-  if (workspaceId && isWorkspaceRuntimeActive()) {
-    const workspaceDirectory = normalize(getSyncOpencodeService().getDirectory() ?? '');
-    return workspaceDirectory ? { id: workspaceId, path: workspaceDirectory } : null;
+  const projectId = projectIdFromScopeKey(getSyncScopeKey());
+  if (projectId && isProjectRuntimeActive()) {
+    const projectDirectory = normalize(getSyncOpencodeService().getDirectory() ?? '');
+    return projectDirectory ? { id: projectId, path: projectDirectory } : null;
   }
 
   const currentDirectory = useDirectoryStore.getState().currentDirectory;
@@ -343,9 +343,9 @@ export const useAgentGroupsStore = create<Store>()(
           try {
             await removeProjectWorktree(projectRef, source, { deleteLocalBranch: true });
             const directoryStore = useDirectoryStore.getState();
-            const workspaceTargetActive = isWorkspaceRuntimeActive()
-              || workspaceIdFromScopeKey(getSyncScopeKey()) !== null;
-            if (!workspaceTargetActive && normalize(directoryStore.currentDirectory) === path) {
+            const projectTargetActive = isProjectRuntimeActive()
+              || projectIdFromScopeKey(getSyncScopeKey()) !== null;
+            if (!projectTargetActive && normalize(directoryStore.currentDirectory) === path) {
               directoryStore.setDirectory(projectRef.path, { showOverlay: false });
             }
           } catch {

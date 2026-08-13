@@ -373,10 +373,10 @@ const sanitizeProjects = (value: unknown): DesktopSettings['projects'] | undefin
     const normalizedPath = rawPath === '/' ? rawPath : rawPath.replace(/\\/g, '/').replace(/\/+$/, '');
     if (!normalizedPath) continue;
 
-    // The project id arrives from the Catalog projection (workspace id) or
+    // The project id arrives from the Catalog projection (project id) or
     // the legacy settings surface; when the stored record carries no id the
     // path is used as a compatibility fallback id only until the Catalog
-    // projection replaces the entry with the workspace id.
+    // projection replaces the entry with the project id.
     const id = typeof candidate.id === 'string' && candidate.id.trim().length > 0
       ? candidate.id.trim()
       : normalizedPath;

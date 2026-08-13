@@ -3,7 +3,7 @@
  *
  * `tokenizeComposer` already answers "what does this text mean"; this module
  * is the thin adapter that turns its ranges into mark decorations and keeps
- * them in sync with the document and with the workspace registries.
+ * them in sync with the document and with the project registries.
  *
  * Why this replaces the mirror overlay: a transparent textarea painted over a
  * mirror div can only use styles that do not change glyph advance width, or
@@ -20,7 +20,7 @@ import { resolveHighlightSegments, DEFAULT_HIGHLIGHT_CLASS } from '../../compose
 import { tokenizeComposer, type ComposerLanguageContext } from '../language/tokenize';
 
 /**
- * Replace the workspace knowledge the tokenizer resolves against. Dispatched
+ * Replace the project knowledge the tokenizer resolves against. Dispatched
  * when the agent, command, skill, snippet or attachment registries change —
  * not on every keystroke, which only changes the document.
  */

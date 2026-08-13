@@ -211,7 +211,7 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
   // the trailing assistant message completes even if status events were missed.
   const sessionMessages = useDirectorySync((state) => state.message);
   const currentDirectory = useSyncDirectory();
-  const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+  const currentProjectId = useSessionUIStore((state) => state.currentProjectId);
 
   const inFlightSessionsRef = React.useRef<Set<string>>(new Set());
   const sendFailuresRef = React.useRef<Map<string, QueuedAutoSendFailure>>(new Map());
@@ -326,11 +326,11 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     queueEntries.forEach(([key, queue]) => {
       const target = parseMessageQueueKey(key);
       // Scope guard: the queued target must belong to the session's current
-      // The capture must match the session's resolved scope (workspace scope
-      // for workspace sessions, the unscoped bucket otherwise). Any mismatch
-      // means the workspace changed after queueing.
+      // The capture must match the session's resolved scope (project scope
+      // for project sessions, the unscoped bucket otherwise). Any mismatch
+      // means the project changed after queueing.
       if (!target || (
-        target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory, currentWorkspaceId)
+        target.scopeKey !== resolveSessionScopeKey(target.sessionId, target.directory, currentProjectId)
       ) || target.directory !== currentDirectory) return;
       const { sessionId } = target;
       const currentStatusType = resolveQueuedSessionStatusType(sessionId, target.directory);
@@ -354,5 +354,5 @@ export function useQueuedMessageAutoSend(enabledOrOptions?: boolean | { enabled?
     });
 
     previousStatusRef.current = nextStatusMap;
-  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, autoReviewRuns, currentDirectory, currentWorkspaceId, retryTick, retryScheduler]);
+  }, [enabled, queuedMessages, sessionStatusRecord, sessionMessages, autoReviewRuns, currentDirectory, currentProjectId, retryTick, retryScheduler]);
 }

@@ -18,7 +18,7 @@ const USER_PROJECTS_DIR_SEGMENTS = ['.config', 'openchamber', 'projects'];
  * Filesystem key for the per-project config file. This is a STORAGE KEY, not
  * an identity: it is derived from the project path so the config file stays
  * readable across restarts and mirrors the pre-catalog file layout. The
- * workspace catalog / session index never use path-derived identities.
+ * project catalog / session index never use path-derived identities.
  */
 const configProjectIdFromPath = (projectPath: string): string => {
   const normalized = projectPath.replace(/\\/g, '/').replace(/\/+$/g, '').trim();
@@ -223,7 +223,7 @@ const writeTextFile = async (path: string, content: string): Promise<boolean> =>
 
 const resolveHomeDirectory = async (): Promise<string | null> => {
   // Use server-reported home as the source of truth for user config paths.
-  // In some runtimes, window.__OPENCHAMBER_HOME__ can be workspace/project-root
+  // In some runtimes, window.__OPENCHAMBER_HOME__ can be project/project-root
   // scoped, which would incorrectly route writes into the project directory.
   try {
     const response = await runtimeFetch(`${getBaseUrl()}/fs/home`, {
@@ -243,7 +243,7 @@ const resolveHomeDirectory = async (): Promise<string | null> => {
   }
 
   // Fallback for environments where /api/fs/home is unavailable.
-  // VSCode intentionally avoids this because embedded home equals workspace path.
+  // VSCode intentionally avoids this because embedded home equals project path.
   if (!isVSCodeRuntime()) {
     const desktopHome = await getDesktopHomeDirectory().catch(() => null);
     if (desktopHome && desktopHome.trim().length > 0) {

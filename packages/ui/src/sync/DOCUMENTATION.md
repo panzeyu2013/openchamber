@@ -12,38 +12,38 @@ There are **two distinct session data scopes** in the UI:
    - Backed by SSE / directory-scoped polling
    - Read via hooks like `useSessions()`, `useDirectorySync()`, `getSyncSessions()`, `getDirectoryState()`
 
-2. **Workspace Session Index (cold/cross-workspace coverage)**
-   - Owned by `packages/ui/src/workspaces/session-index-store.ts` (renderer) and
-     `packages/web/server/lib/workspaces/session-index.js` (server)
+2. **Project Session Index (cold/cross-project coverage)**
+   - Owned by `packages/ui/src/projects/session-index-store.ts` (renderer) and
+     `packages/web/server/lib/projects/session-index.js` (server)
    - Shared source for the unified sidebar's session lists, the archive view,
      switchers, tray/dock counts and retention cleanup
-   - Holds per-workspace session summaries (key, workspaceId, upstream session
+   - Holds per-project session summaries (key, projectId, upstream session
      ID, directory, title, updatedAt, archived, activity, parentID, createdAt)
 
 The retired `useGlobalSessionsStore` full-session facade was deleted: cold
 session lists read the Session Index (`session-summary.ts` projections) and
-live full-session data for the ACTIVE workspace comes from the workspace
+live full-session data for the ACTIVE project comes from the project
 runtime handle's SDK or the live child stores — never from a global cache.
 
 ### Fleet observation (multiple saved desktop hosts) — REMOVED (Phase 6)
 
 The renderer `packages/ui/src/fleet/` observation layer was removed with the
-unified workspace sidebar. Its role is replaced by:
+unified project sidebar. Its role is replaced by:
 
-- The server-side Session Index (`packages/web/server/lib/workspaces/
+- The server-side Session Index (`packages/web/server/lib/projects/
   session-index.js`) — one upstream event stream per connection, debounced
   structural refreshes, per-connection freshness that keeps the last
   snapshot on failure, global revision with revision-gap recovery.
-- The renderer Session Index store (`packages/ui/src/workspaces/
+- The renderer Session Index store (`packages/ui/src/projects/
   session-index-store.ts`) — clone-on-write event reducers, revision-gap
   detection, failure never empties a prior snapshot.
-- The unified sidebar (`WorkspaceSessionsSection.tsx`) rendering workspaces
+- The unified sidebar (`ProjectSessionsSection.tsx`) rendering projects
   from the Catalog with sessions from the index.
 
 The revision/failure/backoff coordination algorithms Fleet developed were
 migrated into those modules with their own tests. `setControlPlane()`
 remains only for the legacy Host Switcher / remote-instances / mobile
-disconnect paths until the workspace-bound session-open migration lands.
+disconnect paths until the project-bound session-open migration lands.
 
 ## Ownership map
 
@@ -51,9 +51,9 @@ disconnect paths until the workspace-bound session-open migration lands.
 |---|---|---|
 | `ChildStoreManager` and child directory stores | Priority-scheduled directory bootstrap plus `session`, `message`, `part`, `permission`, `question`, etc. | One runtime and one store per directory |
 | `SessionMessageLoader` | Initial message loading, pagination, prefetch, retries, load state, and optimistic reconciliation | One runtime, directory, and session ID |
-| `global-session-status.ts` | Incremental non-idle session status index reconciled from events and authoritative directory snapshots | All known directories in the active sync scope; workspace/runtime partitions are retained separately |
+| `global-session-status.ts` | Incremental non-idle session status index reconciled from events and authoritative directory snapshots | All known directories in the active sync scope; project/runtime partitions are retained separately |
 | `session-ordering.ts` | Ephemeral lifecycle rank used by every user-visible session list | All known sessions in the active sync scope; lifecycle phases and ranks are partitioned by scope |
-| `session-activity-timing.ts` | Elapsed time of the running turn and of the turn that just finished, plus the persisted starts that survive a reload | All known sessions in the active sync scope; timing maps and persisted workspace keys are partitioned by scope |
+| `session-activity-timing.ts` | Elapsed time of the running turn and of the turn that just finished, plus the persisted starts that survive a reload | All known sessions in the active sync scope; timing maps and persisted project keys are partitioned by scope |
 | `session-ui-store.ts` | Session selection, draft lifecycle, abort prompts, worktree metadata, SDK-facing action entrypoints | App UI state |
 | `viewport-store.ts` | Scroll anchors, session memory, loading indicators | App UI state |
 | `attachment-files.ts` | Attachment picker allowlists, MIME/content validation, structured-text sanitization, and HEIC conversion | Local chat attachments across shared UI runtimes |
@@ -68,26 +68,34 @@ Office and OpenDocument packages are metadata-validated before asynchronous extr
 
 The composer compares normalized attachment MIME types with the selected model's declared input modalities. It warns when a newly attached file or an existing attachment after a model change requires an unsupported modality, but does not block sending. Missing modality metadata remains unknown and does not produce a warning.
 
-## Sync scope (workspace full-sync)
+## Sync scope (project full-sync)
+
+`useSession` is intentionally provider-optional: mounted outside a
+`SyncProvider` (e.g. `App`'s own body, onboarding, recovery screens) it
+returns `undefined` instead of throwing like `useSyncSystem`, because no live
+sessions exist there. Callers like `useEffectiveDirectory`/`useMenuActions`
+fall back to the ambient directory when no provider is mounted. All other
+sync hooks (`useSync`, `useSyncDirectory`, `useLiveSyncSelector`,
+`useSyncSDK`) remain provider-required and throw outside one.
 
 `SyncProvider` computes the sync scope once per mount:
-`scopeKey = workspaceHandle.scopeKey` — the workspace scope
-`workspaceScopeKey(workspaceId)` (`@/workspaces/identity`), which isolates
+`scopeKey = projectHandle.scopeKey` — the project scope
+`projectScopeKey(projectId)` (`@/projects/identity`), which isolates
 every sync cache across servers: equal directory paths and equal session IDs
-on different workspaces never share state. There is no ambient fallback:
-callers that cannot resolve a workspace handle render an explicit
+on different projects never share state. There is no ambient fallback:
+callers that cannot resolve a project handle render an explicit
 unavailable/selection state instead of mounting sync (the app shows the
-workspace selection gate, VS Code shows the descriptor-driven unavailable
+project selection gate, VS Code shows the descriptor-driven unavailable
 state, mini-chat gates on the handle).
 
 The same provider binds an `OpencodeService` facade to the handle's SDK,
 directory, scope key, and pinned control-plane fetch. `session-actions.ts` and
 `session-ui-store.ts` use that facade for session CRUD, replies, recovery,
 commands, shell sends, and prompt sends; they do not fall back to the ambient
-singleton while a workspace provider is mounted. The service's runtime guard
-compares captured sends and mutations with the workspace scope, not with the
-mutable global runtime key. Workspace materialization queues capture both the
-loader and SDK, so a late status recovery cannot use a new workspace's or the
+singleton while a project provider is mounted. The service's runtime guard
+compares captured sends and mutations with the project scope, not with the
+mutable global runtime key. Project materialization queues capture both the
+loader and SDK, so a late status recovery cannot use a new project's or the
 ambient runtime's client.
 
 Wiring (all in `sync-context.tsx`):
@@ -95,57 +103,57 @@ Wiring (all in `sync-context.tsx`):
 - `ChildStoreManager` is constructed and configured with the scope key;
   `child-store.ts` keys its children by `scopeKey\nnormalizedDirectory`
   composite keys and every manager method accepts an explicit `scopeKey`
-  (defaulting to the manager's own scope — always the bound workspace scope
-  key in the current product, since mounting sync without a workspace handle
+  (defaulting to the manager's own scope — always the bound project scope
+  key in the current product, since mounting sync without a project handle
   is a programming error). Consumers iterating child stores must use
   `manager.entries()` (real directories), never the raw `children` map.
 - `SessionMessageLoader` is configured with `{ sdk, scopeKey }`; entry keys,
   `invalidateDirectory` and prefetch keys use it, and its
   `ensureChild`/`getChild` calls pass the scope explicitly.
 - `handleEvent` receives the scope key. `session.deleted` cleanup resolves
-  the identity through `resolveSessionDeletionIdentity` (workspace-scoped
+  the identity through `resolveSessionDeletionIdentity` (project-scoped
   identities always commit).
 - Materialization requests are enqueued with the scope key.
-- The event pipeline runs with `forceSse` when a workspace handle is active:
+- The event pipeline runs with `forceSse` when a project handle is active:
   the stream is the bound SDK's `global.event` SSE endpoint through the
-  workspace runtime proxy, never a WebSocket. The server-side workspace WS
+  project runtime proxy, never a WebSocket. The server-side project WS
   dispatcher is available for terminal/realtime consumers, but this pipeline
   deliberately keeps the bound SDK SSE path so it cannot consult the ambient
   runtime URL builder.
 - Directory-scoped polls/resyncs (`resyncDirectorySessionStatuses`,
   `discoverChildSessions`, `resyncDirectoryAfterReconnect`,
   `resyncBlockingRequestsForDirectory`) accept the bound SDK so remote
-  workspaces poll the workspace runtime, not the ambient one. If a workspace
+  projects poll the project runtime, not the ambient one. If a project
   provider is between mounts and no bound SDK exists, recovery skips the
   request and preserves the current snapshot; only legacy runtime scopes use
   the singleton compatibility fallback.
 - Imperative action refs carry both the bound raw SDK and the bound
   `OpencodeService`; owner-checked cleanup prevents an old provider's cleanup
-  from clearing refs installed by a newer workspace provider.
+  from clearing refs installed by a newer project provider.
 - `useSyncScopeKey()` exposes the scope to consumers such as `use-sync.ts`
   (session LRU/inflight caches key by it).
 
-The workspace handle also carries `apis: RuntimeAPIs`
-(`workspace-runtime-registry.ts`): files/git/terminal route through the
-workspace runtime proxy prefix with the `x-opencode-directory` header on the
+The project handle also carries `apis: RuntimeAPIs`
+(`project-runtime-registry.ts`): files/git/terminal route through the
+project runtime proxy prefix with the `x-opencode-directory` header on the
 control-plane fetch. Terminal streaming (`connect`/`sendInput`) uses a
-workspace-scoped `TerminalTransport`; its WebSocket URL and short-lived auth
-token are bound to the pinned control plane, so switching workspace cannot
+project-scoped `TerminalTransport`; its WebSocket URL and short-lived auth
+token are bound to the pinned control plane, so switching project cannot
 reuse the ambient terminal socket.
 
 ### Selection, notifications, and external opens
 
-Selecting a workspace session records the explicit `workspaceId` before the
+Selecting a project session records the explicit `projectId` before the
 new `SyncProvider` mounts. If the target scope is not the currently mounted
 scope, selection does not borrow the old provider's directory/service for an
-initial message fetch or mutate the ambient directory; the new workspace
+initial message fetch or mutate the ambient directory; the new project
 provider owns those operations after it mounts. This prevents a tray, toast,
-deep-link, or sidebar click from briefly writing into the previous workspace.
+deep-link, or sidebar click from briefly writing into the previous project.
 
-Session turn notifications use the same composite identity when a workspace is
-known (`workspaceId + upstream session ID`). Legacy ambient notifications keep
+Session turn notifications use the same composite identity when a project is
+known (`projectId + upstream session ID`). Legacy ambient notifications keep
 their bare-ID compatibility key. Permission/question toast openers and native
-notification clicks carry the workspace target when available, so equal
+notification clicks carry the project target when available, so equal
 session IDs from two connections cannot clear or open one another's state.
 
 ## Session list rules
@@ -205,17 +213,17 @@ Current consumers:
 - `Header.tsx`
 - agent/session activity surfaces using `useGlobalSessionStatus()` / `useAllSessionStatuses()`
 
-Cross-directory selectors subscribe to the narrow child-store field they aggregate. Session aggregation listens to `state.session`. Live busy/retry state is also maintained in `global-session-status.ts`, where each row subscribes to one session ID instead of scanning every child store. The visible status map is bound to `SyncProvider`'s `scopeKey`; prior workspace/runtime maps remain cached but a captured foreign event can update only its own partition and cannot publish into the current UI. Events update the index incrementally; authoritative per-directory status snapshots seed it, clear sessions omitted as idle, and reconcile missed events. Unrelated streaming events such as `message.part.delta` must not trigger global session/status scans.
+Cross-directory selectors subscribe to the narrow child-store field they aggregate. Session aggregation listens to `state.session`. Live busy/retry state is also maintained in `global-session-status.ts`, where each row subscribes to one session ID instead of scanning every child store. The visible status map is bound to `SyncProvider`'s `scopeKey`; prior project/runtime maps remain cached but a captured foreign event can update only its own partition and cannot publish into the current UI. Events update the index incrementally; authoritative per-directory status snapshots seed it, clear sessions omitted as idle, and reconcile missed events. Unrelated streaming events such as `message.part.delta` must not trigger global session/status scans.
 
-Session display order is independent from streaming-frequency `time.updated` publications. `session-ordering.ts` promotes a session exactly when its authoritative activity phase crosses `settled` (`idle`/`error`) and `active` (`busy`/`retry`) in either direction. Repeated busy/retry or idle/error events are no-ops. The first authoritative status snapshot establishes a baseline without synthetic promotions; later snapshots reconcile missed transitions. Root sessions compare lifecycle rank only with other roots, while child sessions compare lifecycle rank only with siblings sharing the same `parentID`, so child activity never moves its root conversation. Pins remain the first ordering bucket. The timestamp/creation fallback is frozen when a session first participates in ordering, so later metadata-only updates cannot reorder it; creation time and ID provide deterministic ties. `SyncProvider` binds the visible rank map to its scope and preserves other workspace/runtime partitions, so a late lifecycle event cannot reorder the current workspace. Runtime switches still clear the currently active legacy scope through the compatibility reset path.
+Session display order is independent from streaming-frequency `time.updated` publications. `session-ordering.ts` promotes a session exactly when its authoritative activity phase crosses `settled` (`idle`/`error`) and `active` (`busy`/`retry`) in either direction. Repeated busy/retry or idle/error events are no-ops. The first authoritative status snapshot establishes a baseline without synthetic promotions; later snapshots reconcile missed transitions. Root sessions compare lifecycle rank only with other roots, while child sessions compare lifecycle rank only with siblings sharing the same `parentID`, so child activity never moves its root conversation. Pins remain the first ordering bucket. The timestamp/creation fallback is frozen when a session first participates in ordering, so later metadata-only updates cannot reorder it; creation time and ID provide deterministic ties. `SyncProvider` binds the visible rank map to its scope and preserves other project/runtime partitions, so a late lifecycle event cannot reorder the current project. Runtime switches still clear the currently active legacy scope through the compatibility reset path.
 
-`session-activity-timing.ts` measures how long a turn has been running, because `SessionStatus` carries no timestamps. It is driven from the same two write paths as `global-session-status.ts`, so a row can never count a turn that index calls idle. `SyncProvider` binds the visible timing maps to its scope; equal session IDs in different workspaces retain separate starts and settled durations. A session gains a start on its first `active` observation and keeps it across repeated busy/retry events; settling converts that start into a finished duration, which rows show only while the session is unread and which is therefore never persisted.
+`session-activity-timing.ts` measures how long a turn has been running, because `SessionStatus` carries no timestamps. It is driven from the same two write paths as `global-session-status.ts`, so a row can never count a turn that index calls idle. `SyncProvider` binds the visible timing maps to its scope; equal session IDs in different projects retain separate starts and settled durations. A session gains a start on its first `active` observation and keeps it across repeated busy/retry events; settling converts that start into a finished duration, which rows show only while the session is unread and which is therefore never persisted.
 
 Starts are persisted so a reload resumes the same count, but a persisted start is a lookup table and never a claim of activity. **Nothing in the protocol marks where a turn begins.** OpenCode calls `SessionStatus.set` with `busy` at every step of the agent loop and publishes an event each time, so a busy event means "still running", not "just started"; after a refresh one of those repeats normally beats the first status snapshot, so treating it as a turn boundary reset the counter on nearly every reload. Turn *ends* are marked — `session.idle` and `session.error` fire once, live, and retire the persisted record — while a snapshot that omits a session is not evidence of anything, since it may simply not see it yet.
 
-That leaves the case with no observable answer: a turn that ended, and another that began, entirely while the tab was gone. Two bounds stand in for the evidence the client cannot have. A liveness stamp sits beside the start — refreshed while the session is observed active, at most every 15s, and stamped precisely as the page hides (`pagehide`/`visibilitychange`/`freeze`, written immediately rather than through deferred storage so it cannot lose that race) — and is compared against this page's `performance.timeOrigin`, so the measure is how long the app was absent rather than how long bootstrap took; a 20-second startup must not spend the allowance. Records may only be adopted within 90s of load, after which they are discarded — a backstop for a runtime whose event stream is down and where snapshots are therefore the only signal. A runtime switch resets the currently active compatibility scope, while other workspace timing partitions remain isolated.
+That leaves the case with no observable answer: a turn that ended, and another that began, entirely while the tab was gone. Two bounds stand in for the evidence the client cannot have. A liveness stamp sits beside the start — refreshed while the session is observed active, at most every 15s, and stamped precisely as the page hides (`pagehide`/`visibilitychange`/`freeze`, written immediately rather than through deferred storage so it cannot lose that race) — and is compared against this page's `performance.timeOrigin`, so the measure is how long the app was absent rather than how long bootstrap took; a 20-second startup must not spend the allowance. Records may only be adopted within 90s of load, after which they are discarded — a backstop for a runtime whose event stream is down and where snapshots are therefore the only signal. A runtime switch resets the currently active compatibility scope, while other project timing partitions remain isolated.
 
-Reconciliation walks the running turns and asks the snapshot whether it covers each one, rather than being handed everything the snapshot covers. Only a live start can settle, and there are a handful of those against a directory's hundreds of sessions, so the pass stays proportional to the timing work and allocates nothing per poll. Malformed, wrong-shaped, over-age, and future-dated entries are rejected on read. Workspace records use a serialized `[scopeKey, sessionId]` storage key; pre-scope bare-session keys are no longer read (retired together with the ambient sync-scope fallback) and are only skipped as undecodable during persist.
+Reconciliation walks the running turns and asks the snapshot whether it covers each one, rather than being handed everything the snapshot covers. Only a live start can settle, and there are a handful of those against a directory's hundreds of sessions, so the pass stays proportional to the timing work and allocates nothing per poll. Malformed, wrong-shaped, over-age, and future-dated entries are rejected on read. Project records use a serialized `[scopeKey, sessionId]` storage key; pre-scope bare-session keys are no longer read (retired together with the ambient sync-scope fallback) and are only skipped as undecodable during persist.
 
 **Only the stamp expires a persisted start.** A snapshot that covers a session without reporting it busy is not proof the turn ended: bootstrap fetches status and sessions in parallel and directory scopes resolve at different times, so a snapshot legitimately arrives before it can see a running session. Treating one of those as a settle deleted the start moments before the real busy snapshot arrived, which reset every counter to zero on reload. Settles therefore act only on sessions that already have a live start in this page session.
 

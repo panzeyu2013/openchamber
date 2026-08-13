@@ -18,9 +18,9 @@ import { useSync } from '@/sync/use-sync';
 import { SyncRuntimeEffects } from './AppEffects';
 import { useAppFontEffects } from './useAppFontEffects';
 import { useMiniChatKeyboardShortcuts } from '@/hooks/useMiniChatKeyboardShortcuts';
-import { WorkspaceRuntimeGate, WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
-import { WorkspaceCatalogSessionIndexEffects } from './AppEffects';
+import { ProjectRuntimeGate, ProjectRuntimeProvider } from '@/projects/ProjectRuntimeProvider';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
+import { ProjectCatalogSessionIndexEffects } from './AppEffects';
 import {
   listProjectWorktrees,
   partitionWorktreesByRegisteredProject,
@@ -37,7 +37,6 @@ type MiniChatConfig = {
   sessionId: string | null;
   directory: string | null;
   projectId: string | null;
-  workspaceId: string | null;
 };
 
 type ElectronMiniChatAppProps = {
@@ -50,8 +49,10 @@ const readMiniChatConfig = (): MiniChatConfig => {
   const sessionId = params.get('sessionId')?.trim() || null;
   const directory = params.get('directory')?.trim() || null;
   const projectId = params.get('projectId')?.trim() || null;
-  const workspaceId = params.get('workspace')?.trim() || null;
-  return { mode, sessionId, directory, projectId, workspaceId };
+  // Legacy desktop builds pass the project through the `workspace` query
+  // param; accept it as a fallback so old window URLs keep working.
+  const legacyProjectId = params.get('workspace')?.trim() || null;
+  return { mode, sessionId, directory, projectId: projectId ?? legacyProjectId };
 };
 
 const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => {
@@ -60,7 +61,7 @@ const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => 
   const setDirectory = useDirectoryStore((state) => state.setDirectory);
   const projects = useProjectsStore((state) => state.projects);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+  const currentProjectId = useSessionUIStore((state) => state.currentProjectId);
   const draftOpen = useSessionUIStore((state) => Boolean(state.newSessionDraft?.open));
   const draftDirectory = useSessionUIStore((state) => {
     if (!state.newSessionDraft?.open) return '';
@@ -105,7 +106,7 @@ const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => 
   const directoryBootstrappedRef = React.useRef(false);
   React.useEffect(() => {
     if (directoryBootstrappedRef.current) return;
-    if (config.workspaceId) return;
+    if (config.projectId) return;
     if (config.mode !== 'session') return;
     if (!config.directory) return;
     if (currentDirectory === config.directory) {
@@ -114,14 +115,14 @@ const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => 
     }
     setDirectory(config.directory, { showOverlay: false });
     directoryBootstrappedRef.current = true;
-  }, [config.directory, config.mode, config.workspaceId, currentDirectory, setDirectory]);
+  }, [config.directory, config.mode, config.projectId, currentDirectory, setDirectory]);
 
   React.useEffect(() => {
-    if (config.workspaceId) return;
+    if (config.projectId) return;
     if (config.mode !== 'draft' || !draftOpen || currentSessionId) return;
     if (!draftDirectory || currentDirectory === draftDirectory) return;
     setDirectory(draftDirectory, { showOverlay: false });
-  }, [config.mode, config.workspaceId, currentDirectory, currentSessionId, draftDirectory, draftOpen, setDirectory]);
+  }, [config.mode, config.projectId, currentDirectory, currentSessionId, draftDirectory, draftOpen, setDirectory]);
 
   React.useEffect(() => {
     if (!isConnected) return;
@@ -133,7 +134,7 @@ const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => 
   React.useEffect(() => {
     if (sessionBootstrappedRef.current) return;
     if (config.mode !== 'session' || !config.sessionId) return;
-    if (currentSessionId === config.sessionId && currentWorkspaceId === config.workspaceId) {
+    if (currentSessionId === config.sessionId && currentProjectId === config.projectId) {
       sessionBootstrappedRef.current = true;
       return;
     }
@@ -148,37 +149,37 @@ const MiniChatBootstrap: React.FC<{ config: MiniChatConfig }> = ({ config }) => 
       return;
     }
     const directory = (session as { directory?: string | null }).directory ?? config.directory;
-    setCurrentSession(config.sessionId, directory, config.workspaceId);
+    setCurrentSession(config.sessionId, directory, config.projectId);
     sessionBootstrappedRef.current = true;
-  }, [config, currentSessionId, currentWorkspaceId, sessions, setCurrentSession, sync]);
+  }, [config, currentSessionId, currentProjectId, sessions, setCurrentSession, sync]);
 
   // Switch this mini-chat to another session in place (e.g. picked from the
   // tray while this window was focused) instead of spawning a new window.
   React.useEffect(() => {
     const onOpenSession = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string; workspaceId?: string }>).detail;
+      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string; projectId?: string }>).detail;
       const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId.trim() : '';
       if (!sessionId) return;
-      const workspaceId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
-        ? detail.workspaceId.trim()
-        : config.workspaceId;
+      const projectId = typeof detail?.projectId === 'string' && detail.projectId.trim().length > 0
+        ? detail.projectId.trim()
+        : config.projectId;
       const current = useSessionUIStore.getState();
-      if (current.currentSessionId === sessionId && current.currentWorkspaceId === workspaceId) return;
+      if (current.currentSessionId === sessionId && current.currentProjectId === projectId) return;
       const directory = typeof detail?.directory === 'string' && detail.directory.trim().length > 0
         ? detail.directory.trim()
         : (sessions.find((entry) => entry.id === sessionId) as { directory?: string | null } | undefined)?.directory ?? null;
       void sync.ensureSessionRenderable(sessionId);
-      setCurrentSession(sessionId, directory, workspaceId);
+      setCurrentSession(sessionId, directory, projectId);
       sessionBootstrappedRef.current = true;
     };
     window.addEventListener('openchamber:open-session', onOpenSession);
     return () => window.removeEventListener('openchamber:open-session', onOpenSession);
-  }, [config.workspaceId, sessions, setCurrentSession, sync]);
+  }, [config.projectId, sessions, setCurrentSession, sync]);
 
   React.useEffect(() => {
     if (config.mode !== 'draft' || draftOpen || currentSessionId) return;
     openNewSessionDraft({
-      workspaceId: config.workspaceId,
+      projectId: config.projectId,
       selectedProjectId: config.projectId,
       directoryOverride: config.directory,
       preserveDirectoryOverride: Boolean(config.directory),
@@ -258,8 +259,8 @@ const MiniChatPresencePublisher: React.FC = () => {
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const currentSessionDirectory = useSessionUIStore((state) => state.currentSessionDirectory);
-  const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
-  const presenceDirectory = currentWorkspaceId ? currentSessionDirectory : currentDirectory;
+  const currentProjectId = useSessionUIStore((state) => state.currentProjectId);
+  const presenceDirectory = currentProjectId ? currentSessionDirectory : currentDirectory;
 
   React.useEffect(() => {
     if (!currentSessionId || !presenceDirectory || typeof BroadcastChannel === 'undefined') return;
@@ -270,7 +271,7 @@ const MiniChatPresencePublisher: React.FC = () => {
         type: 'mini-chat-session-presence',
         sessionId: currentSessionId,
         directory: presenceDirectory,
-        workspaceId: currentWorkspaceId ?? undefined,
+        projectId: currentProjectId ?? undefined,
         viewed,
       });
     };
@@ -286,7 +287,7 @@ const MiniChatPresencePublisher: React.FC = () => {
       postPresence(false);
       channel.close();
     };
-  }, [currentSessionId, currentWorkspaceId, presenceDirectory]);
+  }, [currentSessionId, currentProjectId, presenceDirectory]);
 
   return null;
 };
@@ -294,14 +295,14 @@ const MiniChatPresencePublisher: React.FC = () => {
 const useSessionUnavailable = (config: MiniChatConfig): boolean => {
   const sessions = useSessions();
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+  const currentProjectId = useSessionUIStore((state) => state.currentProjectId);
   const [timedOut, setTimedOut] = React.useState(false);
 
   React.useEffect(() => {
     if (
       config.mode !== 'session'
       || !config.sessionId
-      || (currentSessionId === config.sessionId && currentWorkspaceId === config.workspaceId)
+      || (currentSessionId === config.sessionId && currentProjectId === config.projectId)
     ) {
       setTimedOut(false);
       return;
@@ -312,7 +313,7 @@ const useSessionUnavailable = (config: MiniChatConfig): boolean => {
     }
     const timeout = window.setTimeout(() => setTimedOut(true), 5000);
     return () => window.clearTimeout(timeout);
-  }, [config.mode, config.sessionId, config.workspaceId, currentSessionId, currentWorkspaceId, sessions]);
+  }, [config.mode, config.sessionId, config.projectId, currentSessionId, currentProjectId, sessions]);
 
   return timedOut;
 };
@@ -332,26 +333,26 @@ export function ElectronMiniChatApp({ apis }: ElectronMiniChatAppProps) {
 
   return (
     <ErrorBoundary>
-      <WorkspaceRuntimeProvider workspaceId={config.workspaceId}>
-        {config.workspaceId ? <WorkspaceCatalogSessionIndexEffects /> : null}
+      <ProjectRuntimeProvider projectId={config.projectId}>
+        {config.projectId ? <ProjectCatalogSessionIndexEffects /> : null}
         <ElectronMiniChatRuntime config={config} apis={apis} />
-      </WorkspaceRuntimeProvider>
+      </ProjectRuntimeProvider>
     </ErrorBoundary>
   );
 }
 
 const ElectronMiniChatRuntime: React.FC<{ config: MiniChatConfig; apis: RuntimeAPIs }> = ({ config, apis }) => {
-  const { handle } = useWorkspaceRuntime();
+  const { handle } = useProjectRuntime();
 
   if (!handle) {
-    // No workspace identity for this window: there is no ambient sync to
+    // No project identity for this window: there is no ambient sync to
     // fall back to, so render the explicit unavailable state.
-    return <WorkspaceRuntimeGate />;
+    return <ProjectRuntimeGate />;
   }
 
     return (
     <SyncProvider
-      workspaceHandle={handle}
+      projectHandle={handle}
     >
       <RuntimeAPIProvider apis={apis}>
         <TooltipProvider delayDuration={300} skipDelayDuration={150}>

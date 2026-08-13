@@ -30,7 +30,7 @@ export type FetchPermissionResult =
 import { getRuntimeUrlResolver } from "@/lib/runtime-url";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { getControlPlaneKey } from "@/lib/control-plane";
-import { createControlPlaneFetch } from "@/workspaces/control-plane-fetch";
+import { createControlPlaneFetch } from "@/projects/control-plane-fetch";
 import { getRegisteredRuntimeAPIs } from "@/contexts/runtimeAPIRegistry";
 import { markStartupTrace } from "@/lib/startupTrace";
 import {
@@ -72,8 +72,15 @@ type SdkResult<T> = {
 function unwrapSdkData<T>(result: SdkResult<T>, operation: string): T {
   if (result.error) {
     const status = result.response?.status;
-    const error = new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`) as Error & { status?: number };
+    const error = new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`) as Error & { status?: number; code?: string };
     if (status !== undefined) error.status = status;
+    if (status === 501) {
+      // Project-scoped endpoints may explicitly report a capability that
+      // has no contract yet. It is unavailable by design, not a transient
+      // warm-up failure — mirror bootstrap.ts so retry() stops instead of
+      // looping on a permanent error.
+      error.code = "capability_unavailable";
+    }
     throw error;
   }
   if (result.data === undefined || result.data === null) {
@@ -85,8 +92,11 @@ function unwrapSdkData<T>(result: SdkResult<T>, operation: string): T {
 function unwrapSdkOptional<T>(result: SdkResult<T>, operation: string): T | undefined {
   if (result.error) {
     const status = result.response?.status;
-    const error = new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`) as Error & { status?: number };
+    const error = new Error(`${operation} failed${status ? ` (${status})` : ""}: ${formatSdkError(result.error)}`) as Error & { status?: number; code?: string };
     if (status !== undefined) error.status = status;
+    if (status === 501) {
+      error.code = "capability_unavailable";
+    }
     throw error;
   }
   return result.data;
@@ -201,15 +211,15 @@ type OpencodeServiceOptions = {
 };
 
 /**
- * Explicit workspace-bound SDK factory. The baseUrl is ALWAYS a control-plane
- * workspace prefix (`/api/workspaces/:workspaceId/runtime/api`) — never a
- * remote runtime URL; the workspace registry resolves the prefix server-side.
+ * Explicit project-bound SDK factory. The baseUrl is ALWAYS a control-plane
+ * project prefix (`/api/projects/:projectId/runtime/api`) — never a
+ * remote runtime URL; the project registry resolves the prefix server-side.
  * The fetch defaults to the control-plane-pinned fetch, so SDK calls stay on
  * the CURRENT control plane even when a remote runtime is active. New code
- * must build clients through this factory (or the workspace runtime
+ * must build clients through this factory (or the project runtime
  * registry); the `opencodeClient` singleton is a migration-period facade.
  */
-export const createWorkspaceOpencodeClient = (config: {
+export const createProjectOpencodeClient = (config: {
   baseUrl: string;
   directory?: string;
   fetch?: typeof fetch;
@@ -321,7 +331,7 @@ export class OpencodeService {
   }
 
   reconnectToRuntimeBaseUrl(): void {
-    // A workspace-bound service is permanently pinned to its workspace proxy.
+    // A project-bound service is permanently pinned to its project proxy.
     // Reconnecting it to the ambient runtime would silently route later
     // actions to the wrong server, so only the legacy singleton may follow
     // runtime endpoint switches.
@@ -1749,7 +1759,7 @@ export class OpencodeService {
   // File System Operations
   async createDirectory(
     dirPath: string,
-    options?: { allowOutsideWorkspace?: boolean }
+    options?: { allowOutsideProject?: boolean }
   ): Promise<{ success: boolean; path: string }> {
     const desktopFiles = getDesktopFilesApi();
     if (desktopFiles?.createDirectory) {
@@ -1763,7 +1773,7 @@ export class OpencodeService {
 
     const payload = {
       path: dirPath,
-      ...(options?.allowOutsideWorkspace ? { allowOutsideWorkspace: true } : {}),
+      ...(options?.allowOutsideProject ? { allowOutsideProject: true } : {}),
     };
 
     const response = await this.fetch(`${this.baseUrl}/fs/mkdir`, {
@@ -2019,9 +2029,9 @@ export class OpencodeService {
 
 /**
  * Build the familiar OpencodeService facade around an explicitly bound SDK.
- * Workspace runtimes use this instead of the ambient singleton so session
+ * Project runtimes use this instead of the ambient singleton so session
  * actions, prompt sends, and directory-scoped SDK gaps stay on the selected
- * workspace. The optional scoped-client factory is needed by endpoints whose
+ * project. The optional scoped-client factory is needed by endpoints whose
  * SDK shape does not carry a directory argument (for example V2 permission
  * lookups).
  */

@@ -4,16 +4,25 @@ import type { PersistStorage } from 'zustand/middleware';
 
 import { getSafeSessionStorage } from '@/stores/utils/safeStorage';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey, PROJECT_SCOPE_PREFIX, LEGACY_WORKSPACE_SCOPE_PREFIX } from '@/projects/identity';
 
 const TERMINAL_LEGACY_SCOPE = 'legacy';
 
+/** P-MIG: rewrites a persisted scope key written with the legacy `workspace:`
+ * prefix (pre-rename builds) to the current `project:` prefix so persisted
+ * terminal sessions stay readable. */
+const normalizePersistedScopeKey = (scopeKey: string): string => {
+  if (typeof scopeKey !== 'string' || !scopeKey.startsWith(LEGACY_WORKSPACE_SCOPE_PREFIX)) return scopeKey;
+  const projectId = scopeKey.slice(LEGACY_WORKSPACE_SCOPE_PREFIX.length);
+  return projectId ? `${PROJECT_SCOPE_PREFIX}${projectId}` : scopeKey;
+};
+
 const resolveTerminalScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 const initialTerminalScopeKey = resolveTerminalScopeKey();
 
@@ -908,7 +917,10 @@ export const useTerminalStore = create<TerminalStore>()(
               }
               const parsed = parseScopeEntries(rawEntries);
               if (parsed) {
-                sessionsByScope[scopeKey] = parsed;
+                // P-MIG: persisted scope keys written with the legacy
+                // `workspace:` prefix are re-keyed to `project:` so terminal
+                // sessions survive the scope-key rename.
+                sessionsByScope[normalizePersistedScopeKey(scopeKey)] = parsed;
               }
             }
           }
@@ -976,7 +988,7 @@ const installTerminalScopeSubscription = (): void => {
       }
     };
     useSessionUIStore?.subscribe?.(check);
-    useWorkspaceSessionIndexStore?.subscribe?.(check);
+    useProjectSessionIndexStore?.subscribe?.(check);
   });
 };
 installTerminalScopeSubscription();

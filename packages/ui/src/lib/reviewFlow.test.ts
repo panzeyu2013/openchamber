@@ -59,7 +59,7 @@ describe('reviewFlow auto-review helpers', () => {
     const run: AutoReviewRun = {
       originalSessionID: 'original-1',
       reviewSessionID: 'review-1',
-      directory: '/workspace',
+      directory: '/project',
       runtimeKey: 'runtime-a',
       status: 'running',
       phase: 'waiting_for_reviewer',

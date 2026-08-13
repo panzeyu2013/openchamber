@@ -19,32 +19,32 @@
 
 HTTP remains the authenticated command plane for create, resize, appearance updates, restart, close, and force-kill. There is no SSE output or HTTP input compatibility path.
 
-## Workspace Binding
+## Project Binding
 
-Terminal sessions are explicitly bound to a workspace when they arrive
-through the workspace runtime prefix (`/api/workspaces/:workspaceId/runtime/`):
+Terminal sessions are explicitly bound to a project when they arrive
+through the project runtime prefix (`/api/projects/:projectId/runtime/`):
 
-- `POST /api/workspaces/:id/runtime/api/terminal/create` records
-  `workspaceId` + the canonical path (read from `x-opencode-directory`, which
-  the workspace runtime proxy overwrites with the workspace canonical path),
+- `POST /api/projects/:id/runtime/api/terminal/create` records
+  `projectId` + the canonical path (read from `x-opencode-directory`, which
+  the project runtime proxy overwrites with the project canonical path),
   and rejects a `cwd` outside that path after lexical and real-path checks.
   Legacy creates through `/api/terminal/create` keep a `null` binding.
-- A session bound to a workspace is ONLY reachable through that workspace's
+- A session bound to a project is ONLY reachable through that project's
   prefix: attach/write/resize/restart/close/force-kill through another
-  workspace prefix, or through the legacy path, are rejected
-  (`WORKSPACE_SCOPE_MISMATCH` for socket frames, 400/404 for HTTP).
-  Restart cwd is checked against the bound workspace before spawning, and
-  force-kill only iterates sessions in the caller's workspace scope.
-  Cross-workspace IDs are never accessible.
-- WS upgrades: `/api/workspaces/:id/runtime/api/terminal/ws` is normally owned
-  by the central workspace upgrade dispatcher (which forwards to the
+  project prefix, or through the legacy path, are rejected
+  (`PROJECT_SCOPE_MISMATCH` for socket frames, 400/404 for HTTP).
+  Restart cwd is checked against the bound project before spawning, and
+  force-kill only iterates sessions in the caller's project scope.
+  Cross-project IDs are never accessible.
+- WS upgrades: `/api/projects/:id/runtime/api/terminal/ws` is normally owned
+  by the central project upgrade dispatcher (which forwards to the
   connection adapter). When the dispatcher is absent, this runtime handles
-  workspace-prefixed upgrades itself and binds the connection to the
-  workspaceId parsed from the path. The dispatcher marks owned upgrades
-  (`WORKSPACE_RUNTIME_UPGRADE_MARKER`) and this runtime skips marked
-  workspace-prefixed upgrades, so an upgrade never has two handlers regardless
+  project-prefixed upgrades itself and binds the connection to the
+  projectId parsed from the path. The dispatcher marks owned upgrades
+  (`PROJECT_RUNTIME_UPGRADE_MARKER`) and this runtime skips marked
+  project-prefixed upgrades, so an upgrade never has two handlers regardless
   of listener registration order.
-- Non-workspace behavior (direct `/api/terminal/ws` and `/api/terminal/*`)
+- Non-project behavior (direct `/api/terminal/ws` and `/api/terminal/*`)
   is unchanged.
 
 ## PTY Lifecycle
@@ -64,7 +64,7 @@ through the workspace runtime prefix (`/api/workspaces/:workspaceId/runtime/`):
 
 ## Security And Relay
 
-The WebSocket path must remain in both `isUrlAuthWebSocketPath` and relay `ALLOWED_WS_PATHS` (the workspace-prefixed variant `/api/workspaces/:id/runtime/api/terminal/ws` is allowlisted in both as well). Ambient clients use `getRuntimeUrlResolver().websocket()`; workspace clients build the equivalent workspace-prefixed URL with a control-plane-scoped token. Both paths must open through `openRuntimeWebSocket`; direct local URLs or raw browser WebSockets break relay and URL-token authentication.
+The WebSocket path must remain in both `isUrlAuthWebSocketPath` and relay `ALLOWED_WS_PATHS` (the project-prefixed variant `/api/projects/:id/runtime/api/terminal/ws` is allowlisted in both as well). Ambient clients use `getRuntimeUrlResolver().websocket()`; project clients build the equivalent project-prefixed URL with a control-plane-scoped token. Both paths must open through `openRuntimeWebSocket`; direct local URLs or raw browser WebSockets break relay and URL-token authentication.
 
 ## Verification
 

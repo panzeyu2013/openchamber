@@ -30,7 +30,7 @@ import { PROJECT_ICON_MAP, PROJECT_COLOR_MAP, ProjectIconImage } from '@/lib/pro
 import type { ProjectEntry } from '@/lib/api/types';
 import { startDesktopWindowDrag } from '@/lib/desktopNative';
 import { useI18n } from '@/lib/i18n';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_MODELS_PER_GROUP = 5;
@@ -90,7 +90,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
   onCancel,
   isWindowed = false,
 }) => {
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const { t } = useI18n();
   const [name, setName] = React.useState('');
   const [runGroups, setRunGroups] = React.useState<RunGroupState[]>(() => [
@@ -108,26 +108,26 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory ?? null);
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory ?? null);
 
-  const vscodeWorkspaceFolder = React.useMemo(() => {
+  const vscodeProjectFolder = React.useMemo(() => {
     if (typeof window === 'undefined') return null;
     const folder = (window as unknown as { __VSCODE_CONFIG__?: { workspaceFolder?: unknown } }).__VSCODE_CONFIG__?.workspaceFolder;
     return typeof folder === 'string' && folder.trim().length > 0 ? folder.trim() : null;
   }, []);
 
-  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const legacyActiveProjectId = useProjectsStore((state) => state.activeProjectId);
   const setActiveProjectIdOnly = useProjectsStore((state) => state.setActiveProjectIdOnly);
   const projects = useProjectsStore((state) => state.projects);
-  const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>(() => activeProjectId ?? null);
+  const [selectedProjectId, setSelectedProjectId] = React.useState<string | null>(() => legacyActiveProjectId ?? null);
 
   React.useEffect(() => {
     if (activeProjectId) {
-      setSelectedProjectId(activeProjectId);
+      setSelectedProjectId(legacyActiveProjectId);
       return;
     }
     if (!selectedProjectId && projects.length > 0) {
       setSelectedProjectId(projects[0].id);
     }
-  }, [activeProjectId, projects, selectedProjectId]);
+  }, [activeProjectId, legacyActiveProjectId, projects, selectedProjectId]);
 
   const selectedProject = React.useMemo(() => {
     if (!selectedProjectId) return null;
@@ -138,10 +138,10 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
 
   const handleProjectChange = React.useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
-    if (projectId !== activeProjectId) {
+    if (projectId !== legacyActiveProjectId) {
       setActiveProjectIdOnly(projectId);
     }
-  }, [activeProjectId, setActiveProjectIdOnly]);
+  }, [legacyActiveProjectId, setActiveProjectIdOnly]);
 
   const { currentTheme } = useThemeSystem();
 
@@ -182,10 +182,10 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
     if (selectedProject?.path) {
       return { id: selectedProject.id, path: selectedProject.path };
     }
-    const base = currentDirectory ?? vscodeWorkspaceFolder;
+    const base = currentDirectory ?? vscodeProjectFolder;
     if (!base) return null;
     return { id: `path:${base}`, path: base };
-  }, [selectedProject, currentDirectory, vscodeWorkspaceFolder]);
+  }, [selectedProject, currentDirectory, vscodeProjectFolder]);
 
   const [isDesktopApp] = React.useState(() => (typeof window !== 'undefined' ? isDesktopShell() : false));
 
@@ -366,7 +366,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
     clearError();
 
     try {
-      if (selectedProjectId && selectedProjectId !== activeProjectId) {
+      if (selectedProjectId && selectedProjectId !== legacyActiveProjectId) {
         setActiveProjectIdOnly(selectedProjectId);
       }
 
@@ -396,7 +396,7 @@ export const MultiRunLauncher: React.FC<MultiRunLauncherProps> = ({
       const result = await createMultiRun(params);
       if (result) {
         if (result.firstSessionId) {
-          useSessionUIStore.getState().setCurrentSession(result.firstSessionId, null, activeWorkspaceId);
+          useSessionUIStore.getState().setCurrentSession(result.firstSessionId, null, activeProjectId);
         }
         onCreated?.();
       }

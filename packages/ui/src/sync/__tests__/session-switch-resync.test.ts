@@ -101,7 +101,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     pendingQuestionsResponse = [buildQuestion()]
     pendingPermissionsResponse = [buildPermission()]
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     const scopedQuestionCalls = listPendingQuestionsCalls.filter((call) => call.directories.includes("/repo"))
     const scopedPermissionCalls = listPendingPermissionsCalls.filter((call) => call.directories.includes("/repo"))
@@ -116,7 +116,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     pendingQuestionsResponse = [buildQuestion()]
     pendingPermissionsResponse = [buildPermission()]
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     expect(store.getState().question["ses_a"]).toHaveLength(1)
     expect(store.getState().question["ses_a"]?.[0]?.id).toBe("que_1")
@@ -130,7 +130,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     })
     pendingQuestionsResponse = []
 
-    const promise = resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    const promise = resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
     store.setState({
       question: { ses_a: [{ ...buildQuestion(), id: "que_sse_arrived" }] },
     })
@@ -147,7 +147,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     pendingQuestionsResponse = []
     pendingPermissionsResponse = []
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     expect(store.getState().question["ses_a"]).toEqual(undefined)
   })
@@ -156,14 +156,14 @@ describe("resyncBlockingRequestsForDirectory", () => {
     const store = createDirectoryStore({})
     pendingQuestionsResponse = [{ ...buildQuestion(), sessionID: "ses_unknown" }]
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     expect(store.getState().question["ses_unknown"]).toEqual(undefined)
   })
 
   test("returns early without fetching when no candidate sessions are known", async () => {
     const store = createDirectoryStore({ session: [] })
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
     expect(listPendingQuestionsCalls).toHaveLength(0)
     expect(listPendingPermissionsCalls).toHaveLength(0)
   })
@@ -180,7 +180,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     })
     pendingQuestionsShouldThrow = true
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     expect(store.getState().question["ses_a"]).toHaveLength(1)
     expect(store.getState().question["ses_a"]?.[0]?.id).toBe("que_in_flight")
@@ -192,7 +192,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     })
     pendingPermissionsShouldThrow = true
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     expect(store.getState().permission["ses_a"]).toHaveLength(1)
     expect(store.getState().permission["ses_a"]?.[0]?.id).toBe("perm_in_flight")
@@ -203,7 +203,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
     pendingQuestionsResponse = [buildQuestion()]
     pendingPermissionsShouldThrow = true
 
-    await resyncBlockingRequestsForDirectory("/repo", store, "workspace:test", undefined, stubSdk as never)
+    await resyncBlockingRequestsForDirectory("/repo", store, "project:test", undefined, stubSdk as never)
 
     // Question block ran successfully despite permission block failing.
     expect(store.getState().question["ses_a"]).toHaveLength(1)
@@ -213,7 +213,7 @@ describe("resyncBlockingRequestsForDirectory", () => {
   })
 
   test("routes a directory-less todo snapshot to its active session during a multi-store routing-index gap", () => {
-    const childStores = new ChildStoreManager("workspace:test")
+    const childStores = new ChildStoreManager("project:test")
     const store = childStores.ensureChild("/target", { bootstrap: false })
     childStores.ensureChild("/other", { bootstrap: false })
     const todos = [

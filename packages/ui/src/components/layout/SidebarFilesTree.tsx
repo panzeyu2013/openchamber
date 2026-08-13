@@ -29,7 +29,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useScopedFileSearch } from '@/stores/useFileSearchStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
@@ -429,7 +429,7 @@ const MemoizedFileRow = React.memo(FileRow, areFileRowPropsEqual);
 export const SidebarFilesTree: React.FC = () => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
-  const { handle } = useWorkspaceRuntime();
+  const { handle } = useProjectRuntime();
   const scopeKey = handle?.scopeKey ?? '';
   const isBrowserClient = isBrowserClientRuntime(runtime.platform);
   const currentDirectory = useEffectiveDirectory() ?? '';

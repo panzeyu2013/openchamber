@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import type { GitStatus } from '@/lib/api/types';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 
 const { useGitStore } = await import('./useGitStore');
 
@@ -154,18 +154,18 @@ describe('useGitStore', () => {
     ]);
   });
 
-  test('rejects a stale workspace completion after a scope switch', async () => {
+  test('rejects a stale project completion after a scope switch', async () => {
     setDirectoryStatus(createStatus());
     const request = createDeferred<GitStatus>();
     const git = createGitApi(() => request.promise);
     const loading = useGitStore.getState().fetchStatus('/repo', git, { silent: true });
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     await Promise.resolve();
     request.resolve(createStatus(undefined, [{ path: 'stale.ts', index: 'M', working_dir: ' ' }]));
     await loading;
 
-    expect(useGitStore.getState().scopeKey).toBe('workspace:ws-b');
+    expect(useGitStore.getState().scopeKey).toBe('project:ws-b');
     // The stale completion must not land: the ws-b scope either has no /repo
     // entry or only a branch-cache seed without a status payload.
     expect(useGitStore.getState().getDirectoryState('/repo')?.status ?? null).toBeNull();
@@ -351,13 +351,13 @@ describe('useGitStore', () => {
   });
 });
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
-  const upstreamSessionId = `ses-${workspaceId}`;
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => {
+  const upstreamSessionId = `ses-${projectId}`;
   return {
     revision: 1,
     sessions: [{
-      key: `${workspaceId}\u0000${upstreamSessionId}`,
-      workspaceId,
+      key: `${projectId}\u0000${upstreamSessionId}`,
+      projectId,
       connectionId: 'conn',
       upstreamSessionId,
       directory: '/repo',
@@ -370,43 +370,43 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
   };
 };
 
-const setWorkspaceSession = (workspaceId: string) => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
-  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+const setProjectSession = (projectId: string) => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${projectId}`, currentSessionDirectory: '/repo' });
 };
 
-const clearWorkspaceSession = () => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = () => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-const currentWorkspaceId = (): string | null =>
-  useWorkspaceSessionIndexStore.getState().snapshot?.sessions[0]?.workspaceId ?? null;
+const currentProjectId = (): string | null =>
+  useProjectSessionIndexStore.getState().snapshot?.sessions[0]?.projectId ?? null;
 
-describe('useGitStore workspace scope', () => {
+describe('useGitStore project scope', () => {
   beforeEach(() => {
-    clearWorkspaceSession();
+    clearProjectSession();
     clearGitStoreState();
   });
 
-  afterEach(clearWorkspaceSession);
+  afterEach(clearProjectSession);
 
-  test('keeps directory caches isolated per workspace for the same directory', async () => {
+  test('keeps directory caches isolated per project for the same directory', async () => {
     const statusA = createStatus(undefined, [{ path: 'a.ts', index: ' ', working_dir: 'M' }]);
     const statusB = createStatus(undefined, [{ path: 'b.ts', index: ' ', working_dir: 'M' }]);
     const statusCalls: string[] = [];
     const git = createGitApi(async () => {
-      const workspaceId = currentWorkspaceId();
-      statusCalls.push(workspaceId ?? 'none');
-      return workspaceId === 'ws-a' ? statusA : statusB;
+      const projectId = currentProjectId();
+      statusCalls.push(projectId ?? 'none');
+      return projectId === 'ws-a' ? statusA : statusB;
     });
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     await Promise.resolve();
     await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     await Promise.resolve();
     // The ws-b scope must not inherit ws-a's status snapshot (only a
     // branch-cache seed with no status may exist).
@@ -414,13 +414,13 @@ describe('useGitStore workspace scope', () => {
     await useGitStore.getState().fetchStatus('/repo', git, { silent: true });
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('b.ts');
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     await Promise.resolve();
     expect(useGitStore.getState().getDirectoryState('/repo')?.status?.files[0]?.path).toBe('a.ts');
     expect(statusCalls).toEqual(['ws-a', 'ws-b']);
   });
 
-  test('scope key is the unscoped bucket outside workspace mode', () => {
+  test('scope key is the unscoped bucket outside project mode', () => {
     expect(useGitStore.getState().scopeKey).toBe('');
     expect(useGitStore.getState().directoriesByScope).toEqual({});
   });

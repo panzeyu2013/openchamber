@@ -121,8 +121,8 @@ export function useSync() {
   const store = useDirectoryStore()
   const childStores = useChildStoreManager()
   const messageLoader = useSessionMessageLoader()
-  // Sync scope: the mounted workspace scope key. Caches keyed by it never
-  // share state across workspaces.
+  // Sync scope: the mounted project scope key. Caches keyed by it never
+  // share state across projects.
   const scopeKey = useSyncScopeKey()
 
   const keyFor = useCallback(

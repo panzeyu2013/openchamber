@@ -18,7 +18,7 @@ import { formatSessionCompactDateLabel } from './sidebar/utils';
 import type { SessionNode } from './sidebar/types';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type SecondaryMeta = SwitcherItem['secondaryMeta'];
 
@@ -191,10 +191,10 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const notifyOnSubtasks = useUIStore((state) => state.notifyOnSubtasks);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
 
   const sessionStatus = useGlobalSessionStatus(session.id);
-  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
+  const unseenCount = useSessionUnseenCount(session.id, activeProjectId);
 
   const isActive = currentSessionId === session.id;
   const sessionTitle = session.title?.trim() || t('sessions.sidebar.session.untitled');
@@ -217,9 +217,9 @@ function SwitcherRow({ session, depth, variant, secondaryMeta, hasChildren, isEx
       return;
     }
     const directory = resolveSessionDirectory(session);
-    setCurrentSession(session.id, directory ?? null, activeWorkspaceId);
+    setCurrentSession(session.id, directory ?? null, activeProjectId);
     closeDropdown();
-  }, [activeWorkspaceId, closeDropdown, isActive, session, setCurrentSession]);
+  }, [activeProjectId, closeDropdown, isActive, session, setCurrentSession]);
 
   return (
     <BaseMenu.Item

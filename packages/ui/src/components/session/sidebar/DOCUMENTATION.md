@@ -3,7 +3,7 @@
 ## Refactor result
 
 - `SessionSidebar.tsx` now acts mainly as orchestration; core logic moved to focused hooks/components.
-- Layout (web/desktop): top navigation (`SidebarNav`: New session, Scheduled, Multi-run, Archive), then the unified `WorkspaceSessionsSection` (catalog workspaces + session index; hidden during global session search), then the `recent` zone, then one zone per project with a **flat** session list. There is no rendered worktree grouping level.
+- Layout (web/desktop): top navigation (`SidebarNav`: New session, Scheduled, Multi-run, Archive), then the unified `ProjectSessionsSection` (catalog projects + session index; filtered by the global session search query), then the `recent` zone. When a Catalog snapshot exists this IS the steady state — the legacy per-project zone tree (`SidebarProjectsList`, `sectionsForRender`/`flatSectionsForRender` and the worktree grouping described below) renders ONLY as the degraded fallback when no catalog snapshot ever arrives (no control plane, e.g. VS Code without `openchamber.apiUrl`). There is no rendered worktree grouping level in the unified view.
 - **Two grouping display modes** (`useSessionDisplayStore.sessionGroupingMode`, toggled in the view dropdown): `'by-worktree'` (default) renders the worktree-grouped `sectionsForRender` with slim PR-aware branch sub-headers inside each project zone; `'flat'` renders `flatSectionsForRender` — one merged non-archived group per project (`id: 'flat'`, `folderScopes` listing every contributing scope) with per-row branch markers. Both derive from the same `projectSections` data layer, which alone feeds bootstrap demand planning and PR polling.
 - When sticky zone headers are enabled, project headers are sticky "zone" bands (`SortableProjectItem`); on a vibrant desktop the scrolling content fades behind an unmasked, non-interactive copy of the stuck icon/title without painting a background. The transparent fade zone blocks interaction with obscured rows. The `recent` section uses the same overlay while it is the leading sticky header. Collapsed projects show an aggregated busy/unseen indicator (`ProjectAggregateStatusIndicator`), derived from the live status index and notification store scoped to the project's directories.
 - **Activity is a dot plus a counter, never a spinner.** The row's left gutter shows a static dot — primary while the session runs (`busy`/`retry`), info while it is unread — and the metadata slot on the right swaps the goal/branch/date group for the elapsed time of the turn (`SessionActivityDuration`, ticking once per second). The readout takes the dot's color in each state — primary while running, info once it is waiting to be read — so the pair reads as one indicator. A running spinner repainted a composited layer per row every frame for the whole turn; the counter conveys the same "something is happening" at 1 fps. The counter follows the unread marker's lifetime exactly: it survives the turn ending, disappears when the session is read, and never lingers on the session being watched (which is marked read as it goes idle). Aggregate indicators for collapsed groups, folders, and projects show the dot only — a group may hold several running turns, so a single counter would have nothing to count. The same treatment applies to the mobile sessions sheet and session switcher rows. The worktree-move indicator stays a spinner: it marks a short user-initiated operation, not a session state.
@@ -18,9 +18,9 @@
 
 ## VS Code grouping
 
-- VS Code uses the **same grouped project tree** as web/desktop (project headers + folders + pinned-first ordering), not a separate flat list. Each open VS Code workspace folder is a project header.
-- VS Code groups strictly **by open workspace**: `useSessionGrouping` funnels every non-archived session into the project's root group and emits **no per-worktree subgroups** (worktrees aren't registered in VS Code). `getSessionsForProject` buckets sessions to a workspace by exact directory match, so only sessions whose directory is an open workspace folder appear.
-- VS Code passes `hideDirectoryControls` (clean workspace headers, no worktree/close chrome) and no longer passes `showOnlyMainWorkspace`/`sharedSessionsOnly`. Folders and pinning therefore work natively, scoped to the workspace root.
+- VS Code uses the **same grouped project tree** as web/desktop (project headers + folders + pinned-first ordering), not a separate flat list. Each open VS Code project folder is a project header.
+- VS Code groups strictly **by open project**: `useSessionGrouping` funnels every non-archived session into the project's root group and emits **no per-worktree subgroups** (worktrees aren't registered in VS Code). `getSessionsForProject` buckets sessions to a project by exact directory match, so only sessions whose directory is an open project folder appear.
+- VS Code passes `hideDirectoryControls` (clean project headers, no worktree/close chrome) and no longer passes `showOnlyMainProject`/`sharedSessionsOnly`. Folders and pinning therefore work natively, scoped to the project root.
 
 ## File summaries
 
@@ -29,23 +29,39 @@
 - `SidebarHeader.tsx`: Top header UI for add-project, session search, selection mode, project sort, and the display menu (recent toggle, collapse/expand all).
 - `SidebarNav.tsx`: Text navigation rows above the tree (New session, Scheduled, Multi-run, Archive); hidden in VS Code.
 - `SidebarActivitySections.tsx`: Global top section renderer; currently used for the `recent` section only, styled as a zone header.
-- `WorkspaceSessionsSection.tsx`: Unified workspace/session tree fed by the
-  Workspace Catalog and the server-side Session Index (Phase 4). One flat
-  list of workspaces with their sessions; connection labels appear only as
-  secondary disambiguation; per-connection freshness is textual (stale /
-  error / loading — never color-only), and an unavailable Session Index is
-  rendered explicitly instead of looking like an empty list. Local AND remote
+- `ProjectSessionsSection.tsx`: Unified project/session tree fed by the
+  Project Catalog and the server-side Session Index (Phase 4). One flat
+  list of projects with their sessions; connection labels appear only as
+  secondary disambiguation; per-connection freshness is textual ("Out of
+  date" for stale, "unavailable" for `offline`/incomplete — never
+  color-only), and an unavailable Session Index is
+  rendered explicitly instead of looking like an empty list. A connection
+  whose freshness is `offline`/incomplete has its "new session" affordances
+  PRE-DISABLED (same predicate as the label, so the button never disagrees
+  with what the row shows) instead of failing with a generic toast after the
+  server answers 502. Local AND remote
   sessions open through the same unified selection path
-  (`openWorkspaceSession` → `setCurrentSession`), passing the composite
-  `(workspaceId, upstreamSessionId)` target so equal IDs/directories cannot
-  collide; the sync then runs against the workspace-bound runtime handle keyed
-  by workspaceId, and the click path never switches the global runtime
-  endpoint. Each workspace group header carries a "new session"
+  (`openProjectSession` → `setCurrentSession`), passing the composite
+  `(projectId, upstreamSessionId)` target so equal IDs/directories cannot
+  collide; the sync then runs against the project-bound runtime handle keyed
+  by projectId, and the click path never switches the global runtime
+  endpoint. Each project group header carries a "new session"
   affordance that creates the session server-side via
-  `session-index-client.createWorkspaceSession` (`POST
-  /api/workspaces/:id/sessions`); the new session surfaces through the index
+  `session-index-client.createProjectSession` (`POST
+  /api/projects/:id/sessions`); the new session surfaces through the index
   SSE stream. The former `FleetSidebarSection` (inactive-server cards) was
   removed with this module.
+- Project-card styling (main-branch parity): project groups render as
+  full-bleed project cards (`group/project` band, sticky when zone headers
+  are enabled, `text-[14px] font-semibold lowercase` label, color-tinted
+  folder icon, path `Tooltip` on the right side, hover-revealed `add` /
+  `more-2` actions with reserved padding). The menu offers New session,
+  inline label rename (catalog `updateProject`) and Remove with an inline
+  confirm row (catalog `deleteProject`); both go through the catalog
+  store's optimistic/rollback semantics. Touch surfaces keep actions
+  always visible. Sessions rows use the shared `typography-ui-label` density
+  and keep textual freshness labels as the accessible fallback — color is
+  never the only signal.
 - `SidebarFooter.tsx`: Static footer with icon-only settings, shortcuts, and about actions.
 - `SidebarProjectsList.tsx`: Main scrollable renderer for project zones and their flat/archived groups plus empty/search states; owns project drag-to-reorder.
 - `SessionGroupSection.tsx`: Renders one flat (or archived) group: sessions first, then flat folder entries with path labels, show-more batching, and explicit loading/error/retry state for empty groups. Archived buckets (VS Code) virtualize past 50 rows.
@@ -55,7 +71,7 @@
 - `sortableItems.tsx`: DnD sortable wrapper for project ordering plus the sticky zone-band project header and its action affordances.
 - `sessionFolderDnd.tsx`: Folder/session DnD scope and wrappers for dropping/moving sessions into folders.
 - `sessionOwnership.ts`: Resolves session directories once into shared project/worktree ownership and folder-scope indexes.
-- `worktreeFirstSeen.ts`: Keeps the discovery-order hint in memory, keyed by SyncProvider scope plus worktree path so equal paths on different workspaces do not share ordering state.
+- `worktreeFirstSeen.ts`: Keeps the discovery-order hint in memory, keyed by SyncProvider scope plus worktree path so equal paths on different projects do not share ordering state.
 
 ### Hooks
 

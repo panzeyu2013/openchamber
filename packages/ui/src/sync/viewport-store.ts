@@ -3,7 +3,7 @@
  * Extracted from session-ui-store for subscription isolation.
  *
  * Memory is keyed by session scope (`${scopeKey}\n${sessionId}`): the
- * workspace scope for workspace sessions, the unscoped bucket otherwise.
+ * project scope for project sessions, the unscoped bucket otherwise.
  * Bare session-ID legacy entries are not read.
  */
 

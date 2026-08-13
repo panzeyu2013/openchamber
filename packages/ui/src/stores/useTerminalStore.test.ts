@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 
 const { useTerminalStore } = await import('./useTerminalStore');
 
@@ -163,13 +163,13 @@ describe('default terminal tab labels', () => {
   });
 });
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
-  const upstreamSessionId = `ses-${workspaceId}`;
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => {
+  const upstreamSessionId = `ses-${projectId}`;
   return {
     revision: 1,
     sessions: [{
-      key: `${workspaceId}\u0000${upstreamSessionId}`,
-      workspaceId,
+      key: `${projectId}\u0000${upstreamSessionId}`,
+      projectId,
       connectionId: 'conn',
       upstreamSessionId,
       directory: '/repo',
@@ -182,29 +182,29 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
   };
 };
 
-const setWorkspaceSession = (workspaceId: string) => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
-  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+const setProjectSession = (projectId: string) => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${projectId}`, currentSessionDirectory: '/repo' });
 };
 
-const clearWorkspaceSession = () => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = () => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-describe('terminal store workspace scope', () => {
+describe('terminal store project scope', () => {
   afterEach(() => {
-    clearWorkspaceSession();
+    clearProjectSession();
     useTerminalStore.getState().clearAll();
   });
 
-  test('keeps tabs and scrollback isolated per workspace for the same directory', () => {
-    setWorkspaceSession('ws-a');
+  test('keeps tabs and scrollback isolated per project for the same directory', () => {
+    setProjectSession('ws-a');
     useTerminalStore.getState().ensureDirectory('/repo');
     const tabA = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
     useTerminalStore.getState().appendToBuffer('/repo', tabA, 'from a', 1);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useTerminalStore.getState().getDirectoryState('/repo')).toBe(undefined);
 
     useTerminalStore.getState().ensureDirectory('/repo');
@@ -214,41 +214,41 @@ describe('terminal store workspace scope', () => {
       useTerminalStore.getState().getBuffer('/repo', tabId).chunks.map((chunk) => chunk.data).join('');
     expect(chunkData(tabB)).toBe('from b');
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(tabA);
     expect(chunkData(tabA)).toBe('from a');
   });
 
-  test('uses the unscoped bucket outside workspace mode', () => {
+  test('uses the unscoped bucket outside project mode', () => {
     useTerminalStore.getState().ensureDirectory('/repo');
     const unscopedTab = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
     expect(useTerminalStore.getState().scopeKey).toBe('');
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useTerminalStore.getState().getDirectoryState('/repo')).toBe(undefined);
 
-    clearWorkspaceSession();
+    clearProjectSession();
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(unscopedTab);
   });
 
-  test('workspace scope switches isolate tabs and scrollback per workspace', () => {
-    setWorkspaceSession('ws-a');
+  test('project scope switches isolate tabs and scrollback per project', () => {
+    setProjectSession('ws-a');
     useTerminalStore.getState().ensureDirectory('/repo');
     const tabA = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
     useTerminalStore.getState().appendToBuffer('/repo', tabA, 'from a', 1);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useTerminalStore.getState().getDirectoryState('/repo')).toBe(undefined);
 
     useTerminalStore.getState().ensureDirectory('/repo');
     const tabB = useTerminalStore.getState().getDirectoryState('/repo')!.tabs[0].id;
     useTerminalStore.getState().appendToBuffer('/repo', tabB, 'from b', 1);
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(tabA);
     expect(useTerminalStore.getState().getBuffer('/repo', tabA).chunks[0]?.data).toBe('from a');
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     expect(useTerminalStore.getState().getDirectoryState('/repo')?.tabs[0]?.id).toBe(tabB);
     expect(useTerminalStore.getState().getBuffer('/repo', tabB).chunks[0]?.data).toBe('from b');
   });

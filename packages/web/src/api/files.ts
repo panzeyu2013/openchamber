@@ -150,8 +150,8 @@ export const createWebFilesAPI = ({ getDirectory }: WebFilesAPIOptions): FilesAP
   async statFile(path: string, options): Promise<{ path: string; isFile: boolean; size: number; mtimeMs?: number }> {
     const target = normalizePath(path);
     const params = new URLSearchParams({ path: target });
-    if (options?.allowOutsideWorkspace) {
-      params.set('allowOutsideWorkspace', 'true');
+    if (options?.allowOutsideProject) {
+      params.set('allowOutsideProject', 'true');
     }
     if (options?.outsideFileGrant) {
       params.set('outsideFileGrant', options.outsideFileGrant);
@@ -178,8 +178,8 @@ export const createWebFilesAPI = ({ getDirectory }: WebFilesAPIOptions): FilesAP
   async readFile(path: string, options): Promise<{ content: string; path: string }> {
     const target = normalizePath(path);
     const params = new URLSearchParams({ path: target });
-    if (options?.allowOutsideWorkspace) {
-      params.set('allowOutsideWorkspace', 'true');
+    if (options?.allowOutsideProject) {
+      params.set('allowOutsideProject', 'true');
     }
     if (options?.outsideFileGrant) {
       params.set('outsideFileGrant', options.outsideFileGrant);

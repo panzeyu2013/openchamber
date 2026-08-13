@@ -99,15 +99,15 @@ describe('updateBrowserURL embedded-session-chat guard', () => {
     expect(writtenURL).toContain('session=ses_main');
   });
 
-  test('serializes and parses an explicit workspace session target', () => {
-    updateBrowserURL({ ...sessionState('ses_remote'), workspaceId: 'ws-remote' }, { replace: true, force: true });
+  test('serializes and parses an explicit project session target', () => {
+    updateBrowserURL({ ...sessionState('ses_remote'), projectId: 'ws-remote' }, { replace: true, force: true });
 
     const writtenURL = historyOf().lastURL ?? '';
     expect(writtenURL).toContain('session=ses_remote');
     expect(writtenURL).toContain('workspace=ws-remote');
     expect(parseRoute(new URL(writtenURL, 'http://127.0.0.1:5173').searchParams)).toEqual({
       sessionId: 'ses_remote',
-      workspaceId: 'ws-remote',
+      projectId: 'ws-remote',
       tab: null,
       settingsPath: null,
       diffFile: null,

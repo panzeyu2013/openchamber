@@ -9,6 +9,7 @@ import {
   writeChatDraft,
 } from './chatDraftPersistence';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
+import { projectScopeKey } from '@/projects/identity';
 
 const storage = getDeferredSafeStorage();
 
@@ -88,5 +89,26 @@ describe('chatDraftPersistence', () => {
     } finally {
       JSON.parse = originalParse;
     }
+  });
+
+  test('reads drafts persisted with the legacy workspace: scope prefix and promotes them (P-MIG)', () => {
+    const identity = createChatDraftIdentity(projectScopeKey('proj-1'), '/repo', 'session-1')!;
+    const legacyKey = getChatDraftIdentityKey({
+      scopeKey: `workspace:proj-1`,
+      directory: '/repo',
+      sessionId: 'session-1',
+    });
+    storage.setItem('openchamber.chatDrafts.v2', JSON.stringify({
+      version: 2,
+      drafts: { [legacyKey]: { text: 'pre-rename draft', confirmedMentions: [], touchedAt: 1 } },
+    }));
+
+    expect(readChatDraft(identity).text).toBe('pre-rename draft');
+
+    // The record was promoted to the current project: key and the legacy
+    // record removed.
+    const envelope = JSON.parse(storage.getItem('openchamber.chatDrafts.v2') ?? '{}') as { drafts?: Record<string, unknown> };
+    expect(envelope.drafts?.[getChatDraftIdentityKey(identity)]).toBeTruthy();
+    expect(envelope.drafts?.[legacyKey]).toBeUndefined();
   });
 });

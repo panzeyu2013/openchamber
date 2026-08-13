@@ -33,7 +33,7 @@ import { formatProjectLabel, formatSessionCompactDateLabel, formatSessionDateLab
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { getGitHubPrStatusKey, usePrVisualSummary } from '@/stores/useGitHubPrStatusStore';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import { useSessionUnseenCount } from '@/sync/notification-store';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
@@ -343,7 +343,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
 
   const session = node.session;
   const resolvedSession = session;
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   // Tooltip context: recent rows receive project/branch via secondaryMeta;
   // project rows resolve them from the row's own props/node instead.
   const projectLabelFromStore = useProjectsStore(
@@ -476,7 +476,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
   );
   const pendingQuestionCount = useSessionQuestionCount(questionBadgeSessionScopes);
   const isSubtaskSession = Boolean((resolvedSession as Session & { parentID?: string | null }).parentID);
-  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
+  const unseenCount = useSessionUnseenCount(session.id, activeProjectId);
   const needsAttention = unseenCount > 0 && (!isSubtaskSession || notifyOnSubtasks);
   const sessionTimestamp = resolvedSession.time?.updated || resolvedSession.time?.created || Date.now();
   const sessionUpdatedLabel = formatSessionDateLabel(sessionTimestamp);
@@ -587,12 +587,12 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
     void invokeDesktop('desktop_open_session_mini_chat_window', {
       sessionId: session.id,
       directory: sessionDirectory,
-      workspaceId: activeWorkspaceId ?? null,
+      projectId: activeProjectId ?? null,
       ...getDesktopRuntimeEndpointArgs(),
     }).catch((error) => {
       console.warn('[session-sidebar] failed to open mini chat window', error);
     });
-  }, [activeWorkspaceId, session.id, sessionDirectory]);
+  }, [activeProjectId, session.id, sessionDirectory]);
 
   // Capture outside-clicks to save edits — immune to focus-race with onBlur.
   React.useEffect(() => {
@@ -1309,7 +1309,7 @@ function SessionNodeItemComponent(props: Props): React.ReactNode {
                     </div>
                   </button>
                 </TooltipTrigger>
-                {/* VS Code already shows project context via workspace headers, so
+                {/* VS Code already shows project context via project headers, so
                     the per-row metadata tooltip is redundant noise there. */}
                 {!isVSCode ? (
                 <TooltipContent side="right" sideOffset={8} className="max-w-xs text-left">

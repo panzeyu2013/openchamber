@@ -10,7 +10,7 @@ import { getNotificationSessionKey, useNotificationStore } from '@/sync/notifica
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { respondToPermission } from '@/sync/session-actions';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
 import { useQuotaStore } from '@/stores/useQuotaStore';
 import { QUOTA_PROVIDERS, formatWindowLabel, formatQuotaValueLabel } from '@/lib/quota';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -18,8 +18,8 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useGitStore } from '@/stores/useGitStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { resolveProjectForSessionDirectory, normalizeProjectPath } from '@/lib/projectResolution';
-import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
 import type { ProjectEntry } from '@/lib/api/types';
 import type { WorktreeMetadata } from '@/types/worktree';
 import { toast } from '@/components/ui';
@@ -47,7 +47,7 @@ type TraySessionStatus = 'idle' | 'busy' | 'retry';
 
 type TraySession = {
   id: string;
-  workspaceId?: string;
+  projectId?: string;
   title: string;
   status: TraySessionStatus;
   branch: string;
@@ -62,7 +62,7 @@ type TrayApproval = {
   kind: 'permission' | 'question';
   id: string;
   sessionId: string;
-  workspaceId?: string;
+  projectId?: string;
   sessionTitle: string;
   label: string;
   directory: string;
@@ -94,8 +94,8 @@ type TraySnapshot = {
 // the existing `openchamber:open-session` / `openchamber:open-draft-session`
 // events (handled in App.tsx). Only respond-permission needs handling here.
 type TrayAction =
-  | { type: 'respond-permission'; sessionId: string; workspaceId?: string; directory?: string; id: string; response: 'once' | 'always' | 'reject' }
-  | { type: 'focus-session'; sessionId: string; workspaceId?: string; directory?: string };
+  | { type: 'respond-permission'; sessionId: string; projectId?: string; directory?: string; id: string; response: 'once' | 'always' | 'reject' }
+  | { type: 'focus-session'; sessionId: string; projectId?: string; directory?: string };
 
 type DesktopBridgeGlobal = {
   listen?: (
@@ -206,42 +206,42 @@ const buildUsage = (): TrayUsage => {
   return { mode, groups };
 };
 
-const resolveCurrentWorkspaceId = (): string | null => {
+const resolveCurrentProjectId = (): string | null => {
   const session = useSessionUIStore.getState();
-  if (session.currentWorkspaceId) return session.currentWorkspaceId;
-  return resolveActiveWorkspaceId(
-    useWorkspaceSessionIndexStore.getState().snapshot?.sessions,
+  if (session.currentProjectId) return session.currentProjectId;
+  return resolveActiveProjectId(
+    useProjectSessionIndexStore.getState().snapshot?.sessions,
     session.currentSessionId,
     session.currentSessionDirectory,
   );
 };
 
-const resolveWorkspaceInstanceName = (workspaceId: string): string | null => {
-  const snapshot = useWorkspaceCatalogStore.getState().snapshot;
+const resolveProjectInstanceName = (projectId: string): string | null => {
+  const snapshot = useProjectCatalogStore.getState().snapshot;
   if (!snapshot) return null;
-  const workspace = snapshot.workspaces.find((entry) => entry.id === workspaceId);
-  if (!workspace) return null;
-  if (workspace.connectionId === 'local') return 'Local OpenChamber';
-  const connection = snapshot.connections.find((entry) => entry.id === workspace.connectionId);
-  return redactSensitiveUrl(connection?.label?.trim() || 'Workspace');
+  const project = snapshot.projects.find((entry) => entry.id === projectId);
+  if (!project) return null;
+  if (project.connectionId === 'local') return 'Local OpenChamber';
+  const connection = snapshot.connections.find((entry) => entry.id === project.connectionId);
+  return redactSensitiveUrl(connection?.label?.trim() || 'Project');
 };
 
-const resolveWorkspaceIdForSession = (sessionId: string, directory: string): string | undefined => {
-  const summaries = useWorkspaceSessionIndexStore.getState().snapshot?.sessions
+const resolveProjectIdForSession = (sessionId: string, directory: string): string | undefined => {
+  const summaries = useProjectSessionIndexStore.getState().snapshot?.sessions
     .filter((summary) => summary.upstreamSessionId === sessionId) ?? [];
   if (summaries.length === 0) return undefined;
   const exact = summaries.find((summary) => summary.directory === directory);
-  return (exact ?? (summaries.length === 1 ? summaries[0] : undefined))?.workspaceId;
+  return (exact ?? (summaries.length === 1 ? summaries[0] : undefined))?.projectId;
 };
 
-// Resolve workspace identity from the Catalog first. The legacy host matching
-// path remains only for non-workspace sessions during the migration; runtime
+// Resolve project identity from the Catalog first. The legacy host matching
+// path remains only for non-project sessions during the migration; runtime
 // key is still carried separately for Electron's safe-window routing.
 const resolveInstanceName = async (): Promise<string> => {
   try {
-    const workspaceId = resolveCurrentWorkspaceId();
-    if (workspaceId) {
-      return resolveWorkspaceInstanceName(workspaceId) ?? 'Workspace';
+    const projectId = resolveCurrentProjectId();
+    if (projectId) {
+      return resolveProjectInstanceName(projectId) ?? 'Project';
     }
     if (isDesktopLocalOriginActive()) return 'Local OpenChamber';
     const localOrigin = (window as unknown as { __OPENCHAMBER_LOCAL_ORIGIN__?: string }).__OPENCHAMBER_LOCAL_ORIGIN__
@@ -338,7 +338,7 @@ const collectLiveData = (): LiveData => {
 // each directory with the session ids the global list places there, so the
 // snapshot can authoritatively clear stale entries by session id.
 const collectStatusPollDirectories = (): Map<string, string[]> => {
-  const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+  const snapshot = useProjectSessionIndexStore.getState().snapshot;
   const allSessions = selectSessionsForConnection(snapshot, 'local')
     .map(sessionFromSummary)
     .filter((s) => s?.id && !s.parentID)
@@ -367,11 +367,11 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   const live = collectLiveData();
   const notif = useNotificationStore.getState().index.session;
 
-  // The list source is the Session Index — every workspace session the
+  // The list source is the Session Index — every project session the
   // backend knows about, independent of which directories this client has
   // opened. Live status/unread/branch are merged in by id where we have them
   // (the session's directory is synced); otherwise the row is shown as idle.
-  const snapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+  const snapshot = useProjectSessionIndexStore.getState().snapshot;
   const allSessions = selectSessionsForConnection(snapshot, 'local').map(sessionFromSummary);
   const titleById = new Map<string, string>(live.titleById);
   const childrenByParent = new Map<string, string[]>();
@@ -428,15 +428,15 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
     .map((session) => {
       const family = [session.id, ...collectDescendants(session.id)];
       const directory = resolveSessionDirectory(session) ?? '';
-      const workspaceId = resolveWorkspaceIdForSession(session.id, directory);
+      const projectId = resolveProjectIdForSession(session.id, directory);
       return {
         id: session.id,
-        workspaceId,
+        projectId,
         title: session.title || 'Untitled session',
         status: rollupStatus(family),
         branch: directory ? (live.branchByDirectory.get(directory) ?? '') : '',
-        unseen: family.reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, workspaceId)] ?? 0), 0),
-        hasError: family.some((id) => notif.unseenHasError[getNotificationSessionKey(id, workspaceId)] ?? false),
+        unseen: family.reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, projectId)] ?? 0), 0),
+        hasError: family.some((id) => notif.unseenHasError[getNotificationSessionKey(id, projectId)] ?? false),
         directory,
         subtitle: resolveSessionSubtitle(directory, session, projects, worktreesByProject, live.branchByDirectory),
       };
@@ -444,7 +444,7 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
 
   const approvals = live.approvals.map((a) => ({
     ...a,
-    workspaceId: a.workspaceId ?? resolveWorkspaceIdForSession(a.sessionId, a.directory),
+    projectId: a.projectId ?? resolveProjectIdForSession(a.sessionId, a.directory),
     sessionTitle: titleById.get(a.sessionId) || '',
   }));
 
@@ -458,11 +458,11 @@ const buildSnapshot = (instanceName: string): TraySnapshot => {
   if (ui.dockBadgeEnabled) {
     for (const session of allSessions) {
       if (!session?.id || session.parentID) continue; // roots only
-      const workspaceId = resolveWorkspaceIdForSession(session.id, resolveSessionDirectory(session) ?? '');
-      let familyUnseen = notif.unseenCount[getNotificationSessionKey(session.id, workspaceId)] ?? 0;
+      const projectId = resolveProjectIdForSession(session.id, resolveSessionDirectory(session) ?? '');
+      let familyUnseen = notif.unseenCount[getNotificationSessionKey(session.id, projectId)] ?? 0;
       if (familyUnseen === 0 && ui.notifyOnSubtasks) {
         familyUnseen = collectDescendants(session.id)
-          .reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, workspaceId)] ?? 0), 0);
+          .reduce((sum, id) => sum + (notif.unseenCount[getNotificationSessionKey(id, projectId)] ?? 0), 0);
       }
       if (familyUnseen > 0) dockBadgeCount += 1;
     }
@@ -569,7 +569,7 @@ export const useTraySync = (): void => {
     const unsubscribeNotif = useNotificationStore.subscribe(() => scheduleFlush());
     // The global store drives the session list. It updates instantly via SSE
     // for the active directory; subscribe so those land in the tray at once.
-    const unsubscribeGlobal = useWorkspaceSessionIndexStore.subscribe(() => scheduleFlush());
+    const unsubscribeGlobal = useProjectSessionIndexStore.subscribe(() => scheduleFlush());
     // Project labels and discovered worktrees feed the "project · branch"
     // subtitle; refresh the tray when they change (deduped, so cheap).
     const unsubscribeProjects = useProjectsStore.subscribe(() => scheduleFlush());
@@ -587,9 +587,9 @@ export const useTraySync = (): void => {
     // Make the tray self-sufficient: load the full cross-project list now
     // (independent of the sidebar) and refresh it periodically so sessions from
     // directories this client never opened still show up and stay current.
-    void useWorkspaceSessionIndexStore.getState().refresh();
+    void useProjectSessionIndexStore.getState().refresh();
     const refreshInterval = window.setInterval(() => {
-      void useWorkspaceSessionIndexStore.getState().refresh();
+      void useProjectSessionIndexStore.getState().refresh();
     }, GLOBAL_REFRESH_MS);
 
     // Global busy/retry status: fetch now and poll, so unsynced sessions don't
@@ -652,14 +652,14 @@ export const useTraySync = (): void => {
     const handle = (action: TrayAction) => {
       switch (action.type) {
         case 'respond-permission':
-          if (action.workspaceId) {
+          if (action.projectId) {
             useSessionUIStore.getState().setCurrentSession(
               action.sessionId,
               action.directory ?? null,
-              action.workspaceId,
+              action.projectId,
             );
           }
-          void respondToPermission(action.sessionId, action.id, action.response, action.directory, action.workspaceId).catch(() => {
+          void respondToPermission(action.sessionId, action.id, action.response, action.directory, action.projectId).catch(() => {
             toast.error('Failed to respond to permission request');
           });
           break;

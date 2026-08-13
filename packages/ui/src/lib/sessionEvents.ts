@@ -17,14 +17,14 @@ export type SessionCreateRequest = {
 type DeleteListener = (request: SessionDeleteRequest) => void;
 type CreateListener = (request: SessionCreateRequest) => void;
 type DirectoryListener = () => void;
-type AddWorkspaceListener = () => void;
+type AddProjectListener = () => void;
 type GitRefreshHint = { directory: string; paths?: string[] };
 type GitRefreshListener = (hint: GitRefreshHint) => void;
 
 const deleteListeners = new Set<DeleteListener>();
 const createListeners = new Set<CreateListener>();
 const directoryListeners = new Set<DirectoryListener>();
-const addWorkspaceListeners = new Set<AddWorkspaceListener>();
+const addProjectListeners = new Set<AddProjectListener>();
 const gitRefreshListeners = new Set<GitRefreshListener>();
 
 export const sessionEvents = {
@@ -59,14 +59,14 @@ export const sessionEvents = {
   requestDirectoryDialog() {
     directoryListeners.forEach((listener) => listener());
   },
-  onAddWorkspaceRequest(listener: AddWorkspaceListener) {
-    addWorkspaceListeners.add(listener);
+  onAddProjectRequest(listener: AddProjectListener) {
+    addProjectListeners.add(listener);
     return () => {
-      addWorkspaceListeners.delete(listener);
+      addProjectListeners.delete(listener);
     };
   },
-  requestAddWorkspaceDialog() {
-    addWorkspaceListeners.forEach((listener) => listener());
+  requestAddProjectDialog() {
+    addProjectListeners.forEach((listener) => listener());
   },
   onGitRefreshHint(listener: GitRefreshListener) {
     gitRefreshListeners.add(listener);

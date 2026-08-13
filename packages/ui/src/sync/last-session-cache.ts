@@ -1,11 +1,14 @@
 import { getDeferredSafeStorage } from "@/stores/utils/safeStorage"
+import { legacyScopeKeyForProjectKey } from "@/projects/identity"
 
-// Persisted "last active session" per workspace scope key, so a cold app
+// Persisted "last active session" per project scope key, so a cold app
 // launch can reopen the session the user had open the last time this instance
 // was connected. This is startup-continuity context ONLY — callers must
 // confirm the session still exists against an authoritative snapshot before
 // opening it (see the MobileApp restore effect). Writes always use the
-// caller-provided scope key.
+// caller-provided scope key. Entries written before the workspace→project
+// rename live under `workspace:` scope keys; reads fall back to that legacy
+// key (P-MIG) so a cold launch never loses the last session.
 const STORAGE_KEY = "oc.lastSession.v1"
 const MAX_RUNTIME_ENTRIES = 8
 
@@ -78,7 +81,15 @@ export function readLastActiveSession(
   if (!scopeKey) return null
   const envelope = readEnvelope(storage)
   const entry = envelope.runtimes[scopeKey]
-  return entry ? { sessionId: entry.sessionId, directory: entry.directory } : null
+  if (entry) return { sessionId: entry.sessionId, directory: entry.directory } as PersistedLastSession
+  // P-MIG: a `project:` scope key must also find the entry written under the
+  // legacy `workspace:` prefix by pre-rename builds.
+  const legacyKey = legacyScopeKeyForProjectKey(scopeKey)
+  if (legacyKey) {
+    const legacyEntry = envelope.runtimes[legacyKey]
+    if (legacyEntry) return { sessionId: legacyEntry.sessionId, directory: legacyEntry.directory } as PersistedLastSession
+  }
+  return null
 }
 
 export function clearLastActiveSession(
@@ -87,7 +98,18 @@ export function clearLastActiveSession(
 ): void {
   if (!scopeKey) return
   const envelope = readEnvelope(storage)
-  if (!envelope.runtimes[scopeKey]) return
-  delete envelope.runtimes[scopeKey]
-  writeEnvelope(storage, envelope)
+  let changed = false
+  if (envelope.runtimes[scopeKey]) {
+    delete envelope.runtimes[scopeKey]
+    changed = true
+  }
+  // P-MIG: clearing must also remove the legacy `workspace:`-prefixed entry so
+  // a stale pre-rename pointer cannot resurrect the session on the next cold
+  // launch.
+  const legacyKey = legacyScopeKeyForProjectKey(scopeKey)
+  if (legacyKey && envelope.runtimes[legacyKey]) {
+    delete envelope.runtimes[legacyKey]
+    changed = true
+  }
+  if (changed) writeEnvelope(storage, envelope)
 }

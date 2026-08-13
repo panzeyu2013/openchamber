@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { resolveSessionScopeKey } from '@/sync/selection-store';
+import { projectIdFromScopeKey, projectScopeKey } from '@/projects/identity';
 import { normalizePath } from '@/lib/pathNormalization';
 import { getDeferredSafeStorage } from './utils/safeStorage';
 
@@ -25,13 +26,13 @@ const storage = getDeferredSafeStorage();
 
 /**
  * Composite pin key: [scopeKey, directory, sessionId]. The scope key is the
- * workspace scope for workspace sessions and the ambient runtime key
- * otherwise (byte-identical legacy behavior in non-workspace mode).
+ * project scope for project sessions and the ambient runtime key
+ * otherwise (byte-identical legacy behavior in non-project mode).
  */
 export const getPinnedSessionKey = (scopeKey: string, directory: string, sessionId: string): string | null => {
   const normalizedDirectory = normalizePath(directory);
   // The empty scope is the legitimate unscoped bucket for sessions the
-  // session index does not map to a workspace.
+  // session index does not map to a project.
   if (typeof scopeKey !== 'string' || !normalizedDirectory || !sessionId) return null;
   return JSON.stringify([scopeKey, normalizedDirectory, sessionId]);
 };
@@ -74,7 +75,23 @@ const readPinned = (): PinnedSessionState => {
     const entries = Object.entries(parsed.sessions)
       .filter(([key, touchedAt]) => parsePinnedSessionKey(key) && typeof touchedAt === 'number' && Number.isFinite(touchedAt))
       .sort((left, right) => right[1] - left[1]);
-    return { ids: new Set(entries.map(([key]) => key)), touchedAt: Object.fromEntries(entries) };
+    // P-MIG: pins keyed with the pre-rename `workspace:` scope prefix are
+    // normalized to the current `project:` key so pre-upgrade pins stay
+    // visible, then rewritten once so the legacy records do not linger.
+    const migrated = entries.map(([key, touchedAt]) => {
+      const parts = parsePinnedSessionKey(key);
+      if (!parts) return [key, touchedAt] as const;
+      const [scopeKey, directory, sessionId] = parts;
+      const projectId = projectIdFromScopeKey(scopeKey);
+      if (!projectId) return [key, touchedAt] as const;
+      const promoted = getPinnedSessionKey(projectScopeKey(projectId), directory, sessionId);
+      return [(promoted ?? key), touchedAt] as const;
+    });
+    if (migrated.some(([key], index) => key !== entries[index]?.[0])) {
+      const sessions = Object.fromEntries(migrated);
+      storage.setItem(STORAGE_KEY, JSON.stringify({ version: 2, sessions }));
+    }
+    return { ids: new Set(migrated.map(([key]) => key)), touchedAt: Object.fromEntries(migrated) };
   } catch {
     storage.removeItem(STORAGE_KEY);
     return { ids: new Set(), touchedAt: {} };

@@ -9,14 +9,14 @@ import type {
 } from '@/lib/api/types';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
 
-export const resolveActiveWorkspaceScopeKey = (): string => {
+export const resolveActiveProjectScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 
 const LOG_STALE_THRESHOLD = 10000;
@@ -130,7 +130,7 @@ type GitRequestToken = {
 };
 
 const startRequest = (directory: string, channel: string, includeStatusMutation = false): GitRequestToken => {
-  const scopeKey = resolveActiveWorkspaceScopeKey();
+  const scopeKey = resolveActiveProjectScopeKey();
   const key = channelKey(scopeKey, directory, channel);
   const requestGeneration = (requestGenerationByChannel.get(key) ?? 0) + 1;
   requestGenerationByChannel.set(key, requestGeneration);
@@ -146,7 +146,7 @@ const startRequest = (directory: string, channel: string, includeStatusMutation 
 };
 
 const isRequestCurrent = (token: GitRequestToken, directory: string): boolean => (
-  token.scopeKey === resolveActiveWorkspaceScopeKey()
+  token.scopeKey === resolveActiveProjectScopeKey()
   && token.runtimeGeneration === gitRuntimeGeneration
   && requestGenerationByChannel.get(token.channelKey) === token.requestGeneration
   && (token.statusMutationRevision === undefined
@@ -159,16 +159,16 @@ const bumpStatusMutationRevision = (scopeKey: string, directory: string): void =
 };
 
 const getDiffFetchGeneration = (directory: string): number =>
-  diffFetchGenerationByDirectory.get(scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory)) ?? 0;
+  diffFetchGenerationByDirectory.get(scopeDirectoryKey(resolveActiveProjectScopeKey(), directory)) ?? 0;
 
 const bumpDiffFetchGeneration = (directory: string): number => {
   const next = getDiffFetchGeneration(directory) + 1;
-  diffFetchGenerationByDirectory.set(scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory), next);
+  diffFetchGenerationByDirectory.set(scopeDirectoryKey(resolveActiveProjectScopeKey(), directory), next);
   return next;
 };
 
 const getInFlightDiffs = (directory: string): Set<string> => {
-  const key = scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory);
+  const key = scopeDirectoryKey(resolveActiveProjectScopeKey(), directory);
   const existing = inFlightDiffFetchesByDirectory.get(key);
   if (existing) {
     return existing;
@@ -571,7 +571,7 @@ const toUnstagedStatusFile = (file: GitStatus['files'][number]): GitStatus['file
 const isCleanStatusFile = (file: GitStatus['files'][number]): boolean =>
   isBlankStatusCode(file.index) && isBlankStatusCode(file.working_dir);
 
-const initialGitScopeKey = resolveActiveWorkspaceScopeKey();
+const initialGitScopeKey = resolveActiveProjectScopeKey();
 
 export const useGitStore = create<GitStore>()(
   devtools(
@@ -607,7 +607,7 @@ export const useGitStore = create<GitStore>()(
 
       fetchStatus: async (directory, git, options = {}) => {
         const statusFetchMode: GitStatusFetchMode = options.mode ?? 'full';
-        const scopeKey = resolveActiveWorkspaceScopeKey();
+        const scopeKey = resolveActiveProjectScopeKey();
         const statusFetchKey = getStatusFetchKey(scopeKey, directory, statusFetchMode);
         const existing = inFlightStatusFetches.get(statusFetchKey)
           ?? (statusFetchMode === 'light' ? inFlightStatusFetches.get(getStatusFetchKey(scopeKey, directory, 'full')) : undefined);
@@ -1154,7 +1154,7 @@ export const useGitStore = create<GitStore>()(
       },
 
       ensureAll: (directory, git) => {
-        const ensureKey = scopeDirectoryKey(resolveActiveWorkspaceScopeKey(), directory);
+        const ensureKey = scopeDirectoryKey(resolveActiveProjectScopeKey(), directory);
         const existing = inFlightEnsureAllByDirectory.get(ensureKey);
         if (existing) return existing;
 
@@ -1230,16 +1230,16 @@ const installGitScopeSubscription = (): void => {
   if (gitScopeSubscriptionInstalled || typeof queueMicrotask !== 'function') return;
   gitScopeSubscriptionInstalled = true;
   queueMicrotask(() => {
-    let lastScope = resolveActiveWorkspaceScopeKey();
+    let lastScope = resolveActiveProjectScopeKey();
     const check = () => {
-      const nextScope = resolveActiveWorkspaceScopeKey();
+      const nextScope = resolveActiveProjectScopeKey();
       if (nextScope !== lastScope) {
         lastScope = nextScope;
         swapGitScope(nextScope);
       }
     };
     useSessionUIStore?.subscribe?.(check);
-    useWorkspaceSessionIndexStore?.subscribe?.(check);
+    useProjectSessionIndexStore?.subscribe?.(check);
   });
 };
 installGitScopeSubscription();

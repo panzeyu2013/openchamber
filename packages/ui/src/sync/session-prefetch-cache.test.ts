@@ -21,27 +21,27 @@ describe("session prefetch cache", () => {
     expect(getSessionPrefetch("/repo", "session", runtimes[1])?.limit).toBe(20)
   })
 
-  test("isolates colliding directory and session IDs by workspace scope", () => {
-    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 10, complete: false, scopeKey: "workspace:ws-a" })
-    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 20, complete: true, scopeKey: "workspace:ws-b" })
+  test("isolates colliding directory and session IDs by project scope", () => {
+    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 10, complete: false, scopeKey: "project:ws-a" })
+    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 20, complete: true, scopeKey: "project:ws-b" })
 
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")?.limit).toBe(10)
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-b")?.limit).toBe(20)
+    expect(getSessionPrefetch("/repo", "session", "project:ws-a")?.limit).toBe(10)
+    expect(getSessionPrefetch("/repo", "session", "project:ws-b")?.limit).toBe(20)
 
-    // Clearing one workspace scope never touches the other.
-    clearDirectorySessionPrefetch("/repo", "workspace:ws-a")
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")).toBe(undefined)
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-b")?.limit).toBe(20)
+    // Clearing one project scope never touches the other.
+    clearDirectorySessionPrefetch("/repo", "project:ws-a")
+    expect(getSessionPrefetch("/repo", "session", "project:ws-a")).toBe(undefined)
+    expect(getSessionPrefetch("/repo", "session", "project:ws-b")?.limit).toBe(20)
   })
 
   test("prefetch reads are keyed by the explicit scope only (no ambient fallback)", () => {
-    clearRuntimeSessionPrefetch("workspace:ws-a")
-    clearRuntimeSessionPrefetch("workspace:ws-b")
-    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 30, complete: true, scopeKey: "workspace:ws-a" })
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")?.limit).toBe(30)
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-b")).toBe(undefined)
-    clearRuntimeSessionPrefetch("workspace:ws-a")
-    expect(getSessionPrefetch("/repo", "session", "workspace:ws-a")).toBe(undefined)
+    clearRuntimeSessionPrefetch("project:ws-a")
+    clearRuntimeSessionPrefetch("project:ws-b")
+    setSessionPrefetch({ directory: "/repo", sessionID: "session", limit: 30, complete: true, scopeKey: "project:ws-a" })
+    expect(getSessionPrefetch("/repo", "session", "project:ws-a")?.limit).toBe(30)
+    expect(getSessionPrefetch("/repo", "session", "project:ws-b")).toBe(undefined)
+    clearRuntimeSessionPrefetch("project:ws-a")
+    expect(getSessionPrefetch("/repo", "session", "project:ws-a")).toBe(undefined)
   })
 
   test("clears only the owning runtime and directory", () => {

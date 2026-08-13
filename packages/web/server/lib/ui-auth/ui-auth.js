@@ -302,20 +302,20 @@ const isUrlAuthReadableHttpPath = (pathname) => {
     || pathname.startsWith('/api/fs/serve/')
     || pathname.startsWith('/api/preview/proxy/')
     || /^\/api\/projects\/[^/]+\/icon$/.test(pathname)
-    // Workspace catalog read paths: GET-only, no secrets in responses, and
+    // Project catalog read paths: GET-only, no secrets in responses, and
     // used by mini-chat/tray surfaces that may only hold a URL token.
-    || pathname === '/api/workspaces'
-    || pathname === '/api/workspaces/capabilities'
-    || pathname === '/api/workspaces/diagnostics'
-    || /^\/api\/workspaces\/[^/]+\/children$/.test(pathname)
+    || pathname === '/api/projects'
+    || pathname === '/api/projects/capabilities'
+    || pathname === '/api/projects/diagnostics'
+    || /^\/api\/projects\/[^/]+\/children$/.test(pathname)
     || pathname === '/api/connections'
-    || pathname === '/api/workspace-sessions/snapshot'
-    || pathname === '/api/workspace-sessions/events'
-    || isUrlAuthWorkspaceRuntimeReadablePath(pathname);
+    || pathname === '/api/project-sessions/snapshot'
+    || pathname === '/api/project-sessions/events'
+    || isUrlAuthProjectRuntimeReadablePath(pathname);
 };
 
-const isUrlAuthWorkspaceRuntimeReadablePath = (pathname) => {
-  const match = /^\/api\/workspaces\/[^/]+\/runtime(\/.*)$/.exec(pathname);
+const isUrlAuthProjectRuntimeReadablePath = (pathname) => {
+  const match = /^\/api\/projects\/[^/]+\/runtime(\/.*)$/.exec(pathname);
   if (!match) return false;
   const readablePath = match[1];
   const prefixes = [
@@ -360,10 +360,10 @@ const isUrlAuthWebSocketPath = (pathname) => {
     || pathname === '/api/terminal/ws'
     || pathname === '/api/dictation/ws'
     || pathname.startsWith('/api/preview/proxy/')
-    // Workspace-prefixed runtime sockets (event/terminal WS forwarded through
-    // the workspace runtime proxy) use the same short-lived URL token as the
+    // Project-prefixed runtime sockets (event/terminal WS forwarded through
+    // the project runtime proxy) use the same short-lived URL token as the
     // non-prefixed paths they proxy to.
-    || /^\/api\/workspaces\/[^/]+\/runtime\/api\/(event\/ws|global\/event\/ws|terminal\/ws)$/.test(pathname);
+    || /^\/api\/projects\/[^/]+\/runtime\/api\/(event\/ws|global\/event\/ws|terminal\/ws)$/.test(pathname);
 };
 
 const canUseUrlAuthTokenForRequest = (req) => {

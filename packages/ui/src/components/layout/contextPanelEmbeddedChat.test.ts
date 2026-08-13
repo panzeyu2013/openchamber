@@ -73,7 +73,7 @@ describe('embedded session chat URL', () => {
     expect(url.searchParams.get('currentTheme')).toBeNull();
   });
 
-  test('carries the workspace target and isolates cached iframe URLs by workspace', () => {
+  test('carries the project target and isolates cached iframe URLs by project', () => {
     const theme = {
       mode: 'system' as const,
       lightThemeId: 'light',
@@ -82,8 +82,8 @@ describe('embedded session chat URL', () => {
     };
     const srcA = buildEmbeddedSessionChatURL('ses_same', '/repo', false, theme, 'ws-a');
     const srcB = buildEmbeddedSessionChatURL('ses_same', '/repo', false, theme, 'ws-b');
-    expect(new URL(srcA).searchParams.get('workspace')).toBe('ws-a');
-    expect(new URL(srcB).searchParams.get('workspace')).toBe('ws-b');
+    expect(new URL(srcA).searchParams.get('project')).toBe('ws-a');
+    expect(new URL(srcB).searchParams.get('project')).toBe('ws-b');
 
     const cache = new Map<string, EmbeddedSessionChatURLCacheEntry>();
     const cachedA = getOrCreateEmbeddedSessionChatURL(cache, 'tab', 'ses_same', '/repo', false, theme, 'ws-a');
@@ -99,7 +99,7 @@ describe('embedded session chat URL', () => {
 
     const src = buildEmbeddedSessionChatURL(
       'ses_abcdefghijklmnopqrstuvwxyz0123456789',
-      '/workspace/projects/openchamber',
+      '/project/projects/openchamber',
       true,
       {
         mode: 'system',
@@ -111,7 +111,7 @@ describe('embedded session chat URL', () => {
 
     const srcWithoutTokens = buildEmbeddedSessionChatURL(
       'ses_abcdefghijklmnopqrstuvwxyz0123456789',
-      '/workspace/projects/openchamber',
+      '/project/projects/openchamber',
       true,
       {
         mode: 'system',

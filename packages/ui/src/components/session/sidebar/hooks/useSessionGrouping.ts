@@ -127,7 +127,7 @@ export const useSessionGrouping = (args: Args) => {
 
       const getGroupKey = (session: Session) => {
         if (session.time?.archived) return archivedKey;
-        // VS Code groups by open workspace, not by worktree: every non-archived
+        // VS Code groups by open project, not by worktree: every non-archived
         // session in a project belongs to that project's single (root) group.
         // Worktrees aren't registered in VS Code, so the desktop directory-match
         // below would otherwise dump these sessions into the archived bucket.
@@ -213,7 +213,7 @@ export const useSessionGrouping = (args: Args) => {
         return aLabel.localeCompare(bLabel);
       });
 
-      // VS Code groups strictly by open workspace — no per-worktree subgroups.
+      // VS Code groups strictly by open project — no per-worktree subgroups.
       const worktreeGroups = args.isVSCode ? [] : sortedWorktrees;
       worktreeGroups.forEach((meta) => {
         const directory = normalizePath(meta.path) ?? meta.path;

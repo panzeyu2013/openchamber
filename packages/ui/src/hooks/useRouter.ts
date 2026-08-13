@@ -69,10 +69,10 @@ export function useRouter(): void {
         // 1. Apply session first (may trigger async operations)
         if (route.sessionId) {
           const currentSessionId = useSessionUIStore.getState().currentSessionId;
-          const currentWorkspaceId = useSessionUIStore.getState().currentWorkspaceId;
-          if (route.sessionId !== currentSessionId || (route.workspaceId && route.workspaceId !== currentWorkspaceId)) {
+          const currentProjectId = useSessionUIStore.getState().currentProjectId;
+          if (route.sessionId !== currentSessionId || (route.projectId && route.projectId !== currentProjectId)) {
             const directoryHint = useSessionUIStore.getState().getDirectoryForSession(route.sessionId);
-            setCurrentSession(route.sessionId, directoryHint, route.workspaceId);
+            setCurrentSession(route.sessionId, directoryHint, route.projectId);
           }
         }
 
@@ -114,7 +114,7 @@ export function useRouter(): void {
 
     return {
       sessionId: sessionState.currentSessionId,
-      workspaceId: sessionState.currentWorkspaceId,
+      projectId: sessionState.currentProjectId,
       tab: uiState.activeMainTab,
       isSettingsOpen: uiState.isSettingsDialogOpen,
       settingsPath: uiState.settingsPage,
@@ -164,7 +164,7 @@ export function useRouter(): void {
         updateBrowserURL({
           ...getCurrentAppState(),
           sessionId: route.sessionId ?? useSessionUIStore.getState().currentSessionId,
-          workspaceId: route.workspaceId ?? useSessionUIStore.getState().currentWorkspaceId,
+          projectId: route.projectId ?? useSessionUIStore.getState().currentProjectId,
           tab: route.tab ?? useUIStore.getState().activeMainTab,
           settingsPath: route.settingsPath ?? useUIStore.getState().settingsPage,
           diffFile: route.diffFile ?? useUIStore.getState().pendingDiffFile,
@@ -182,19 +182,19 @@ export function useRouter(): void {
     }
 
     let prevSessionId: string | null = useSessionUIStore.getState().currentSessionId;
-    let prevWorkspaceId: string | null = useSessionUIStore.getState().currentWorkspaceId;
+    let prevProjectId: string | null = useSessionUIStore.getState().currentProjectId;
 
     const unsubscribe = useSessionUIStore.subscribe((state) => {
       const sessionId = state.currentSessionId;
-      const workspaceId = state.currentWorkspaceId;
+      const projectId = state.currentProjectId;
 
       // Skip if no change or if we're currently applying a route
-      if ((sessionId === prevSessionId && workspaceId === prevWorkspaceId) || isApplyingRouteRef.current) {
+      if ((sessionId === prevSessionId && projectId === prevProjectId) || isApplyingRouteRef.current) {
         return;
       }
 
       prevSessionId = sessionId;
-      prevWorkspaceId = workspaceId;
+      prevProjectId = projectId;
       syncURLFromState();
     });
 

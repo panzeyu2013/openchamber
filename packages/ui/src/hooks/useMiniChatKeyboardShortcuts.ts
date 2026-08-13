@@ -7,17 +7,17 @@ import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import { useEffectiveDirectory } from './useEffectiveDirectory';
 
 export const useMiniChatKeyboardShortcuts = () => {
   const shortcutOverrides = useUIStore((state) => state.shortcutOverrides);
   const activeProject = useProjectsStore((state) => state.getActiveProject());
   const openNewSessionDraft = useSessionUIStore((state) => state.openNewSessionDraft);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const effectiveDirectory = useEffectiveDirectory();
   const miniChatDirectory = effectiveDirectory || '';
-  const miniChatProject = activeWorkspaceId ? null : activeProject;
+  const miniChatProject = activeProjectId ? null : activeProject;
 
   React.useEffect(() => {
     const combo = (actionId: string) => getEffectiveShortcutCombo(actionId, shortcutOverrides);
@@ -34,7 +34,7 @@ export const useMiniChatKeyboardShortcuts = () => {
         void invokeDesktop('desktop_open_draft_mini_chat_window', {
           directory: miniChatDirectory,
           projectId: miniChatProject?.id ?? null,
-          workspaceId: activeWorkspaceId ?? null,
+          workspaceId: activeProjectId ?? null,
           ...getDesktopRuntimeEndpointArgs(),
         })?.catch((error) => {
           console.warn('[mini-chat-shortcuts] failed to open draft mini chat window', error);
@@ -104,5 +104,5 @@ export const useMiniChatKeyboardShortcuts = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeWorkspaceId, miniChatDirectory, miniChatProject?.id, openNewSessionDraft, shortcutOverrides]);
+  }, [activeProjectId, miniChatDirectory, miniChatProject?.id, openNewSessionDraft, shortcutOverrides]);
 };

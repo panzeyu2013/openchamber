@@ -6,7 +6,7 @@
  * snippet tokens and attachment citations — each re-scanning the same string
  * and each having to be remembered when a new construct was added. This is the
  * single entry point: give it the text and what the composer knows about the
- * workspace, get back the ranges.
+ * project, get back the ranges.
  *
  * It is also the seam the editor renders through. The mirror overlay consumes
  * these ranges via `buildHighlightParts`; a CodeMirror view maps the same
@@ -27,7 +27,7 @@ import { pathHighlightRanges } from './paths';
 import { filterKnownTokens, scanPrefixTokens } from './prefixTokens';
 
 /**
- * What the composer knows about its workspace while tokenizing. Every set is
+ * What the composer knows about its project while tokenizing. Every set is
  * authoritative: a token is only a reference if it resolves against one of
  * them, so unknown `/tokens` and `@words` stay plain prose.
  */

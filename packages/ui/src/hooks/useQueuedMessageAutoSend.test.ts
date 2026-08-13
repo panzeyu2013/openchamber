@@ -136,7 +136,7 @@ describe('resolveQueuedSessionStatusType', () => {
   let childStores: ChildStoreManager;
 
   beforeEach(() => {
-    childStores = new ChildStoreManager("workspace:test");
+    childStores = new ChildStoreManager("project:test");
     const store = childStores.ensureChild(DIRECTORY, { bootstrap: false });
     store.setState({ status: 'complete', session_status: {}, message: {} });
     setSyncRefs({} as never, childStores, DIRECTORY);

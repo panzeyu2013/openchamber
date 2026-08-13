@@ -78,10 +78,10 @@ describe('createSessionOwnershipIndex', () => {
     ]);
   });
 
-  test('requires exact workspace directories in VS Code', () => {
+  test('requires exact project directories in VS Code', () => {
     const ownership = createSessionOwnershipIndex(
       [
-        { id: 'workspace', directory: '/projects/app' },
+        { id: 'project', directory: '/projects/app' },
         { id: 'nested', directory: '/projects/app/packages/ui' },
       ] as Session[],
       [{ id: 'app', normalizedPath: '/projects/app' }],
@@ -89,7 +89,7 @@ describe('createSessionOwnershipIndex', () => {
       true,
     );
 
-    expect(ownership.bySessionId.get('workspace')?.projectId).toBe('app');
+    expect(ownership.bySessionId.get('project')?.projectId).toBe('app');
     expect(ownership.bySessionId.has('nested')).toBe(false);
   });
 

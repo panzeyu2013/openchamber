@@ -50,8 +50,8 @@ import {
   partitionWorktreesByRegisteredProject,
 } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { mergeLiveSessionWithSummary, selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { mergeLiveSessionWithSummary, selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useMobileSessionExpansionStore } from '@/stores/useMobileSessionExpansionStore';
 import { useMobileSessionTreeStore } from '@/stores/useMobileSessionTreeStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
@@ -65,7 +65,7 @@ import {
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions, useGlobalSessionStatus } from '@/sync/sync-context';
 import { useSessionUnseenCount } from '@/sync/notification-store';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 import { useHasSessionActivityDuration } from '@/sync/session-activity-timing';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import type { WorktreeMetadata } from '@/types/worktree';
@@ -476,8 +476,8 @@ const SessionRow: React.FC<{
   // Live indicators, same conventions as the desktop sidebar: busy/retry →
   // spinner; unseen activity on a non-active row → attention dot.
   const liveStatus = useGlobalSessionStatus(session.id);
-  const activeWorkspaceId = useActiveWorkspaceId();
-  const unseenCount = useSessionUnseenCount(session.id, activeWorkspaceId);
+  const activeProjectId = useActiveProjectId();
+  const unseenCount = useSessionUnseenCount(session.id, activeProjectId);
   const statusType = liveStatus?.type ?? 'idle';
   const isStreaming = statusType === 'busy' || statusType === 'retry';
   const showUnreadDot = !isStreaming && unseenCount > 0 && !active;
@@ -857,7 +857,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
   const { t } = useI18n();
   const { git } = useRuntimeAPIs();
   const liveSessions = useAllLiveSessions();
-  const globalActiveSummaries = useWorkspaceSessionIndexStore(
+  const globalActiveSummaries = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived),
   );
   const globalActiveSessions = React.useMemo(
@@ -873,10 +873,10 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     [open, variant],
   ));
   const projects = useProjectsStore((state) => state.projects);
-  const activeProjectId = useProjectsStore((state) => state.activeProjectId);
+  const legacyActiveProjectId = useProjectsStore((state) => state.activeProjectId);
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
   const archiveSession = useSessionUIStore((state) => state.archiveSession);
   const deleteSession = useSessionUIStore((state) => state.deleteSession);
@@ -952,7 +952,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       setConfirmingRemoveProjectId(null);
       return;
     }
-    void useWorkspaceSessionIndexStore.getState().refresh();
+    void useProjectSessionIndexStore.getState().refresh();
     // intentionally only on open transition — live overlay handles updates after that
   }, [open]);
 
@@ -1058,7 +1058,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       project,
       buckets: [] as WorktreeBucket[],
       totalSessions: 0,
-      isActive: project.id === activeProjectId,
+      isActive: project.id === legacyActiveProjectId,
     }));
 
     const ensureBucket = (node: ProjectNode, path: string, worktree: WorktreeMetadata | null): WorktreeBucket => {
@@ -1106,7 +1106,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
     }
 
     return nodes;
-  }, [activeProjectId, pinnedSessionIds, projectsMeta, sessionOrderRanks, sessions]);
+  }, [legacyActiveProjectId, pinnedSessionIds, projectsMeta, sessionOrderRanks, sessions]);
 
   const normalizedDirectory = normalizePath(currentDirectory);
 
@@ -1259,7 +1259,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
       const worktree = findExactWorktreeMatch(project, normalizePath(directory ?? ''));
       if (worktree) setWorktreeExpanded(`${project.id}::${normalizePath(worktree.path)}`, true);
     }
-    void setCurrentSession(session.id, directory, activeWorkspaceId);
+    void setCurrentSession(session.id, directory, activeProjectId);
     onOpenChange(false);
   };
 
@@ -1882,7 +1882,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
             if (!value) setWorktreeDialogProjectId(null);
           }}
           onWorktreeCreated={(worktreePath, options) => {
-            if (options?.sessionId) void setCurrentSession(options.sessionId, worktreePath, activeWorkspaceId);
+            if (options?.sessionId) void setCurrentSession(options.sessionId, worktreePath, activeProjectId);
             else
               openNewSessionDraft({
                 selectedProjectId: worktreeDialogProjectId,
@@ -1957,7 +1957,7 @@ export const MobileSessionsSheet: React.FC<MobileSessionsSheetProps> = ({ open, 
 
 const DRAWER_ROOT_ID = 'mobile-surface-root';
 const DRAWER_ENTER_DELAY_MS = 16;
-// Slightly long, decelerating slide — matches the workspace drawer so both
+// Slightly long, decelerating slide — matches the project drawer so both
 // sides feel like the same piece of chrome.
 const DRAWER_ENTER_DURATION_MS = 320;
 const DRAWER_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';

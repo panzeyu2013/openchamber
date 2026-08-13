@@ -15,15 +15,16 @@ export function parseRoute(searchParams?: URLSearchParams): RouteState {
 
   return {
     sessionId: parseSessionId(params),
-    workspaceId: parseWorkspaceId(params),
+    projectId: parseProjectId(params),
     tab: parseTab(params),
     settingsPath: parseSettingsPath(params),
     diffFile: parseDiffFile(params),
   };
 }
 
-/** Parse an explicit workspace target, preserving legacy URLs without it. */
-function parseWorkspaceId(params: URLSearchParams): string | null {
+/** Parse an explicit project target from the `workspace` URL param,
+ * preserving legacy URLs without it. */
+function parseProjectId(params: URLSearchParams): string | null {
   const value = params.get(ROUTE_PARAMS.WORKSPACE);
   if (!value || value.trim().length === 0) {
     return null;

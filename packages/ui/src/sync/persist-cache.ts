@@ -2,12 +2,13 @@
  * Persisted child-store metadata caches.
  *
  * VCS info, project metadata, icons, and a bounded session-list snapshot are
- * cached to localStorage per workspace scope key and directory so they survive
+ * cached to localStorage per project scope key and directory so they survive
  * reloads. Message/part data is always loaded from the server.
  */
 
 import type { Session, VcsInfo } from "@opencode-ai/sdk/v2/client"
 import type { ProjectMeta } from "./types"
+import { legacyScopeKeyForProjectKey } from "@/projects/identity"
 import { countSyncPersistenceSerialization, countSyncPersistenceStorageWrite } from "./performance-diagnostics"
 
 /** Cap persisted session lists so localStorage stays bounded per directory. */
@@ -16,8 +17,8 @@ const SESSION_CACHE_FALLBACK_LIMITS = [PERSISTED_SESSION_LIMIT, 25, 10, 5, 1] as
 const SESSION_PERSIST_DEBOUNCE_MS = 50
 
 type PendingSessionWrite = {
-  /** Workspace scope key the write belongs to. Writes always commit: the
-   * storage key is collision-free per workspace. */
+  /** Project scope key the write belongs to. Writes always commit: the
+   * storage key is collision-free per project. */
   scopeKey: string
   key: string
   sessions: Session[]
@@ -45,6 +46,15 @@ function storagePrefixForScope(scopeKey: string, directory: string): string {
   return `oc.dir.v2.${head}.${hashCode(`${scopeKey}\0${directory}`)}`
 }
 
+/** Legacy `workspace:`-prefixed storage prefix written by pre-rename builds.
+ * Read paths fall back to it (P-MIG) so caches survive the scope-key rename;
+ * writes always use the current `project:` prefix. */
+function legacyStoragePrefixForScope(scopeKey: string, directory: string): string | null {
+  const legacyScopeKey = legacyScopeKeyForProjectKey(scopeKey)
+  if (!legacyScopeKey) return null
+  return `oc.dir.v2.${directory.slice(0, 12).replace(/[^a-zA-Z0-9]/g, "_")}.${hashCode(`${legacyScopeKey}\0${directory}`)}`
+}
+
 // ---------------------------------------------------------------------------
 // Typed cache helpers
 // ---------------------------------------------------------------------------
@@ -63,8 +73,15 @@ function readCache<T>(directory: string, key: CacheKey, scopeKey: string): T | u
       if (pending) return pending.sessions as T
     }
     const raw = localStorage.getItem(currentKey)
-    if (!raw) return undefined
-    return JSON.parse(raw) as T
+    if (raw) return JSON.parse(raw) as T
+    // P-MIG: pre-rename builds persisted under a `workspace:`-derived prefix;
+    // fall back to that key so caches survive the scope-key rename.
+    const legacyKey = legacyStoragePrefixForScope(scopeKey, directory)
+    if (legacyKey) {
+      const legacyRaw = localStorage.getItem(`${legacyKey}.${key}`)
+      if (legacyRaw) return JSON.parse(legacyRaw) as T
+    }
+    return undefined
   } catch {
     return undefined
   }
@@ -75,6 +92,9 @@ function writeCache<T>(directory: string, key: CacheKey, value: T | undefined, s
     const currentKey = cacheKey(directory, key, scopeKey)
     if (value === undefined) {
       localStorage.removeItem(currentKey)
+      // P-MIG: a cleared cache must not resurrect from the legacy key.
+      const legacyKey = legacyStoragePrefixForScope(scopeKey, directory)
+      if (legacyKey) localStorage.removeItem(`${legacyKey}.${key}`)
     } else {
       localStorage.setItem(currentKey, JSON.stringify(value))
     }
@@ -142,7 +162,7 @@ function flushPendingSessionWrites(): void {
   if (pendingSessionWrites.size === 0) return
   const writes = [...pendingSessionWrites.values()]
   pendingSessionWrites.clear()
-  // Every write is workspace-scoped with a collision-free storage key, so it
+  // Every write is project-scoped with a collision-free storage key, so it
   // always commits against its captured scope.
   for (const pending of writes) {
     writeSessionCache(pending.key, pending.sessions)
@@ -178,7 +198,7 @@ export type PersistedDirCache = {
   sessions: Session[] | undefined
 }
 
-/** Read all cached metadata for a directory, keyed by workspace scope. */
+/** Read all cached metadata for a directory, keyed by project scope. */
 export function readDirCache(directory: string, scopeKey: string): PersistedDirCache {
   return {
     vcs: readCache<VcsInfo>(directory, "vcs", scopeKey),

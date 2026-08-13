@@ -93,7 +93,7 @@ export const WorkStatusContextSection: React.FC<Props> = ({ sessionId, directory
       summary={summaryParts.join(' · ')}
     >
       {/* Attached threads first: they are specific to this session, while the
-          counts below describe the workspace. */}
+          counts below describe the project. */}
       {linked.map((entry) => (
         <WorkStatusRow
           key={entry.id}

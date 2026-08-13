@@ -156,9 +156,9 @@ export async function proxyApiRequest(options: {
   /** Forward-compat: mark the request as control-plane-owned so the extension
    * host never forwards it to the opencode binary. */
   controlPlane?: boolean;
-  /** Forward-compat: workspace scope the control plane should resolve the
+  /** Forward-compat: project scope the control plane should resolve the
    * request against (future control-plane proxy). */
-  workspaceId?: string;
+  projectId?: string;
 }): Promise<ProxiedApiResponse> {
   // Do not impose a bridge-level timeout. Let the original fetch's AbortSignal
   // (or OpenCode server response timing) control the lifecycle.

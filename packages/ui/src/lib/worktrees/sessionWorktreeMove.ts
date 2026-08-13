@@ -4,7 +4,7 @@ import { getGitStatus } from '@/lib/gitApi';
 import { normalizePath } from '@/lib/pathNormalization';
 import { createQuickWorktree, resolveProjectRef } from '@/lib/worktreeSessionCreator';
 import { getLatestWorktreeMetadata, removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { moveSessionToDirectory } from '@/sync/session-actions';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getDirectoryState } from '@/sync/sync-refs';
@@ -153,7 +153,7 @@ const moveSessionTreeToQuickWorktree = async (input: {
     }
 
     try {
-      await useWorkspaceSessionIndexStore.getState().refresh();
+      await useProjectSessionIndexStore.getState().refresh();
     } catch (error) {
       // Direct action updates already reconciled both stores. Keep the move
       // successful if this best-effort authoritative refresh is unavailable.

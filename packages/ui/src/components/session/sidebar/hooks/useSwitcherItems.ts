@@ -2,8 +2,8 @@ import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { useGitAllBranches } from '@/stores/useGitStore';
@@ -47,7 +47,7 @@ const formatProjectLabel = (project: { label?: string | null; path: string } | n
 
 export const useSwitcherItems = (enabled: boolean, options: SwitcherItemsOptions = {}): SwitcherItem[] => {
   const { scopeProjectId = null, maxParents = MAX_PARENT_SESSIONS } = options;
-  const activeSessions = useWorkspaceSessionIndexStore(
+  const activeSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
   );
   const projects = useProjectsStore((state) => state.projects);

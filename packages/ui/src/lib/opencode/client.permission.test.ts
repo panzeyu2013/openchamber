@@ -76,11 +76,14 @@ mock.module('@opencode-ai/sdk/v2', () => ({
 
 mock.module('@/contexts/runtimeAPIRegistry', () => ({
   getRegisteredRuntimeAPIs: mock(() => null),
-  isWorkspaceRuntimeActive: mock(() => false),
+  isProjectRuntimeActive: mock(() => false),
 }));
 
 mock.module('@/lib/runtime-url', () => ({
   getRuntimeUrlResolver: mock(() => ({
+    api: (path: string) => path,
+  })),
+  configureRuntimeUrlResolver: mock(() => ({
     api: (path: string) => path,
   })),
 }));

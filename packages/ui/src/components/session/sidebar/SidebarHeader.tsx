@@ -18,7 +18,7 @@ type Props = {
   hideDirectoryControls: boolean;
   showRecentControls: boolean;
   handleOpenDirectoryDialog: () => void;
-  handleOpenAddWorkspaceDialog: () => void;
+  handleOpenAddProjectDialog: () => void;
   onOpenScheduled: () => void;
   onOpenMultiRun: () => void;
   canOpenMultiRun: boolean;
@@ -44,7 +44,7 @@ export function SidebarHeader(props: Props): React.ReactNode {
     hideDirectoryControls,
     showRecentControls,
     handleOpenDirectoryDialog,
-    handleOpenAddWorkspaceDialog,
+    handleOpenAddProjectDialog,
     onOpenScheduled,
     onOpenMultiRun,
     canOpenMultiRun,
@@ -104,14 +104,14 @@ export function SidebarHeader(props: Props): React.ReactNode {
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={handleOpenAddWorkspaceDialog}
+                  onClick={handleOpenAddProjectDialog}
                   className={cn(headerActionButtonClass, 'text-muted-foreground hover:text-foreground hover:bg-transparent')}
-                  aria-label={t('sessions.sidebar.header.actions.addWorkspace')}
+                  aria-label={t('sessions.sidebar.header.actions.addProject')}
                 >
                   <Icon name="server" className={headerActionIconClass} />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="bottom" sideOffset={4}><p>{t('sessions.sidebar.header.actions.addWorkspace')}</p></TooltipContent>
+              <TooltipContent side="bottom" sideOffset={4}><p>{t('sessions.sidebar.header.actions.addProject')}</p></TooltipContent>
             </Tooltip>
 
             <Tooltip>

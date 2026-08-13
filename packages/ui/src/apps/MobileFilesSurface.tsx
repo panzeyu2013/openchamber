@@ -169,7 +169,7 @@ export const MobileFilesSurface: React.FC<MobileFilesSurfaceProps> = ({ onClose 
 
   // Chat tool rows (read/skill/edit) stage a pending file focus/navigation in
   // the UI store — the same channel desktop's context panel consumes. Route
-  // straight to the editor for targets inside this workspace; the editor
+  // straight to the editor for targets inside this project; the editor
   // itself consumes pendingFileNavigation to jump to the requested line.
   const pendingFileFocusPath = useUIStore((state) => state.pendingFileFocusPath);
   const pendingFileNavigation = useUIStore((state) => state.pendingFileNavigation);

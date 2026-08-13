@@ -17,7 +17,7 @@ const makePatch = (path: string, line: number, before: string, after: string) =>
 
 const files = [
     {
-        filePath: '/workspace/project/src/first.ts',
+        filePath: '/project/project/src/first.ts',
         relativePath: 'src/first.ts',
         patch: makePatch('src/first.ts', 4, 'first old', 'first new'),
         additions: 1,
@@ -25,7 +25,7 @@ const files = [
         type: 'update',
     },
     {
-        filePath: '/workspace/project/src/second.ts',
+        filePath: '/project/project/src/second.ts',
         relativePath: 'src/second.ts',
         patch: makePatch('src/second.ts', 12, 'second old', 'second new'),
         additions: 1,
@@ -64,7 +64,7 @@ describe('ApplyPatchFileButtons', () => {
                 event.stopPropagation();
                 const targetPath = typeof file.relativePath === 'string' ? file.relativePath : '';
                 openApplyPatchFileInEditor({
-                    currentDirectory: '/workspace/project',
+                    currentDirectory: '/project/project',
                     diffLabel: `${targetPath} (changes)`,
                     editor,
                     file,
@@ -81,11 +81,11 @@ describe('ApplyPatchFileButtons', () => {
 
         expect(propagationStops).toBe(2);
         expect(openDiffCalls).toEqual([
-            ['', '/workspace/project/src/first.ts', 'src/first.ts (changes)', {
+            ['', '/project/project/src/first.ts', 'src/first.ts (changes)', {
                 line: 4,
                 patch: files[0]?.patch,
             }],
-            ['', '/workspace/project/src/second.ts', 'src/second.ts (changes)', {
+            ['', '/project/project/src/second.ts', 'src/second.ts (changes)', {
                 line: 12,
                 patch: files[1]?.patch,
             }],

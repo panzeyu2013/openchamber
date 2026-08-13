@@ -32,6 +32,7 @@ import type { RecoveryVariant } from '@/components/onboarding/DesktopConnectionR
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { markSessionViewed } from '@/sync/notification-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
+import { normalizePath } from '@/lib/pathNormalization';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { opencodeClient } from '@/lib/opencode/client';
 import { runtimeFetch } from '@/lib/runtime-fetch';
@@ -40,14 +41,14 @@ import { useAutoReviewStore } from '@/stores/useAutoReviewStore';
 import { resumeAutoReviewRun } from '@/lib/reviewFlow';
 import { SyncProvider, useSyncDirectory } from '@/sync/sync-context';
 import { useSync } from '@/sync/use-sync';
-import { WorkspaceRuntimeGate, WorkspaceRuntimeProvider } from '@/workspaces/WorkspaceRuntimeProvider';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
-import { WorkspaceSessionsSection } from '@/components/session/sidebar/WorkspaceSessionsSection';
+import { ProjectRuntimeGate, ProjectRuntimeProvider } from '@/projects/ProjectRuntimeProvider';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
+import { useActiveProjectId } from '@/projects/useActiveProject';
+import { ProjectSessionsSection } from '@/components/session/sidebar/ProjectSessionsSection';
 import { ConfigUpdateOverlay } from '@/components/ui/ConfigUpdateOverlay';
 import { AboutDialog } from '@/components/ui/AboutDialog';
 import { RuntimeAPIProvider } from '@/contexts/RuntimeAPIProvider';
-import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive, registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGitHubAuthStore } from '@/stores/useGitHubAuthStore';
 import { useFeatureFlagsStore } from '@/stores/useFeatureFlagsStore';
@@ -59,9 +60,9 @@ import { lazyWithChunkRecovery } from '@/lib/chunkLoadRecovery';
 import { useI18n } from '@/lib/i18n';
 import { applyMobileKeyboardMode } from '@/lib/mobileKeyboardMode';
 import { isEmbeddedSessionChat } from '@/components/layout/contextPanelEmbeddedChat';
-import { SyncAppEffects, WorkspaceCatalogSessionIndexEffects } from '@/apps/AppEffects';
-import { useWorkspaceCatalogStore } from '@/workspaces/catalog-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { SyncAppEffects, ProjectCatalogSessionIndexEffects } from '@/apps/AppEffects';
+import { useProjectCatalogStore } from '@/projects/catalog-store';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useAppFontEffects } from '@/apps/useAppFontEffects';
 import { OpenCodeUpdateToast } from '@/components/update/OpenCodeUpdateToast';
 import { markStartupTrace, startupTraceEnabled } from '@/lib/startupTrace';
@@ -110,7 +111,7 @@ type AppProps = {
 type EmbeddedSessionChatConfig = {
   sessionId: string;
   directory: string | null;
-  workspaceId: string | null;
+  projectId: string | null;
   readOnly: boolean;
 };
 
@@ -139,15 +140,15 @@ const readEmbeddedSessionChatConfig = (): EmbeddedSessionChatConfig | null => {
   const directory = typeof directoryRaw === 'string' && directoryRaw.trim().length > 0
     ? directoryRaw.trim()
     : null;
-  const workspaceRaw = params.get('workspace');
-  const workspaceId = typeof workspaceRaw === 'string' && workspaceRaw.trim().length > 0
-    ? workspaceRaw.trim()
+  const projectRaw = params.get('project');
+  const projectId = typeof projectRaw === 'string' && projectRaw.trim().length > 0
+    ? projectRaw.trim()
     : null;
 
   return {
     sessionId,
     directory,
-    workspaceId,
+    projectId,
     readOnly: params.get('readOnly') === '1' || params.get('readOnly') === 'true',
   };
 };
@@ -178,7 +179,7 @@ const EmbeddedSessionChatContent: React.FC<{
     if (isVSCodeRuntime) return;
     if (expectedDirectory && activeDirectory !== expectedDirectory) return;
 
-    const bootstrapKey = `${embeddedSessionChat.workspaceId ?? ''}\n${expectedDirectory}\n${embeddedSessionChat.sessionId}`;
+    const bootstrapKey = `${embeddedSessionChat.projectId ?? ''}\n${expectedDirectory}\n${embeddedSessionChat.sessionId}`;
     // Skip if this session was already bootstrapped and a session is still
     // active — allows in-place navigation (e.g. "Open subtask") to change
     // currentSessionId without this effect forcing it back. Only re-bootstrap
@@ -189,14 +190,14 @@ const EmbeddedSessionChatContent: React.FC<{
     }
 
     bootstrapKeyRef.current = bootstrapKey;
-    setCurrentSession(embeddedSessionChat.sessionId, embeddedSessionChat.directory, embeddedSessionChat.workspaceId);
+    setCurrentSession(embeddedSessionChat.sessionId, embeddedSessionChat.directory, embeddedSessionChat.projectId);
     void sync.ensureSessionRenderable(embeddedSessionChat.sessionId, true);
   }, [
     activeDirectory,
     currentSessionId,
     embeddedSessionChat.directory,
     embeddedSessionChat.sessionId,
-    embeddedSessionChat.workspaceId,
+    embeddedSessionChat.projectId,
     expectedDirectory,
     isVSCodeRuntime,
     setCurrentSession,
@@ -211,7 +212,7 @@ const EmbeddedSessionChatContent: React.FC<{
     <>
       <SyncAppEffects
         embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled}
-        includeWorkspaceState={!embeddedSessionChat.workspaceId}
+        includeProjectState={!embeddedSessionChat.projectId}
       />
       <OpenCodeUpdateToast />
       <ChatView readOnly={embeddedSessionChat.readOnly} />
@@ -227,22 +228,22 @@ const EmbeddedSessionChatRuntime: React.FC<{
   runtimeEndpointEpoch: number;
   apis: RuntimeAPIs;
 }> = ({ embeddedSessionChat, isVSCodeRuntime, embeddedBackgroundWorkEnabled, runtimeEndpointEpoch, apis }) => {
-  const { handle } = useWorkspaceRuntime();
-  const workspaceId = embeddedSessionChat.workspaceId;
+  const { handle } = useProjectRuntime();
+  const projectId = embeddedSessionChat.projectId;
 
-  if (workspaceId && !handle) {
-    return <WorkspaceRuntimeGate />;
+  if (projectId && !handle) {
+    return <ProjectRuntimeGate />;
   }
   if (!handle) {
-    // No workspace identity for this embedded frame: there is no ambient
+    // No project identity for this embedded frame: there is no ambient
     // sync to fall back to, so render the explicit unavailable state.
-    return <WorkspaceRuntimeGate />;
+    return <ProjectRuntimeGate />;
   }
 
   return (
     <SyncProvider
-      key={`${runtimeEndpointEpoch}:${workspaceId ?? ''}`}
-      workspaceHandle={handle}
+      key={`${runtimeEndpointEpoch}:${projectId ?? ''}`}
+      projectHandle={handle}
     >
       <RuntimeAPIProvider apis={apis}>
         <TooltipProvider delayDuration={300} skipDelayDuration={150}>
@@ -259,17 +260,17 @@ const EmbeddedSessionChatRuntime: React.FC<{
   );
 };
 
-// Full-sync mount for the CURRENT workspace: when a workspace session is
-// selected, the sync runs against the workspace-bound runtime handle (SDK on
-// the control-plane workspace prefix + workspace directory) and the tree is
-// keyed by workspaceId, so switching workspaces remounts the sync WITHOUT a
-// global runtime switch and without touching other workspaces' state. With no
-// workspace selected the sync surface shows the workspace selection gate: the
+// Full-sync mount for the CURRENT project: when a project session is
+// selected, the sync runs against the project-bound runtime handle (SDK on
+// the control-plane project prefix + project directory) and the tree is
+// keyed by projectId, so switching projects remounts the sync WITHOUT a
+// global runtime switch and without touching other projects' state. With no
+// project selected the sync surface shows the project selection gate: the
 // unified sidebar is index-driven and needs no ambient sync.
-const WorkspaceSyncGate: React.FC = () => {
+const ProjectSyncGate: React.FC = () => {
   const { t } = useI18n();
-  const catalogStatus = useWorkspaceCatalogStore((state) => state.status);
-  const catalogSnapshot = useWorkspaceCatalogStore((state) => state.snapshot);
+  const catalogStatus = useProjectCatalogStore((state) => state.status);
+  const catalogSnapshot = useProjectCatalogStore((state) => state.snapshot);
   if (catalogStatus === 'idle' || catalogStatus === 'loading' || !catalogSnapshot) {
     return (
       <div className="flex h-full items-center justify-center bg-background px-4 text-center text-sm text-muted-foreground">
@@ -280,24 +281,24 @@ const WorkspaceSyncGate: React.FC = () => {
   return (
     <div className="flex h-full items-start justify-center overflow-y-auto bg-background px-4 pt-16">
       <div className="w-full max-w-md">
-        <WorkspaceSessionsSection />
+        <ProjectSessionsSection />
       </div>
     </div>
   );
 };
 
-const WorkspaceSyncMount: React.FC<{
+const ProjectSyncMount: React.FC<{
   runtimeEndpointEpoch: number;
   children: React.ReactNode;
 }> = ({ runtimeEndpointEpoch, children }) => {
-  const { handle } = useWorkspaceRuntime();
+  const { handle } = useProjectRuntime();
   if (!handle) {
-    return <WorkspaceSyncGate />;
+    return <ProjectSyncGate />;
   }
   return (
     <SyncProvider
-      key={`${runtimeEndpointEpoch}:${handle.workspaceId}`}
-      workspaceHandle={handle}
+      key={`${runtimeEndpointEpoch}:${handle.projectId}`}
+      projectHandle={handle}
     >
       {children}
     </SyncProvider>
@@ -324,7 +325,7 @@ function App({ apis }: AppProps) {
   const currentDirectory = useDirectoryStore((state) => state.currentDirectory);
   const setDirectory = useDirectoryStore((state) => state.setDirectory);
   const isSwitchingDirectory = useDirectoryStore((state) => state.isSwitchingDirectory);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const [showMemoryDebug, setShowMemoryDebug] = React.useState(false);
   const refreshGitHubAuthStatus = useGitHubAuthStore((state) => state.refreshStatus);
   const [isVSCodeRuntime, setIsVSCodeRuntime] = React.useState<boolean>(() => apis.runtime.isVSCode);
@@ -336,6 +337,32 @@ function App({ apis }: AppProps) {
   const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
   const mobileKeyboardMode = useUIStore((state) => state.mobileKeyboardMode);
   const isDesktopRuntime = React.useMemo(() => isDesktopShell(), []);
+  // Desktop cold start: no session is selected yet, so useActiveProjectId()
+  // is null and ProjectSyncMount would strand the app on the project
+  // selection gate. Auto-select the local project matching the restored
+  // directory (falling back to the first local project) so the main layout
+  // mounts and the composer's auto-draft opens — the pre-project-refactor
+  // launch experience. An explicit selection (current session / draft) always
+  // wins because useActiveProjectId() is non-null then.
+  const appCatalogSnapshot = useProjectCatalogStore((state) => state.snapshot);
+  const desktopDefaultProjectId = React.useMemo(() => {
+    if (activeProjectId || !isDesktopRuntime || !appCatalogSnapshot) {
+      return null;
+    }
+    const localProjects = appCatalogSnapshot.projects.filter((project) => project.connectionId === 'local');
+    if (localProjects.length === 0) {
+      return null;
+    }
+    const normalizedDirectory = normalizePath(currentDirectory);
+    if (normalizedDirectory) {
+      const match = localProjects.find(
+        (project) => normalizePath(project.canonicalPath) === normalizedDirectory,
+      );
+      if (match) return match.id;
+    }
+    return localProjects[0].id;
+  }, [activeProjectId, appCatalogSnapshot, currentDirectory, isDesktopRuntime]);
+  const resolvedProjectId = activeProjectId ?? desktopDefaultProjectId;
   const setPlanModeEnabled = useFeatureFlagsStore((state) => state.setPlanModeEnabled);
   const [bootInjectionStatus, setBootInjectionStatus] = React.useState<BootInjectionStatus>(() => {
     return getBootInjectionStatus();
@@ -368,25 +395,25 @@ function App({ apis }: AppProps) {
 
   React.useEffect(() => {
     return subscribeControlPlaneChanged(() => {
-      // Workspace sessions are bound to the pinned control plane and their
+      // Project sessions are bound to the pinned control plane and their
       // handle does not follow the legacy active-runtime endpoint. A Host
-      // Switcher event must therefore not reset/remount the workspace sync
-      // while a composite workspace/session target is active. Mobile's
+      // Switcher event must therefore not reset/remount the project sync
+      // while a composite project/session target is active. Mobile's
       // explicit connection/disconnect path owns its separate reset semantics.
-      if (activeWorkspaceId || embeddedSessionChat?.workspaceId) {
+      if (activeProjectId || embeddedSessionChat?.projectId) {
         return;
       }
       // Narrow control-plane bootstrap: re-fetch the control-plane-owned
       // catalog + session index through the existing store refresh paths.
-      // Workspace-scoped session stores are NEVER cleared — a failed refresh
+      // Project-scoped session stores are NEVER cleared — a failed refresh
       // keeps the prior snapshot (the stores signal failure, not empty success).
-      void useWorkspaceCatalogStore.getState().refresh().catch(() => undefined);
-      void useWorkspaceSessionIndexStore.getState().refresh().catch(() => undefined);
+      void useProjectCatalogStore.getState().refresh().catch(() => undefined);
+      void useProjectSessionIndexStore.getState().refresh().catch(() => undefined);
       setRuntimeEndpointEpoch((epoch) => epoch + 1);
       setInitRetryExhausted(false);
       setInitRetryEpoch((epoch) => epoch + 1);
     });
-  }, [activeWorkspaceId, embeddedSessionChat?.workspaceId]);
+  }, [activeProjectId, embeddedSessionChat?.projectId]);
 
   const autoReviewResumeSignature = useAutoReviewStore((state) => {
     const runtimeKey = getControlPlaneKey();
@@ -591,8 +618,11 @@ function App({ apis }: AppProps) {
   // Startup recovery: poll until providers AND agents are loaded.
   // loadProviders/loadAgents resolve normally even on failure (errors swallowed),
   // so a reactive effect can't detect failure — we need an interval.
+  // A mounted project runtime has no provider/agent config contract yet
+  // (501 capability_unavailable is permanent), so the loop is meaningless
+  // there and would only keep firing failing requests.
   React.useEffect(() => {
-    if (isVSCodeRuntime || !isConnected) return;
+    if (isVSCodeRuntime || !isConnected || isProjectRuntimeActive()) return;
     if (providersCount > 0 && agentsCount > 0) return;
 
     let active = true;
@@ -629,13 +659,13 @@ function App({ apis }: AppProps) {
     if (!isConnected) {
       return;
     }
-    if (activeWorkspaceId) {
+    if (activeProjectId) {
       return;
     }
     opencodeClient.setDirectory(currentDirectory);
 
     // Session loading is handled by the sync system's bootstrap — no manual loadSessions needed.
-  }, [activeWorkspaceId, currentDirectory, isSwitchingDirectory, isConnected, isVSCodeRuntime]);
+  }, [activeProjectId, currentDirectory, isSwitchingDirectory, isConnected, isVSCodeRuntime]);
 
   React.useEffect(() => {
     if (!embeddedSessionChat || typeof window === 'undefined') {
@@ -676,7 +706,7 @@ function App({ apis }: AppProps) {
   }, [embeddedSessionChat]);
 
   React.useEffect(() => {
-    if (!embeddedSessionChat?.directory || embeddedSessionChat.workspaceId || isVSCodeRuntime) {
+    if (!embeddedSessionChat?.directory || embeddedSessionChat.projectId || isVSCodeRuntime) {
       return;
     }
 
@@ -714,17 +744,17 @@ function App({ apis }: AppProps) {
     if (typeof window === 'undefined') return;
 
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string; workspaceId?: string }>).detail;
+      const detail = (event as CustomEvent<{ sessionId?: string; directory?: string; projectId?: string }>).detail;
       const sessionId = typeof detail?.sessionId === 'string' ? detail.sessionId.trim() : '';
       if (!sessionId) return;
       const directory = typeof detail?.directory === 'string' && detail.directory.trim().length > 0
         ? detail.directory.trim()
         : null;
-      const workspaceId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
-        ? detail.workspaceId.trim()
+      const projectId = typeof detail?.projectId === 'string' && detail.projectId.trim().length > 0
+        ? detail.projectId.trim()
         : null;
       useUIStore.getState().setActiveMainTab('chat');
-      void useSessionUIStore.getState().setCurrentSession(sessionId, directory, workspaceId);
+      void useSessionUIStore.getState().setCurrentSession(sessionId, directory, projectId);
     };
 
     window.addEventListener('openchamber:open-session', handler as EventListener);
@@ -738,17 +768,17 @@ function App({ apis }: AppProps) {
     if (typeof window === 'undefined') return;
     const onOpenMiniChat = () => {
       const sessionState = useSessionUIStore.getState();
-      const currentDir = sessionState.currentWorkspaceId
+      const currentDir = sessionState.currentProjectId
         ? sessionState.currentSessionDirectory ?? ''
         : useDirectoryStore.getState().currentDirectory;
       const { activeProjectId, projects } = useProjectsStore.getState();
-      const activeProject = sessionState.currentWorkspaceId
+      const activeProject = sessionState.currentProjectId
         ? null
         : projects.find((p) => p.id === activeProjectId) ?? null;
       void invokeDesktop('desktop_open_draft_mini_chat_window', {
         directory: currentDir || activeProject?.path || '',
         projectId: activeProject?.id ?? null,
-        workspaceId: sessionState.currentWorkspaceId ?? null,
+        workspaceId: sessionState.currentProjectId ?? null,
         ...getDesktopRuntimeEndpointArgs(),
       }).catch((error) => {
         // Remote-origin windows are not allowed to open Mini Chat windows;
@@ -768,7 +798,7 @@ function App({ apis }: AppProps) {
     if (typeof window === 'undefined') return;
     const onFocus = () => {
       const current = useSessionUIStore.getState();
-      if (current.currentSessionId) markSessionViewed(current.currentSessionId, current.currentWorkspaceId);
+      if (current.currentSessionId) markSessionViewed(current.currentSessionId, current.currentProjectId);
     };
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
@@ -785,13 +815,15 @@ function App({ apis }: AppProps) {
       const projectId = typeof detail?.projectId === 'string' && detail.projectId.trim().length > 0
         ? detail.projectId.trim()
         : null;
-      const workspaceId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
+      // Legacy senders (pre-rename desktop builds) dispatch `workspaceId`;
+      // prefer the current field and fall back so drafts never open blind.
+      const legacyProjectId = typeof detail?.workspaceId === 'string' && detail.workspaceId.trim().length > 0
         ? detail.workspaceId.trim()
         : null;
       useUIStore.getState().setActiveMainTab('chat');
       useUIStore.getState().setSessionSwitcherOpen(false);
       useSessionUIStore.getState().openNewSessionDraft({
-        workspaceId,
+        projectId: projectId ?? legacyProjectId,
         selectedProjectId: projectId,
         directoryOverride: directory,
         preserveDirectoryOverride: Boolean(directory),
@@ -1008,8 +1040,8 @@ function App({ apis }: AppProps) {
   if (embeddedSessionChat) {
     return (
       <ErrorBoundary>
-        <WorkspaceRuntimeProvider workspaceId={embeddedSessionChat.workspaceId}>
-          {embeddedSessionChat.workspaceId ? <WorkspaceCatalogSessionIndexEffects /> : null}
+        <ProjectRuntimeProvider projectId={embeddedSessionChat.projectId}>
+          {embeddedSessionChat.projectId ? <ProjectCatalogSessionIndexEffects /> : null}
           <EmbeddedSessionChatRuntime
             embeddedSessionChat={embeddedSessionChat}
             isVSCodeRuntime={isVSCodeRuntime}
@@ -1017,7 +1049,7 @@ function App({ apis }: AppProps) {
             runtimeEndpointEpoch={runtimeEndpointEpoch}
             apis={apis}
           />
-        </WorkspaceRuntimeProvider>
+        </ProjectRuntimeProvider>
       </ErrorBoundary>
     );
   }
@@ -1048,14 +1080,14 @@ function App({ apis }: AppProps) {
 
   return (
     <ErrorBoundary>
-      <WorkspaceRuntimeProvider workspaceId={activeWorkspaceId}>
-        <WorkspaceCatalogSessionIndexEffects />
-        <WorkspaceSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch}>
+      <ProjectRuntimeProvider projectId={resolvedProjectId}>
+        <ProjectCatalogSessionIndexEffects />
+        <ProjectSyncMount runtimeEndpointEpoch={runtimeEndpointEpoch}>
           <RuntimeAPIProvider apis={apis}>
             <FireworksProvider>
                 <TooltipProvider delayDuration={300} skipDelayDuration={150}>
                   <div className={isDesktopRuntime ? 'h-full text-foreground bg-transparent' : 'h-full text-foreground bg-background'}>
-                    <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} includeWorkspaceState={false} />
+                    <SyncAppEffects embeddedBackgroundWorkEnabled={embeddedBackgroundWorkEnabled} includeProjectState={false} />
                     <OpenCodeUpdateToast />
                     <MainLayout />
                     <Toaster />
@@ -1072,8 +1104,8 @@ function App({ apis }: AppProps) {
                 </TooltipProvider>
             </FireworksProvider>
           </RuntimeAPIProvider>
-        </WorkspaceSyncMount>
-      </WorkspaceRuntimeProvider>
+        </ProjectSyncMount>
+      </ProjectRuntimeProvider>
     </ErrorBoundary>
   );
 }

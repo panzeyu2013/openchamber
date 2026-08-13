@@ -309,10 +309,10 @@ describe('session activity timing', () => {
     expect(after.settledMs).toBe(before.settledMs);
   });
 
-  test('keeps equal session ids in separate workspace timing partitions', () => {
+  test('keeps equal session ids in separate project timing partitions', () => {
     const defaultScope = useSessionActivityTimingStore.getState().scopeKey;
-    const firstScope = 'workspace:timing-a';
-    const secondScope = 'workspace:timing-b';
+    const firstScope = 'project:timing-a';
+    const secondScope = 'project:timing-b';
 
     useSessionActivityTimingStore.getState().bindScope(firstScope);
     observeSessionActivityTiming('same-session', 'active', firstScope);

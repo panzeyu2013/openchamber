@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import { resolveWorkspaceTitleContext } from './useWindowTitle';
-import type { WorkspaceCatalogSnapshot } from '@/workspaces/types';
+import { resolveProjectTitleContext } from './useWindowTitle';
+import type { ProjectCatalogSnapshot } from '@/projects/types';
 
-const snapshot: WorkspaceCatalogSnapshot = {
+const snapshot: ProjectCatalogSnapshot = {
   schemaVersion: 1,
   revision: 4,
   connections: [
@@ -29,9 +29,9 @@ const snapshot: WorkspaceCatalogSnapshot = {
       },
     },
   ],
-  workspaces: [
+  projects: [
     {
-      id: 'local-workspace',
+      id: 'local-project',
       connectionId: 'local',
       path: '/work/local-app',
       canonicalPath: '/work/local-app',
@@ -41,7 +41,7 @@ const snapshot: WorkspaceCatalogSnapshot = {
       updatedAt: 2,
     },
     {
-      id: 'remote-workspace',
+      id: 'remote-project',
       connectionId: 'remote-1',
       path: '/srv/remote-app',
       canonicalPath: '/srv/remote-app',
@@ -57,23 +57,23 @@ const snapshot: WorkspaceCatalogSnapshot = {
   },
 };
 
-describe('resolveWorkspaceTitleContext', () => {
-  test('uses workspace and connection metadata for remote identity', () => {
-    expect(resolveWorkspaceTitleContext('remote-workspace', snapshot)).toEqual({
+describe('resolveProjectTitleContext', () => {
+  test('uses project and connection metadata for remote identity', () => {
+    expect(resolveProjectTitleContext('remote-project', snapshot)).toEqual({
       projectLabel: 'Remote App',
       instanceLabel: 'Remote Office',
     });
   });
 
-  test('does not add a host label for local workspaces', () => {
-    expect(resolveWorkspaceTitleContext('local-workspace', snapshot)).toEqual({
+  test('does not add a host label for local projects', () => {
+    expect(resolveProjectTitleContext('local-project', snapshot)).toEqual({
       projectLabel: 'Local App',
       instanceLabel: null,
     });
   });
 
-  test('does not invent workspace identity when the catalog cannot resolve it', () => {
-    expect(resolveWorkspaceTitleContext('missing-workspace', snapshot)).toBe(null);
-    expect(resolveWorkspaceTitleContext('remote-workspace', null)).toBe(null);
+  test('does not invent project identity when the catalog cannot resolve it', () => {
+    expect(resolveProjectTitleContext('missing-project', snapshot)).toBe(null);
+    expect(resolveProjectTitleContext('remote-project', null)).toBe(null);
   });
 });

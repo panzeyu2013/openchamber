@@ -36,7 +36,7 @@ mock.module('@/contexts/runtimeAPIRegistry', () => ({
       },
     },
   }),
-  isWorkspaceRuntimeActive: () => false,
+  isProjectRuntimeActive: () => false,
 }));
 
 mock.module('@/lib/gitApiHttp', () => ({

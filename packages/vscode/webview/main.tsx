@@ -1,7 +1,7 @@
 import { createVSCodeAPIs } from './api';
 import { onCommand, onThemeChange, proxyApiRequest, proxySessionMessageRequest, sendBridgeMessage, startSseProxy, stopSseProxy, type ProxiedSseStartResponse } from './api/bridge';
 import { buildControlPlaneUnavailableResponse, isControlPlaneApiPath, isControlPlaneSseRequest } from './api/controlPlane';
-import { resolveCurrentWorkspaceDescriptor } from './api/workspaces';
+import { resolveCurrentProjectDescriptor } from './api/projects';
 import { vscodeStreamPerfCount, vscodeStreamPerfMeasure, vscodeStreamPerfObserve } from './api/streamPerf';
 import { extractBodyBase64, extractBodyText, extractJsonBody, hasInitBody } from './requestBodyTransport';
 import type { RuntimeAPIs } from '@openchamber/ui/lib/api/types';
@@ -1252,7 +1252,7 @@ window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     });
   }
 
-  // Control-plane-owned paths (workspace catalog / session index /
+  // Control-plane-owned paths (project catalog / session index /
   // connections). The opencode binary cannot answer them: when the extension
   // host has no OpenChamber control plane configured (`openchamber.apiUrl`),
   // answer an explicit control_plane_unavailable instead of forwarding to the
@@ -1475,11 +1475,11 @@ onCommand('workspaceFoldersChanged', (payload) => {
   if (window.__VSCODE_CONFIG__) {
     window.__VSCODE_CONFIG__.workspaceFolders = normalizeWorkspaceFoldersPayload(record?.workspaceFolders);
   }
-  // The folder set drives the workspace identity through the descriptor
+  // The folder set drives the project identity through the descriptor
   // bridge (api:workspace:descriptor:get). Re-resolve it and re-render the
   // app root so the descriptor-driven mount reflects the new folders.
   void import('@openchamber/ui/apps/renderVSCodeApp').then(async ({ renderVSCodeApp }) => {
-    const descriptor = await toWorkspaceDescriptorResult();
+    const descriptor = await toProjectDescriptorResult();
     renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs(), descriptor);
   });
 });
@@ -1932,14 +1932,14 @@ onCommand('activeEditorFile', (payload) => {
   });
 });
 
-const toWorkspaceDescriptorResult = (): Promise<import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult> =>
-  resolveCurrentWorkspaceDescriptor().then(
-    (result): import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult => {
+const toProjectDescriptorResult = (): Promise<import('@openchamber/ui/apps/VSCodeApp').VSCodeProjectDescriptorResult> =>
+  resolveCurrentProjectDescriptor().then(
+    (result): import('@openchamber/ui/apps/VSCodeApp').VSCodeProjectDescriptorResult => {
       if (result.status === 'available') {
         return {
           phase: 'available',
-          workspaceId: result.workspaceId,
-          workspace: result.workspace,
+          projectId: result.projectId,
+          project: result.project,
           activePath: result.activePath,
         };
       }
@@ -1949,7 +1949,7 @@ const toWorkspaceDescriptorResult = (): Promise<import('@openchamber/ui/apps/VSC
         reason: result.status === 'capability_unavailable' ? result.reason : undefined,
       };
     },
-    (): import('@openchamber/ui/apps/VSCodeApp').VSCodeWorkspaceDescriptorResult => ({
+    (): import('@openchamber/ui/apps/VSCodeApp').VSCodeProjectDescriptorResult => ({
       phase: 'unavailable',
       code: 'bridge_error',
     }),
@@ -1957,7 +1957,7 @@ const toWorkspaceDescriptorResult = (): Promise<import('@openchamber/ui/apps/VSC
 
 import('@openchamber/ui/apps/renderVSCodeApp')
   .then(async ({ renderVSCodeApp }) => {
-    const descriptor = await toWorkspaceDescriptorResult();
+    const descriptor = await toProjectDescriptorResult();
     renderVSCodeApp(window.__OPENCHAMBER_RUNTIME_APIS__ ?? createVSCodeAPIs(), descriptor);
     await waitForUiMount();
     uiMounted = true;

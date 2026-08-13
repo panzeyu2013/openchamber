@@ -4,14 +4,14 @@ import type { GitHubPullRequestStatus, RuntimeAPIs } from '@/lib/api/types';
 import { mapWithConcurrency } from '@/lib/concurrency';
 import { createDeferredSafeJSONStorage } from './utils/safeStorage';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
 
-const resolveActiveWorkspaceScopeKey = (): string => {
+const resolveActiveProjectScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 
 const PR_REVALIDATE_TTL_MS = 90_000;
@@ -42,7 +42,7 @@ const getOpenPrRefreshInterval = (status: GitHubPullRequestStatus | null): numbe
 };
 
 export const getGitHubPrStatusKey = (directory: string, branch: string, remoteName?: string | null): string => {
-  return JSON.stringify([resolveActiveWorkspaceScopeKey(), directory, branch, remoteName ?? 'auto']);
+  return JSON.stringify([resolveActiveProjectScopeKey(), directory, branch, remoteName ?? 'auto']);
 };
 
 type RefreshOptions = {
@@ -168,7 +168,7 @@ const getIdentityFromEntry = (entry: PrStatusEntry | null | undefined): PrEntryI
     return {
       directory: entry.params.directory,
       branch: entry.params.branch,
-      runtimeKey: entry.params.runtimeKey ?? entry.identity?.runtimeKey ?? resolveActiveWorkspaceScopeKey(),
+      runtimeKey: entry.params.runtimeKey ?? entry.identity?.runtimeKey ?? resolveActiveProjectScopeKey(),
       remoteName: entry.params.remoteName ?? entry.resolvedRemoteName ?? entry.identity?.remoteName ?? null,
     };
   }
@@ -250,7 +250,7 @@ export const getFreshestPrStatusForBranch = (
   directory: string,
   branch: string,
 ): GitHubPullRequestStatus | null => {
-  const runtimeKey = resolveActiveWorkspaceScopeKey();
+  const runtimeKey = resolveActiveProjectScopeKey();
   let best: PrStatusEntry | null = null;
   for (const [key, entry] of Object.entries(entries)) {
     if (!entry.status) {
@@ -277,7 +277,7 @@ const getKeysBySignature = (entries: Record<string, PrStatusEntry>, signature: s
 };
 
 const mergeParams = (entry: PrStatusEntry, next: PrRuntimeParams): PrStatusEntry => {
-  const runtimeKey = next.runtimeKey ?? resolveActiveWorkspaceScopeKey();
+  const runtimeKey = next.runtimeKey ?? resolveActiveProjectScopeKey();
   const remoteName = next.remoteName ?? entry.params?.remoteName ?? entry.resolvedRemoteName ?? entry.identity?.remoteName ?? null;
   const paramsChanged = !entry.params
     || entry.params.runtimeKey !== runtimeKey
@@ -590,9 +590,9 @@ export const useGitHubPrStatusStore = create<GitHubPrStatusStore>()(
 
         const requestToken = Symbol(signature);
         const paramsRevision = entry.paramsRevision;
-        const runtimeKey = entry.params?.runtimeKey ?? entry.identity?.runtimeKey ?? resolveActiveWorkspaceScopeKey();
+        const runtimeKey = entry.params?.runtimeKey ?? entry.identity?.runtimeKey ?? resolveActiveProjectScopeKey();
         const isCurrent = () => (
-          runtimeKey === resolveActiveWorkspaceScopeKey()
+          runtimeKey === resolveActiveProjectScopeKey()
           && inFlightBySignature.get(signature) === requestToken
           && get().entries[key]?.paramsRevision === paramsRevision
         );

@@ -160,8 +160,8 @@ describe('session lifecycle ordering', () => {
 
   test('keeps lifecycle ranks for equal session ids in separate scopes', () => {
     const defaultScope = useSessionOrderingStore.getState().scopeKey;
-    const firstScope = 'workspace:ordering-a';
-    const secondScope = 'workspace:ordering-b';
+    const firstScope = 'project:ordering-a';
+    const secondScope = 'project:ordering-b';
 
     useSessionOrderingStore.getState().bindScope(firstScope);
     observeSessionActivityEvent('same-session', 'active', firstScope);

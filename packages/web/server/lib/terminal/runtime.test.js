@@ -8,7 +8,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import { createTerminalRuntime } from './runtime.js';
 import { createTerminalWsControlFrame, readTerminalWsControlFrame } from './terminal-ws-protocol.js';
-import { WORKSPACE_RUNTIME_UPGRADE_MARKER } from '../workspaces/runtime-proxy.js';
+import { PROJECT_RUNTIME_UPGRADE_MARKER } from '../projects/runtime-proxy.js';
 
 function createResponse() {
   return {
@@ -565,11 +565,11 @@ describe('terminal runtime', () => {
     }
   }, 15_000);
 
-  it('binds workspace-prefixed creates and rejects cross-workspace upgrades', async () => {
+  it('binds project-prefixed creates and rejects cross-project upgrades', async () => {
     // The terminal runtime's routes are mounted at BOTH the legacy prefix
-    // and the workspace runtime prefix. This mirrors the fallback composition
+    // and the project runtime prefix. This mirrors the fallback composition
     // where no central dispatcher/runtime proxy is in front of the terminal
-    // runtime: workspace-prefixed terminal requests then reach the runtime
+    // runtime: project-prefixed terminal requests then reach the runtime
     // directly, and the binding is parsed from `req.originalUrl`.
     const app = express();
     const terminalApp = express();
@@ -602,7 +602,7 @@ describe('terminal runtime', () => {
       searchPathFor: () => '/bin/sh', isExecutable: () => true,
     });
     app.use(terminalApp);
-    app.use('/api/workspaces/:workspaceId/runtime', terminalApp);
+    app.use('/api/projects/:projectId/runtime', terminalApp);
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
     const base = `http://127.0.0.1:${address.port}`;
@@ -627,53 +627,53 @@ describe('terminal runtime', () => {
     };
 
     try {
-      // Create a session THROUGH the workspace prefix: it is bound to ws-1.
-      const created = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/create`, {
+      // Create a session THROUGH the project prefix: it is bound to ws-1.
+      const created = await fetch(`${base}/api/projects/ws-1/runtime/api/terminal/create`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ sessionId: 'term-bound', cwd: '/repo', cols: 80, rows: 24 }),
       });
       expect(created.status).toBe(200);
 
-      const outsideCreate = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/create`, {
+      const outsideCreate = await fetch(`${base}/api/projects/ws-1/runtime/api/terminal/create`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ sessionId: 'term-outside', cwd: '/other', cols: 80, rows: 24 }),
       });
       expect(outsideCreate.status).toBe(403);
-      expect((await outsideCreate.json()).code).toBe('catalog_path_outside_workspace');
+      expect((await outsideCreate.json()).code).toBe('catalog_path_outside_project');
       expect(processes).toHaveLength(1);
 
-      const missingDirectory = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/create`, {
+      const missingDirectory = await fetch(`${base}/api/projects/ws-1/runtime/api/terminal/create`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: 'term-missing-directory', cwd: '/repo', cols: 80, rows: 24 }),
       });
       expect(missingDirectory.status).toBe(403);
-      expect((await missingDirectory.json()).code).toBe('catalog_workspace_directory_unavailable');
+      expect((await missingDirectory.json()).code).toBe('catalog_project_directory_unavailable');
 
-      const outsideRestart = await fetch(`${base}/api/workspaces/ws-1/runtime/api/terminal/term-bound/restart`, {
+      const outsideRestart = await fetch(`${base}/api/projects/ws-1/runtime/api/terminal/term-bound/restart`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ cwd: '/other', cols: 80, rows: 24 }),
       });
       expect(outsideRestart.status).toBe(403);
-      expect((await outsideRestart.json()).code).toBe('catalog_path_outside_workspace');
+      expect((await outsideRestart.json()).code).toBe('catalog_path_outside_project');
 
-      const crossWorkspaceKill = await fetch(`${base}/api/workspaces/ws-2/runtime/api/terminal/force-kill`, {
+      const crossProjectKill = await fetch(`${base}/api/projects/ws-2/runtime/api/terminal/force-kill`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ sessionId: 'term-bound' }),
       });
-      expect(crossWorkspaceKill.status).toBe(200);
-      expect((await crossWorkspaceKill.json()).killedCount).toBe(0);
+      expect(crossProjectKill.status).toBe(200);
+      expect((await crossProjectKill.json()).killedCount).toBe(0);
       expect(processes[0].killed).toBe(false);
 
-      // Creating the same id through ANOTHER workspace prefix is rejected.
-      const conflicting = await fetch(`${base}/api/workspaces/ws-2/runtime/api/terminal/create`, {
+      // Creating the same id through ANOTHER project prefix is rejected.
+      const conflicting = await fetch(`${base}/api/projects/ws-2/runtime/api/terminal/create`, {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-opencode-directory': '/repo' },
         body: JSON.stringify({ sessionId: 'term-bound', cwd: '/repo' }),
       });
       expect(conflicting.status).toBe(400);
-      expect((await conflicting.json()).error).toBe('Terminal session belongs to a different workspace');
+      expect((await conflicting.json()).error).toBe('Terminal session belongs to a different project');
       expect(processes).toHaveLength(1);
 
-      // Legacy (non-workspace) create of the same id is also rejected.
+      // Legacy (non-project) create of the same id is also rejected.
       const legacyConflict = await fetch(`${base}/api/terminal/create`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId: 'term-bound', cwd: '/repo' }),
@@ -681,25 +681,25 @@ describe('terminal runtime', () => {
       expect(legacyConflict.status).toBe(400);
 
       // Same-prefix upgrade can attach and write.
-      const same = await open('/api/workspaces/ws-1/runtime/api/terminal/ws');
+      const same = await open('/api/projects/ws-1/runtime/api/terminal/ws');
       same.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-bound' }));
       expect(await same.next('snapshot', 'term-bound')).toMatchObject({ s: 'term-bound', status: 'running' });
       same.socket.send(createTerminalWsControlFrame({ t: 'write', v: 3, s: 'term-bound', d: 'pwd\r' }));
       await new Promise((resolve) => setTimeout(resolve, 5));
       expect(processes[0].writes).toEqual(['pwd\r']);
 
-      // A different workspace prefix cannot touch the session.
-      const other = await open('/api/workspaces/ws-2/runtime/api/terminal/ws');
+      // A different project prefix cannot touch the session.
+      const other = await open('/api/projects/ws-2/runtime/api/terminal/ws');
       other.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-bound' }));
-      expect(await other.next('error', 'term-bound', 'WORKSPACE_SCOPE_MISMATCH')).toMatchObject({
-        s: 'term-bound', code: 'WORKSPACE_SCOPE_MISMATCH', fatal: false,
+      expect(await other.next('error', 'term-bound', 'PROJECT_SCOPE_MISMATCH')).toMatchObject({
+        s: 'term-bound', code: 'PROJECT_SCOPE_MISMATCH', fatal: false,
       });
 
-      // The legacy socket cannot touch the workspace-bound session either.
+      // The legacy socket cannot touch the project-bound session either.
       const legacy = await open('/api/terminal/ws');
       legacy.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-bound' }));
-      expect(await legacy.next('error', 'term-bound', 'WORKSPACE_SCOPE_MISMATCH')).toMatchObject({
-        s: 'term-bound', code: 'WORKSPACE_SCOPE_MISMATCH', fatal: false,
+      expect(await legacy.next('error', 'term-bound', 'PROJECT_SCOPE_MISMATCH')).toMatchObject({
+        s: 'term-bound', code: 'PROJECT_SCOPE_MISMATCH', fatal: false,
       });
 
       // A legacy session stays reachable only from the legacy socket.
@@ -710,8 +710,8 @@ describe('terminal runtime', () => {
       legacy.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-legacy' }));
       expect(await legacy.next('snapshot', 'term-legacy')).toMatchObject({ s: 'term-legacy', status: 'running' });
       same.socket.send(createTerminalWsControlFrame({ t: 'attach', v: 3, s: 'term-legacy' }));
-      expect(await same.next('error', 'term-legacy', 'WORKSPACE_SCOPE_MISMATCH')).toMatchObject({
-        s: 'term-legacy', code: 'WORKSPACE_SCOPE_MISMATCH', fatal: false,
+      expect(await same.next('error', 'term-legacy', 'PROJECT_SCOPE_MISMATCH')).toMatchObject({
+        s: 'term-legacy', code: 'PROJECT_SCOPE_MISMATCH', fatal: false,
       });
     } finally {
       for (const socket of sockets) socket.terminate();
@@ -721,7 +721,7 @@ describe('terminal runtime', () => {
     }
   }, 15_000);
 
-  it('skips workspace-prefixed upgrades already owned by the central dispatcher', async () => {
+  it('skips project-prefixed upgrades already owned by the central dispatcher', async () => {
     const app = express();
     const server = http.createServer(app);
     const dispatcherWs = new WebSocketServer({ noServer: true });
@@ -729,13 +729,13 @@ describe('terminal runtime', () => {
     dispatcherWs.on('connection', (socket) => dispatcherConnections.push(socket));
     // The dispatcher-style listener must be registered BEFORE the terminal
     // runtime listener (matching the server entrypoint, where the central
-    // workspace upgrade dispatcher is wired at `http.createServer` time and
+    // project upgrade dispatcher is wired at `http.createServer` time and
     // the terminal runtime registers later in the startup pipeline): it marks
     // the request and completes the handshake itself. The terminal runtime
-    // listener (added by createRuntime) must skip marked workspace-prefixed
+    // listener (added by createRuntime) must skip marked project-prefixed
     // upgrades instead of double-handling the same socket.
     server.on('upgrade', (req, socket, head) => {
-      req[WORKSPACE_RUNTIME_UPGRADE_MARKER] = true;
+      req[PROJECT_RUNTIME_UPGRADE_MARKER] = true;
       dispatcherWs.handleUpgrade(req, socket, head, (ws) => dispatcherWs.emit('connection', ws, req));
     });
     const runtime = createRuntime(server, {
@@ -746,7 +746,7 @@ describe('terminal runtime', () => {
       searchPathFor: () => '/bin/sh', isExecutable: () => true,
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/workspaces/ws-1/runtime/api/terminal/ws`);
+    const socket = new WebSocket(`ws://127.0.0.1:${server.address().port}/api/projects/ws-1/runtime/api/terminal/ws`);
     const messages = [];
     socket.on('message', (raw) => messages.push(readTerminalWsControlFrame(raw)));
     await new Promise((resolve, reject) => { socket.once('open', resolve); socket.once('error', reject); });

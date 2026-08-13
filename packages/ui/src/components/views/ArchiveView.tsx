@@ -10,11 +10,11 @@ import { useUIStore } from '@/stores/useUIStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { formatSessionDateLabel, normalizePath } from '@/components/session/sidebar/utils';
 import { useShallow } from 'zustand/react/shallow';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type DirectoryBucket = {
   directory: string;
@@ -32,10 +32,10 @@ export function ArchiveView(): React.ReactNode {
   const setOpen = useUIStore((state) => state.setArchivePageOpen);
   const setActiveMainTab = useUIStore((state) => state.setActiveMainTab);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const unarchiveSession = useSessionUIStore((state) => state.unarchiveSession);
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
-  const archivedSessions = useWorkspaceSessionIndexStore(useShallow(
+  const archivedSessions = useProjectSessionIndexStore(useShallow(
     (state) => open ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary) : [],
   ));
   const [query, setQuery] = React.useState('');
@@ -90,10 +90,10 @@ export function ArchiveView(): React.ReactNode {
 
   const openSession = React.useCallback((session: Session) => {
     const directory = normalizePath(resolveSessionDirectory(session));
-    setCurrentSession(session.id, directory ?? undefined, activeWorkspaceId);
+    setCurrentSession(session.id, directory ?? undefined, activeProjectId);
     setActiveMainTab('chat');
     setOpen(false);
-  }, [activeWorkspaceId, setActiveMainTab, setCurrentSession, setOpen]);
+  }, [activeProjectId, setActiveMainTab, setCurrentSession, setOpen]);
 
   const restoreSession = React.useCallback((session: Session) => {
     void unarchiveSession(session.id).then((success) => {

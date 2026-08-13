@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import type { WorkspaceSessionSnapshot } from '@/workspaces/types';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import type { ProjectSessionSnapshot } from '@/projects/types';
 import type { GitHubAPI, GitHubPullRequestContextResult } from '@/lib/api/types';
 
 const { usePrContextStore, getPrContextKey } = await import('./usePrContextStore');
@@ -98,13 +98,13 @@ describe('usePrContextStore', () => {
   });
 });
 
-const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
-  const upstreamSessionId = `ses-${workspaceId}`;
+const makeSnapshot = (projectId: string): ProjectSessionSnapshot => {
+  const upstreamSessionId = `ses-${projectId}`;
   return {
     revision: 1,
     sessions: [{
-      key: `${workspaceId}\u0000${upstreamSessionId}`,
-      workspaceId,
+      key: `${projectId}\u0000${upstreamSessionId}`,
+      projectId,
       connectionId: 'conn',
       upstreamSessionId,
       directory: '/repo',
@@ -117,34 +117,34 @@ const makeSnapshot = (workspaceId: string): WorkspaceSessionSnapshot => {
   };
 };
 
-const setWorkspaceSession = (workspaceId: string) => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: makeSnapshot(workspaceId) });
-  useSessionUIStore.setState({ currentSessionId: `ses-${workspaceId}`, currentSessionDirectory: '/repo' });
+const setProjectSession = (projectId: string) => {
+  useProjectSessionIndexStore.setState({ snapshot: makeSnapshot(projectId) });
+  useSessionUIStore.setState({ currentSessionId: `ses-${projectId}`, currentSessionDirectory: '/repo' });
 };
 
-const clearWorkspaceSession = () => {
-  useWorkspaceSessionIndexStore.setState({ snapshot: null });
+const clearProjectSession = () => {
+  useProjectSessionIndexStore.setState({ snapshot: null });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null });
 };
 
-describe('usePrContextStore workspace scope', () => {
+describe('usePrContextStore project scope', () => {
   beforeEach(() => {
     usePrContextStore.setState({ entries: {} });
-    clearWorkspaceSession();
+    clearProjectSession();
   });
 
-  afterEach(clearWorkspaceSession);
+  afterEach(clearProjectSession);
 
-  test('keeps PR context cache isolated per workspace for the same directory', async () => {
+  test('keeps PR context cache isolated per project for the same directory', async () => {
     const { github, callCount } = makeGithub(RESULT);
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     const keyA = getPrContextKey('/repo', 1);
     await usePrContextStore.getState().ensure(github, '/repo', 1);
     expect(usePrContextStore.getState().entries[keyA]?.result).toEqual(RESULT);
     expect(callCount()).toBe(1);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     const keyB = getPrContextKey('/repo', 1);
     expect(keyA).not.toBe(keyB);
     expect(usePrContextStore.getState().entries[keyB] ?? null).toBe(null);
@@ -154,15 +154,15 @@ describe('usePrContextStore workspace scope', () => {
     expect(callCount()).toBe(2);
   });
 
-  test('invalidate clears only the active workspace scope', async () => {
+  test('invalidate clears only the active project scope', async () => {
     const { github } = makeGithub(RESULT);
     const { ensure, invalidate } = usePrContextStore.getState();
 
-    setWorkspaceSession('ws-a');
+    setProjectSession('ws-a');
     const keyA = getPrContextKey('/repo', 1);
     await ensure(github, '/repo', 1);
 
-    setWorkspaceSession('ws-b');
+    setProjectSession('ws-b');
     const keyB = getPrContextKey('/repo', 1);
     await ensure(github, '/repo', 1);
 

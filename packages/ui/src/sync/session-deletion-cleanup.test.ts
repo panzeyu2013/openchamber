@@ -8,8 +8,8 @@ import { useTodosPersistStore } from '@/stores/useTodosPersistStore';
 import { useInlineCommentDraftStore } from '@/stores/useInlineCommentDraftStore';
 import { isSessionPinned, useSessionPinnedStore } from '@/stores/useSessionPinnedStore';
 import { cleanupPersistedSessionState } from './session-deletion-cleanup';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceSessionKey } from '@/workspaces/identity';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectSessionKey } from '@/projects/identity';
 
 const todo: Todo = { content: 'persisted', status: 'pending', priority: 'medium' };
 
@@ -23,16 +23,16 @@ describe('cleanupPersistedSessionState', () => {
   });
 
   test('clears queue and todos only for the deleted composite session', () => {
-    const runtimeKey = 'workspace:ws-a';
-    // Map the session to workspace ws-a so the scope-resolved persisted keys
+    const runtimeKey = 'project:ws-a';
+    // Map the session to project ws-a so the scope-resolved persisted keys
     // land in the same bucket the cleanup identity targets.
-    useWorkspaceSessionIndexStore.setState({
+    useProjectSessionIndexStore.setState({
       snapshot: {
         revision: 1,
         sessions: [
           {
-            key: workspaceSessionKey('ws-a', 'session-1'),
-            workspaceId: 'ws-a',
+            key: projectSessionKey('ws-a', 'session-1'),
+            projectId: 'ws-a',
             connectionId: 'conn-1',
             upstreamSessionId: 'session-1',
             directory: '/repo-a',
@@ -90,8 +90,8 @@ describe('cleanupPersistedSessionState', () => {
     expect(useSessionFoldersStore.getState().getSessionFolderId('__archived__:/repo-a', 'session-1')).toBeNull();
   });
 
-  test('rejects cleanup for an identity that does not match its workspace scope', () => {
-    const runtimeKey = 'workspace:ws-a';
+  test('rejects cleanup for an identity that does not match its project scope', () => {
+    const runtimeKey = 'project:ws-a';
     useTodosPersistStore.getState().setSessionTodos('/repo', 'session-1', [todo]);
 
     cleanupPersistedSessionState({ runtimeKey: `${runtimeKey}-stale`, directory: '/repo', sessionId: 'session-1' });

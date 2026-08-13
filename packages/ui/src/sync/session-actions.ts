@@ -32,7 +32,7 @@ import { cleanupPersistedSessionState } from "./session-deletion-cleanup"
 import { isAmbiguousTransportFailure } from "@/lib/relay/transport-error"
 import { getStaleRunningToolMessageID } from "./materialization"
 import { normalizePath } from "@/lib/pathNormalization"
-import { workspaceIdFromScopeKey, workspaceScopeKey } from "@/workspaces/identity"
+import { projectIdFromScopeKey, projectScopeKey } from "@/projects/identity"
 
 const MESSAGE_REFETCH_LIMIT = 100
 const SEND_CONFIRMATION_REFETCH_LIMIT = 30
@@ -50,8 +50,8 @@ const SEND_CONFIRMATION_RECONNECT_POLL_MS = 100
 const MESSAGE_REFETCH_SKIP_PARTS = new Set(["patch", "step-start", "step-finish"])
 const UNREVERT_REFETCH_ATTEMPTS = 3
 const UNREVERT_REFETCH_RETRY_MS = 150
-const WORKSPACE_ACTION_SCOPE_WAIT_MS = 3000
-const WORKSPACE_ACTION_SCOPE_POLL_MS = 25
+const PROJECT_ACTION_SCOPE_WAIT_MS = 3000
+const PROJECT_ACTION_SCOPE_POLL_MS = 25
 
 // Reference set by SyncProvider — allows actions to access SDK and stores
 let _sdk: OpencodeClient | null = null
@@ -202,14 +202,14 @@ function actionScopeKey(): string {
   return _scopeKey ?? ""
 }
 
-const waitForWorkspaceActionScope = async (workspaceId: string): Promise<void> => {
-  const expectedScopeKey = workspaceScopeKey(workspaceId)
-  const deadline = Date.now() + WORKSPACE_ACTION_SCOPE_WAIT_MS
+const waitForProjectActionScope = async (projectId: string): Promise<void> => {
+  const expectedScopeKey = projectScopeKey(projectId)
+  const deadline = Date.now() + PROJECT_ACTION_SCOPE_WAIT_MS
   while (getSyncScopeKey() !== expectedScopeKey && Date.now() < deadline) {
-    await new Promise<void>((resolve) => setTimeout(resolve, WORKSPACE_ACTION_SCOPE_POLL_MS))
+    await new Promise<void>((resolve) => setTimeout(resolve, PROJECT_ACTION_SCOPE_POLL_MS))
   }
   if (getSyncScopeKey() !== expectedScopeKey) {
-    const error = new Error('Workspace session is not connected') as Error & { code: string; status: number }
+    const error = new Error('Project session is not connected') as Error & { code: string; status: number }
     error.code = 'capability_unavailable'
     error.status = 501
     throw error
@@ -786,7 +786,7 @@ export async function createSession(
     useSessionUIStore.getState().setCurrentSession(
       session.id,
       sessionDirectory,
-      workspaceIdFromScopeKey(actionScopeKey()),
+      projectIdFromScopeKey(actionScopeKey()),
     )
     useSessionUIStore.getState().markSessionAsOpenChamberCreated(session.id)
     return session
@@ -1582,9 +1582,9 @@ export async function respondToPermission(
   requestId: string,
   response: "once" | "always" | "reject",
   directoryOverride?: string,
-  workspaceId?: string,
+  projectId?: string,
 ): Promise<void> {
-  if (workspaceId) await waitForWorkspaceActionScope(workspaceId)
+  if (projectId) await waitForProjectActionScope(projectId)
   await waitForConnectionOrThrow()
   const directory = directoryOverride
     || resolveDirectoryForBlockingRequest("permission", sessionId, requestId)
@@ -2047,7 +2047,7 @@ export async function forkFromMessage(sessionId: string, messageId: string): Pro
   useSessionUIStore.getState().setCurrentSession(
     forkedSession.id,
     directory ?? null,
-    workspaceIdFromScopeKey(actionScopeKey()),
+    projectIdFromScopeKey(actionScopeKey()),
   )
 
   // Restore forked message text and file attachments to input

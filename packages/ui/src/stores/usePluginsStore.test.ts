@@ -4,7 +4,7 @@ const originalFetch = globalThis.fetch;
 
 import type { PluginEntry, PluginFile, RegistryResult } from './usePluginsStore';
 
-const activeProjectPath = '/workspace/project';
+const activeProjectPath = '/project/project';
 
 const refreshAfterOpenCodeRestartMock = mock(async () => undefined);
 const startConfigUpdateMock = mock(() => undefined);
@@ -150,7 +150,7 @@ describe('usePluginsStore', () => {
 
     expect(result).toBe(true);
     expect(fetchCalls).toHaveLength(2);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins?directory=%2Fproject%2Fproject');
     expect(usePluginsStore.getState().entries).toEqual([entry]);
     expect(usePluginsStore.getState().files).toEqual([file]);
     expect(usePluginsStore.getState().isLoading).toBe(false);
@@ -181,7 +181,7 @@ describe('usePluginsStore', () => {
     const result = await usePluginsStore.getState().createEntry({ spec: 'a', scope: 'user' });
 
     expect(result.ok).toBe(true);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry?directory=%2Fproject%2Fproject');
     expect(fetchCalls[0]?.init?.method).toBe('POST');
     expect(requestBody(0)).toEqual({ spec: 'a', scope: 'user' });
   });
@@ -200,7 +200,7 @@ describe('usePluginsStore', () => {
     const result = await usePluginsStore.getState().updateEntry('entry-id', { spec: 'b' });
 
     expect(result.ok).toBe(true);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry/entry-id?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry/entry-id?directory=%2Fproject%2Fproject');
     expect(fetchCalls[0]?.init?.method).toBe('PATCH');
     expect(requestBody(0)).toEqual({ spec: 'b' });
   });
@@ -213,9 +213,9 @@ describe('usePluginsStore', () => {
     const result = await usePluginsStore.getState().deleteEntry(entry.id);
 
     expect(result.ok).toBe(true);
-    expect(fetchCalls[2]?.input).toBe(`/api/config/plugins/entry/${encodeURIComponent(entry.id)}?directory=%2Fworkspace%2Fproject`);
+    expect(fetchCalls[2]?.input).toBe(`/api/config/plugins/entry/${encodeURIComponent(entry.id)}?directory=%2Fproject%2Fproject`);
     expect(fetchCalls[2]?.init?.method).toBe('DELETE');
-    expect(fetchCalls[3]?.input).toBe('/api/config/plugins?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[3]?.input).toBe('/api/config/plugins?directory=%2Fproject%2Fproject');
     expect(usePluginsStore.getState().entries).toEqual([]);
     expect(usePluginsStore.getState().selectedId).toBeNull();
   });
@@ -226,7 +226,7 @@ describe('usePluginsStore', () => {
     const result = await usePluginsStore.getState().createFile({ fileName: 'plugin.ts', content: 'export {}', scope: 'user' });
 
     expect(result.ok).toBe(true);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/file?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/file?directory=%2Fproject%2Fproject');
     expect(fetchCalls[0]?.init?.method).toBe('POST');
     expect(requestBody(0)).toEqual({ fileName: 'plugin.ts', content: 'export {}', scope: 'user' });
   });
@@ -254,7 +254,7 @@ describe('usePluginsStore', () => {
 
     const result = await usePluginsStore.getState().readFile(file.id);
 
-    expect(fetchCalls[0]?.input).toBe(`/api/config/plugins/file/${encodeURIComponent(file.id)}?directory=%2Fworkspace%2Fproject`);
+    expect(fetchCalls[0]?.input).toBe(`/api/config/plugins/file/${encodeURIComponent(file.id)}?directory=%2Fproject%2Fproject`);
     expect(result).toEqual({ fileName: 'plugin.ts', scope: 'user', content: 'export {}' });
   });
 
@@ -305,7 +305,7 @@ describe('usePluginsStore', () => {
     await flushPluginFollowUps();
 
     expect(result).toBe(true);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins?directory=%2Fproject%2Fproject');
     expect(registryCalls()).toHaveLength(1);
   });
 
@@ -367,7 +367,7 @@ describe('usePluginsStore', () => {
     const result = await usePluginsStore.getState().updateToLatest('X');
 
     expect(result.ok).toBe(true);
-    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry/X?directory=%2Fworkspace%2Fproject');
+    expect(fetchCalls[0]?.input).toBe('/api/config/plugins/entry/X?directory=%2Fproject%2Fproject');
     expect(requestBody(0)).toEqual({ spec: 'foo@2' });
   });
 

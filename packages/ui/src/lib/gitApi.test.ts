@@ -59,22 +59,22 @@ describe("getGitStatus", () => {
   })
 })
 
-describe("workspace-bound git root resolution", () => {
+describe("project-bound git root resolution", () => {
   test("forwards primary-root resolution to the bound runtime API", async () => {
     let received: string | null = null
     const runtimeGit = {
       resolveGitPrimaryRoot: async (directory: string) => {
         received = directory
-        return { root: "/workspace/root" }
+        return { root: "/project/root" }
       },
     } as Partial<GitAPI> as GitAPI
 
     await withRuntimeGit(runtimeGit, async () => {
-      const result = await resolveGitPrimaryRoot("/workspace/root/feature")
-      expect(result).toBe("/workspace/root")
+      const result = await resolveGitPrimaryRoot("/project/root/feature")
+      expect(result).toBe("/project/root")
     })
 
-    expect(received).toBe("/workspace/root/feature")
+    expect(received).toBe("/project/root/feature")
   })
 
   test("forwards worktree toplevel resolution to the bound runtime API", async () => {
@@ -82,36 +82,36 @@ describe("workspace-bound git root resolution", () => {
     const runtimeGit = {
       resolveGitTopLevel: async (directory: string) => {
         received = directory
-        return { root: "/workspace/root/feature" }
+        return { root: "/project/root/feature" }
       },
     } as Partial<GitAPI> as GitAPI
 
     await withRuntimeGit(runtimeGit, async () => {
-      const result = await resolveGitTopLevel("/workspace/root/feature/src")
-      expect(result).toBe("/workspace/root/feature")
+      const result = await resolveGitTopLevel("/project/root/feature/src")
+      expect(result).toBe("/project/root/feature")
     })
 
-    expect(received).toBe("/workspace/root/feature/src")
+    expect(received).toBe("/project/root/feature/src")
   })
 })
 
-describe("workspace-bound git generation", () => {
+describe("project-bound git generation", () => {
   test("routes commit generation through the registered runtime adapter", async () => {
     let received: { directory: string; files: string[]; options?: { providerId?: string } } | null = null
     const runtimeGit = {
       generateCommitMessage: async (directory: string, files: string[], options?: { providerId?: string }) => {
         received = { directory, files, options }
-        return { message: { subject: "workspace commit", highlights: [] } }
+        return { message: { subject: "project commit", highlights: [] } }
       },
     } as Partial<GitAPI> as GitAPI
 
     await withRuntimeGit(runtimeGit, async () => {
-      const result = await generateCommitMessage("/remote/workspace", ["src/app.ts"], { providerId: "provider" })
-      expect(result.message.subject).toBe("workspace commit")
+      const result = await generateCommitMessage("/remote/project", ["src/app.ts"], { providerId: "provider" })
+      expect(result.message.subject).toBe("project commit")
     })
 
     expect(received).toEqual({
-      directory: "/remote/workspace",
+      directory: "/remote/project",
       files: ["src/app.ts"],
       options: { providerId: "provider" },
     })
@@ -125,21 +125,21 @@ describe("workspace-bound git generation", () => {
         payload: { base: string; head: string; context?: string },
       ) => {
         received = { directory, payload }
-        return { title: "workspace PR", body: "Generated remotely" }
+        return { title: "project PR", body: "Generated remotely" }
       },
     } as Partial<GitAPI> as GitAPI
 
     await withRuntimeGit(runtimeGit, async () => {
-      const result = await generatePullRequestDescription("/remote/workspace", {
+      const result = await generatePullRequestDescription("/remote/project", {
         base: "main",
         head: "feature",
         context: "release",
       })
-      expect(result.title).toBe("workspace PR")
+      expect(result.title).toBe("project PR")
     })
 
     expect(received).toEqual({
-      directory: "/remote/workspace",
+      directory: "/remote/project",
       payload: { base: "main", head: "feature", context: "release" },
     })
   })

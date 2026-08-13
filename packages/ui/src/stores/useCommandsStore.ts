@@ -13,7 +13,7 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 import { noteDeferredRestartFromPayload } from "@/lib/opencode/deferredRestart";
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 
 
 export type CommandScope = 'user' | 'project';
@@ -106,9 +106,9 @@ const removeCommandLocal = (
 const getRequestDirectory = (): string | null => {
   try {
     const boundService = getSyncOpencodeService();
-    if (isWorkspaceRuntimeActive()) {
+    if (isProjectRuntimeActive()) {
       // Commands are still served by the legacy config route. Do not let a
-      // workspace request inherit the ambient project selector's directory.
+      // project request inherit the ambient project selector's directory.
       return boundService.getDirectory()?.trim() || null;
     }
 

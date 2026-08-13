@@ -209,7 +209,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     // Keep non-active-turn rows detached from selection-store churn. The
     // scope-aware store is authoritative; contextStore is a legacy mirror and
-    // must not decide the agent for a workspace session.
+    // must not decide the agent for a project session.
     const selectedSessionAgent = useSelectionStore(
         React.useCallback(
             (state) => isInActiveTurn && sessionId

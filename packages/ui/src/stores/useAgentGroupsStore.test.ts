@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { Session } from '@opencode-ai/sdk/v2';
 
-let scopeKey = 'workspace:one';
+let scopeKey = 'project:one';
 let listCalls = 0;
 let listSessions: () => Promise<{ data: Session[] }>;
 
@@ -52,9 +52,9 @@ const makeSession = (id: string): Session => ({
   time: { created: 1, updated: 2 },
 } as Session);
 
-describe('useAgentGroupsStore workspace ownership', () => {
+describe('useAgentGroupsStore project ownership', () => {
   beforeEach(() => {
-    scopeKey = 'workspace:one';
+    scopeKey = 'project:one';
     listCalls = 0;
     listSessions = async () => ({ data: [makeSession('session-one')] });
     useAgentGroupsStore.setState({
@@ -73,14 +73,14 @@ describe('useAgentGroupsStore workspace ownership', () => {
     expect(useAgentGroupsStore.getState().groups[0]?.sessions[0]?.id).toBe('session-one');
   });
 
-  test('does not publish a late result after the workspace scope changes', async () => {
+  test('does not publish a late result after the project scope changes', async () => {
     let resolveList!: (value: { data: Session[] }) => void;
     listSessions = () => new Promise((resolve) => { resolveList = resolve; });
 
     const load = useAgentGroupsStore.getState().loadGroups();
     await Promise.resolve();
     await Promise.resolve();
-    scopeKey = 'workspace:two';
+    scopeKey = 'project:two';
     resolveList({ data: [makeSession('stale-session')] });
     await load;
 

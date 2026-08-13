@@ -1,9 +1,10 @@
 import { normalizePath } from '@/lib/pathNormalization';
+import { legacyScopeKeyForProjectKey } from '@/projects/identity';
 import { getDeferredSafeStorage } from '@/stores/utils/safeStorage';
 import { countSyncPersistenceSerialization } from '@/sync/performance-diagnostics';
 
 export type ChatDraftIdentity = {
-  /** Workspace scope key for workspace sessions, ambient runtime key otherwise. */
+  /** Project scope key for project sessions, ambient runtime key otherwise. */
   scopeKey: string;
   directory: string;
   sessionId: string | null;
@@ -88,10 +89,33 @@ const writeEnvelope = (envelope: PersistedChatDraftEnvelope): void => {
 export const readChatDraft = (identity: ChatDraftIdentity | null): ChatDraftSnapshot => {
   if (!identity) return { text: '', confirmedMentions: new Set() };
   const envelope = readEnvelope();
-  const persisted = envelope.drafts[getChatDraftIdentityKey(identity)];
+  const persisted = envelope.drafts[getChatDraftIdentityKey(identity)]
+    ?? readLegacyDraft(envelope, identity);
   return persisted
     ? { text: persisted.text, confirmedMentions: new Set(persisted.confirmedMentions) }
     : { text: '', confirmedMentions: new Set() };
+};
+
+/** P-MIG: drafts written before the workspace→project rename keyed their
+ * identity with the `workspace:` scope prefix. Read them under the legacy
+ * key and promote the record to the current `project:` key so the next
+ * write keeps a single record. */
+const readLegacyDraft = (envelope: PersistedChatDraftEnvelope, identity: ChatDraftIdentity): PersistedChatDraft | undefined => {
+  const legacyScopeKey = legacyScopeKeyForProjectKey(identity.scopeKey);
+  if (!legacyScopeKey) return undefined;
+  const legacyIdentity: ChatDraftIdentity = {
+    scopeKey: legacyScopeKey,
+    directory: identity.directory,
+    sessionId: identity.sessionId,
+  };
+  const legacyKey = getChatDraftIdentityKey(legacyIdentity);
+  const persisted = envelope.drafts[legacyKey];
+  if (!persisted) return undefined;
+  const nextDrafts = { ...envelope.drafts };
+  delete nextDrafts[legacyKey];
+  nextDrafts[getChatDraftIdentityKey(identity)] = persisted;
+  writeEnvelope({ version: 2, drafts: nextDrafts });
+  return persisted;
 };
 
 export const writeChatDraft = (

@@ -8,8 +8,8 @@ import { useViewportStore } from '@/sync/viewport-store';
 import { useSessions, useDirectorySync, useSessionMessages, useSessionMessagesResolved } from '@/sync/sync-context';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { ContextUsageDisplay } from '@/components/ui/ContextUsageDisplay';
 import { McpDropdown } from '@/components/mcp/McpDropdown';
 import { ArchiveAllDropdown } from '@/components/session/ArchiveAllDropdown';
@@ -123,16 +123,16 @@ export const VSCodeLayout: React.FC = () => {
   const expandedSidebarResizePointerIdRef = React.useRef<number | null>(null);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const sessions = useSessions();
-  const globalActiveSessions = useWorkspaceSessionIndexStore(
+  const globalActiveSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
   );
-  const globalArchivedSessions = useWorkspaceSessionIndexStore(
+  const globalArchivedSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary),
   );
   const projects = useProjectsStore((state) => state.projects);
   const activeProjectId = useProjectsStore((state) => state.activeProjectId);
 
-  const activeWorkspacePath = React.useMemo(() => {
+  const activeProjectPath = React.useMemo(() => {
     const activeProject = activeProjectId
       ? projects.find((project) => project.id === activeProjectId) ?? null
       : projects[0] ?? null;
@@ -261,18 +261,18 @@ export const VSCodeLayout: React.FC = () => {
     setCurrentView('chat');
   }, []);
 
-  const isSessionInActiveWorkspace = React.useCallback((session: Session): boolean => {
-    if (!activeWorkspacePath) {
+  const isSessionInActiveProject = React.useCallback((session: Session): boolean => {
+    if (!activeProjectPath) {
       return false;
     }
 
     const sessionDirectory = resolveSessionDirectory(session);
     if (sessionDirectory) {
-      return sessionDirectory.toLowerCase() === activeWorkspacePath.toLowerCase();
+      return sessionDirectory.toLowerCase() === activeProjectPath.toLowerCase();
     }
 
     return false;
-  }, [activeWorkspacePath]);
+  }, [activeProjectPath]);
 
   const traversalSessions = React.useMemo(() => {
     const byId = new Map<string, Session>();
@@ -323,7 +323,7 @@ export const VSCodeLayout: React.FC = () => {
 
   const handleArchiveAll = React.useCallback(async () => {
     const store = useSessionUIStore.getState();
-    const rootSessions = traversalSessions.filter((session) => !session.time?.archived && isSessionInActiveWorkspace(session));
+    const rootSessions = traversalSessions.filter((session) => !session.time?.archived && isSessionInActiveProject(session));
     const allIds = collectSessionIdsWithDescendants(traversalSessions, rootSessions);
     if (allIds.length === 0) return;
 
@@ -334,7 +334,7 @@ export const VSCodeLayout: React.FC = () => {
     if (failedIds.length > 0) {
       toast.error(t('vscodeLayout.actions.archiveAllError', { count: failedIds.length }));
     }
-  }, [collectSessionIdsWithDescendants, isSessionInActiveWorkspace, traversalSessions, t]);
+  }, [collectSessionIdsWithDescendants, isSessionInActiveProject, traversalSessions, t]);
 
 
   // Listen for connection status changes

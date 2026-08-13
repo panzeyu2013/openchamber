@@ -12,7 +12,7 @@ import type { TimeFormatPreference } from '@/stores/useUIStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { subscribeOpenchamberEvents } from '@/lib/openchamberEvents';
 import { PROJECT_COLOR_MAP, PROJECT_ICON_MAP, ProjectIconImage } from '@/lib/projectMeta';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
@@ -32,7 +32,7 @@ import {
 import { ScheduledTaskEditorDialog } from './ScheduledTaskEditorDialog';
 import { canonicalizeTimezone } from '@/lib/timezones';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 const scheduleTimes = (task: ScheduledTask): string[] => {
   const raw = Array.isArray(task.schedule.times)
@@ -177,7 +177,7 @@ export function ScheduledTasksDialog() {
   const isMobile = useUIStore((state) => state.isMobile);
   const timeFormatPreference = useUIStore((state) => state.timeFormatPreference);
   const projects = useProjectsStore((state) => state.projects);
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const activeProject = useProjectsStore((state) => state.getActiveProject());
   const homeDirectory = useDirectoryStore((state) => state.homeDirectory);
   const { currentTheme } = useThemeSystem();
@@ -387,14 +387,14 @@ export function ScheduledTasksDialog() {
       const { sessionId } = await runScheduledTaskNow(selectedProjectID, task.id);
       await Promise.all([
         reloadTasks(selectedProjectID, { silent: true }),
-        useWorkspaceSessionIndexStore.getState().refresh(),
+        useProjectSessionIndexStore.getState().refresh(),
       ]);
       toast.success(t('sessions.scheduledTasks.dialog.toast.started'));
       if (sessionId) {
         // Jump straight into the started session; selecting it also closes
         // this surface (MainLayout closes surfaces on session selection).
         const project = projects.find((entry) => entry.id === selectedProjectID);
-        useSessionUIStore.getState().setCurrentSession(sessionId, project?.path ?? null, activeWorkspaceId);
+        useSessionUIStore.getState().setCurrentSession(sessionId, project?.path ?? null, activeProjectId);
         useUIStore.getState().setActiveMainTab('chat');
       }
     } catch (error) {
@@ -402,7 +402,7 @@ export function ScheduledTasksDialog() {
     } finally {
       setMutatingTaskID(null);
     }
-  }, [activeWorkspaceId, selectedProjectID, projects, reloadTasks, t]);
+  }, [activeProjectId, selectedProjectID, projects, reloadTasks, t]);
 
   const projectSelector = (
     <div className="flex flex-col items-start gap-1">

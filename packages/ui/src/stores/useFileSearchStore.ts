@@ -3,16 +3,16 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type { OpencodeService, ProjectFileSearchHit } from '@/lib/opencode/client';
 import { useSessionUIStore } from '@/sync/session-ui-store';
-import { resolveActiveWorkspaceId, useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { workspaceScopeKey } from '@/workspaces/identity';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { resolveActiveProjectId, useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { projectScopeKey } from '@/projects/identity';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
 import { getSyncOpencodeService } from '@/sync/sync-refs';
 
-const resolveActiveWorkspaceScopeKey = (): string => {
+const resolveActiveProjectScopeKey = (): string => {
   const { currentSessionId, currentSessionDirectory } = useSessionUIStore.getState();
-  const sessions = useWorkspaceSessionIndexStore.getState().snapshot?.sessions;
-  const workspaceId = resolveActiveWorkspaceId(sessions, currentSessionId, currentSessionDirectory);
-  return workspaceId ? workspaceScopeKey(workspaceId) : '';
+  const sessions = useProjectSessionIndexStore.getState().snapshot?.sessions;
+  const projectId = resolveActiveProjectId(sessions, currentSessionId, currentSessionDirectory);
+  return projectId ? projectScopeKey(projectId) : '';
 };
 
 const CACHE_TTL_MS = 30_000;
@@ -62,7 +62,7 @@ const buildCacheKey = (
 const cacheKeyMatchesDirectory = (cacheKey: string, directory: string) => {
   try {
     const value: unknown = JSON.parse(cacheKey);
-    return Array.isArray(value) && value[0] === resolveActiveWorkspaceScopeKey() && value[1] === directory;
+    return Array.isArray(value) && value[0] === resolveActiveProjectScopeKey() && value[1] === directory;
   } catch {
     return false;
   }
@@ -80,7 +80,7 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
         }
 
         const normalizedDirectory = directory.trim();
-        const scopeKey = context?.scopeKey ?? resolveActiveWorkspaceScopeKey();
+        const scopeKey = context?.scopeKey ?? resolveActiveProjectScopeKey();
         const normalizedQuery = typeof query === 'string' ? query.trim() : '';
         const includeHidden = Boolean(options?.includeHidden);
         const respectGitignore = options?.respectGitignore ?? true;
@@ -191,15 +191,15 @@ export const useFileSearchStore = create<FileSearchStoreState>()(
 );
 
 /**
- * Search through the current workspace handle when one is mounted. The store
- * keeps the legacy singleton fallback for non-workspace mounts, but callers
- * should use this hook so a workspace search cannot accidentally follow the
+ * Search through the current project handle when one is mounted. The store
+ * keeps the legacy singleton fallback for non-project mounts, but callers
+ * should use this hook so a project search cannot accidentally follow the
  * ambient runtime endpoint.
  */
 export const useScopedFileSearch = (): FileSearchStoreState['searchFiles'] => {
   const searchFiles = useFileSearchStore((state) => state.searchFiles);
-  const { handle } = useWorkspaceRuntime();
-  const scopeKey = handle?.scopeKey ?? resolveActiveWorkspaceScopeKey();
+  const { handle } = useProjectRuntime();
+  const scopeKey = handle?.scopeKey ?? resolveActiveProjectScopeKey();
 
   return React.useCallback(
     (directory, query, limit, options) => searchFiles(directory, query, limit, options, {

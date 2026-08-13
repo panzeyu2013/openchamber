@@ -646,6 +646,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
       cliAvailable,
       extensionVersion: String(this._context.extension?.packageJSON?.version || ''),
       devServerUrl: this._webviewDevServerUrl,
+      apiUrl: readConfiguredControlPlaneOrigin(),
     });
   }
 }

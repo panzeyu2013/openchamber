@@ -86,7 +86,7 @@ export function createContentCachedFiles(files: FilesAPI): { files: FilesAPI; di
         await mutationBarrier;
         if (!active) throw new Error('File cache owner disposed');
         const capturedGeneration = generation;
-        if (options?.allowOutsideWorkspace) return files.readFile!(path, options);
+        if (options?.allowOutsideProject) return files.readFile!(path, options);
         const key = cacheKey(path, options);
         const hit = cache.get(key);
         if (!hit) return readFresh(key, path, options, capturedGeneration);

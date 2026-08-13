@@ -9,8 +9,8 @@ import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useI18n } from '@/lib/i18n';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
 import { getSyncMessages, getSyncOpencodeService, getSyncParts, getSyncScopeKey } from '@/sync/sync-refs';
@@ -20,7 +20,7 @@ import { getFusionSessionTitle, parseMultiRunSessionTitle } from '@/lib/multirun
 import { renderMagicPrompt } from '@/lib/magicPrompts';
 import { AgentSelector } from './AgentSelector';
 import { ModelMultiSelect, generateInstanceId, type ModelSelectionWithId } from './ModelMultiSelect';
-import { useActiveWorkspaceId } from '@/workspaces/useActiveWorkspace';
+import { useActiveProjectId } from '@/projects/useActiveProject';
 
 type FusionSource = {
   session: Session;
@@ -76,12 +76,12 @@ export function MultiRunFusionDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const { t } = useI18n();
-  const activeWorkspaceId = useActiveWorkspaceId();
+  const activeProjectId = useActiveProjectId();
   const liveSessions = useAllLiveSessions();
-  const activeSessions = useWorkspaceSessionIndexStore(
+  const activeSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
   );
-  const archivedSessions = useWorkspaceSessionIndexStore(
+  const archivedSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => s.archived).map(sessionFromSummary),
   );
   const providers = useConfigStore((state) => state.providers);
@@ -169,12 +169,12 @@ export function MultiRunFusionDialog({
         renderMagicPrompt('session.fusion.instructions'),
       ]);
       if (getSyncScopeKey() !== scopeKey) {
-        throw new Error('Fusion was cancelled because the workspace changed.');
+        throw new Error('Fusion was cancelled because the project changed.');
       }
       const fusionSession = await service.createSession({ title: fusionTitle }, directory);
       if (!fusionSession) throw new Error('Failed to create fusion session');
 
-      useSessionUIStore.getState().setCurrentSession(fusionSession.id, directory, activeWorkspaceId);
+      useSessionUIStore.getState().setCurrentSession(fusionSession.id, directory, activeProjectId);
       onOpenChange(false);
 
       await service.sendMessage({

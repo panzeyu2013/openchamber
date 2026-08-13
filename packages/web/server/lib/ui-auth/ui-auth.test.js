@@ -255,13 +255,13 @@ describe('ui auth client credential seam', () => {
       expect(writeRes.statusCode).toBe(401);
     }
 
-    // Workspace catalog read paths are URL-token readable (mini-chat/tray
+    // Project catalog read paths are URL-token readable (mini-chat/tray
     // surfaces may only hold a token)...
     for (const tokenPath of [
-      '/api/workspaces',
-      '/api/workspaces/capabilities',
-      '/api/workspaces/diagnostics',
-      `/api/workspaces/${'ws-1'}/children?path=%2Ftmp`,
+      '/api/projects',
+      '/api/projects/capabilities',
+      '/api/projects/diagnostics',
+      `/api/projects/${'ws-1'}/children?path=%2Ftmp`,
       '/api/connections',
     ]) {
       const separator = tokenPath.includes('?') ? '&' : '?';
@@ -275,7 +275,7 @@ describe('ui auth client credential seam', () => {
     }
 
     // ...but catalog MUTATIONS must never ride a URL token.
-    const createReq = { method: 'POST', path: '/api/workspaces', url: `/api/workspaces?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+    const createReq = { method: 'POST', path: '/api/projects', url: `/api/projects?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
     const createRes = createResponse();
     let createCalled = false;
     await auth.requireAuth(createReq, createRes, () => {
@@ -284,29 +284,29 @@ describe('ui auth client credential seam', () => {
     expect(createCalled).toBe(false);
     expect(createRes.statusCode).toBe(401);
 
-    // Workspace-prefixed runtime sockets (event/terminal WS through the
-    // workspace runtime proxy) authenticate with the same short-lived URL
+    // Project-prefixed runtime sockets (event/terminal WS through the
+    // project runtime proxy) authenticate with the same short-lived URL
     // token as the non-prefixed socket paths they proxy to.
     for (const tokenPath of [
-      '/api/workspaces/ws-1/runtime/api/event/ws',
-      '/api/workspaces/ws-1/runtime/api/global/event/ws',
-      '/api/workspaces/ws-1/runtime/api/terminal/ws',
+      '/api/projects/ws-1/runtime/api/event/ws',
+      '/api/projects/ws-1/runtime/api/global/event/ws',
+      '/api/projects/ws-1/runtime/api/terminal/ws',
     ]) {
       const separator = tokenPath.includes('?') ? '&' : '?';
       const wsReq = { method: 'GET', path: tokenPath, url: `${tokenPath}${separator}oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
       expect(await auth.ensureSessionToken(wsReq, null)).toBe('client:device-1');
     }
 
-    // Workspace-prefixed paths that are NOT sockets never accept a URL token.
-    const nonSocketWsReq = { method: 'GET', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
+    // Project-prefixed paths that are NOT sockets never accept a URL token.
+    const nonSocketWsReq = { method: 'GET', path: '/api/projects/ws-1/runtime/api/session', url: `/api/projects/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { upgrade: 'websocket' } };
     expect(await auth.ensureSessionToken(nonSocketWsReq, null)).toBeNull();
 
-    // Read-only workspace runtime paths also accept the short-lived control-
+    // Read-only project runtime paths also accept the short-lived control-
     // plane token; this covers cookie-less mobile/tray HTTP and SSE clients.
     for (const tokenPath of [
-      '/api/workspaces/ws-1/runtime/api/session',
-      '/api/workspaces/ws-1/runtime/api/fs/read?path=%2Fworkspace%2Ffile.ts',
-      '/api/workspaces/ws-1/runtime/api/global/event',
+      '/api/projects/ws-1/runtime/api/session',
+      '/api/projects/ws-1/runtime/api/fs/read?path=%2Fproject%2Ffile.ts',
+      '/api/projects/ws-1/runtime/api/global/event',
     ]) {
       const separator = tokenPath.includes('?') ? '&' : '?';
       const wsHttpReq = { method: 'GET', path: tokenPath.split('?')[0], url: `${tokenPath}${separator}oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
@@ -321,8 +321,8 @@ describe('ui auth client credential seam', () => {
     // Control-plane runtime namespaces and mutations remain unavailable via a
     // URL token.
     for (const tokenPath of [
-      '/api/workspaces/ws-1/runtime/api/config/settings',
-      '/api/workspaces/ws-1/runtime/api/fs/home',
+      '/api/projects/ws-1/runtime/api/config/settings',
+      '/api/projects/ws-1/runtime/api/fs/home',
     ]) {
       const wsHttpReq = { method: 'GET', path: tokenPath, url: `${tokenPath}?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
       const wsHttpRes = createResponse();
@@ -334,7 +334,7 @@ describe('ui auth client credential seam', () => {
       expect(wsHttpRes.statusCode).toBe(401);
     }
 
-    const wsWriteReq = { method: 'POST', path: '/api/workspaces/ws-1/runtime/api/session', url: `/api/workspaces/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
+    const wsWriteReq = { method: 'POST', path: '/api/projects/ws-1/runtime/api/session', url: `/api/projects/ws-1/runtime/api/session?oc_url_token=${encodeURIComponent(urlToken)}`, headers: { accept: 'application/json' } };
     const wsWriteRes = createResponse();
     let wsWriteCalled = false;
     await auth.requireAuth(wsWriteReq, wsWriteRes, () => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, mock, test } from 'bun:test';
 
-const activeProjectPath = '/workspace/project';
+const activeProjectPath = '/project/project';
 
 let listCommandsWithDetailsCalls = 0;
 let listCommandsWithDetailsImpl: () => Promise<unknown[]> = async () => [];

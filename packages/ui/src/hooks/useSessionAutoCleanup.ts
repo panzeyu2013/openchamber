@@ -1,8 +1,8 @@
 import React from 'react';
 import type { Session } from '@opencode-ai/sdk/v2';
 import { resolveSessionDirectory } from '@/lib/sessionDirectory';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { getSyncOpencodeService, getSyncScopeKey } from '@/sync/sync-refs';
 import { useUIStore } from '@/stores/useUIStore';
@@ -79,19 +79,19 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
   const autoDeleteLastRunAt = useUIStore((state) => state.autoDeleteLastRunAt);
   const setAutoDeleteLastRunAt = useUIStore((state) => state.setAutoDeleteLastRunAt);
   const needsGlobalSessions = enabled && (!autoRun || autoDeleteEnabled);
-  const globalSessions = useWorkspaceSessionIndexStore(React.useCallback(
+  const globalSessions = useProjectSessionIndexStore(React.useCallback(
     (state) => needsGlobalSessions
       ? selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary)
       : EMPTY_SESSIONS,
     [needsGlobalSessions],
   ));
-  const hasLoadedGlobalSessions = useWorkspaceSessionIndexStore((state) => state.status === 'ready');
+  const hasLoadedGlobalSessions = useProjectSessionIndexStore((state) => state.status === 'ready');
 
   const [isRunning, setIsRunning] = React.useState(false);
   const runningRef = React.useRef(false);
 
   React.useEffect(() => {
-    void useWorkspaceSessionIndexStore.getState().refresh();
+    void useProjectSessionIndexStore.getState().refresh();
   }, []);
 
   const candidates = React.useMemo(() => {
@@ -127,11 +127,11 @@ export const useSessionAutoCleanup = (enabledOrOptions?: boolean | CleanupOption
       }
 
       const operationScopeKey = getSyncScopeKey();
-      await useWorkspaceSessionIndexStore.getState().refresh();
+      await useProjectSessionIndexStore.getState().refresh();
       if (getSyncScopeKey() !== operationScopeKey) {
         return { completedIds: [], failedIds: [], action: sessionRetentionAction, skippedReason: 'scope-changed' };
       }
-      const indexSnapshot = useWorkspaceSessionIndexStore.getState().snapshot;
+      const indexSnapshot = useProjectSessionIndexStore.getState().snapshot;
       const sessions = selectSessionsForConnection(indexSnapshot, 'local')
         .filter((s) => !s.archived)
         .map(sessionFromSummary);

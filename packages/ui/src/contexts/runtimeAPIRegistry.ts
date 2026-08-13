@@ -1,21 +1,21 @@
 import type { RuntimeAPIs } from '@/lib/api/types';
 
 let registeredRuntimeAPIs: RuntimeAPIs | null = null;
-let workspaceRuntimeAPIs: RuntimeAPIs | null = null;
-let workspaceRuntimeActive = false;
+let projectRuntimeAPIs: RuntimeAPIs | null = null;
+let projectRuntimeActive = false;
 
 const createCapabilityUnavailableError = (): Error & { code: string; status: number } => {
-  const error = new Error('Workspace settings are not available for a workspace runtime') as Error & {
+  const error = new Error('Project settings are not available for a project runtime') as Error & {
     code: string;
     status: number;
   };
-  error.name = 'WorkspaceCapabilityUnavailableError';
+  error.name = 'ProjectCapabilityUnavailableError';
   error.code = 'capability_unavailable';
   error.status = 501;
   return error;
 };
 
-const workspaceSettingsUnavailable: RuntimeAPIs['settings'] = {
+const projectSettingsUnavailable: RuntimeAPIs['settings'] = {
   load: async () => {
     throw createCapabilityUnavailableError();
   },
@@ -31,22 +31,22 @@ export const registerRuntimeAPIs = (apis: RuntimeAPIs | null): void => {
 /**
  * Runtime API consumers outside React (stores and persistence) use this
  * registry. Keep their view aligned with the provider without replacing the
- * ambient base registration used by legacy/non-workspace mounts.
+ * ambient base registration used by legacy/non-project mounts.
  */
-export const registerWorkspaceRuntimeAPIs = (apis: RuntimeAPIs | null): void => {
-  workspaceRuntimeAPIs = apis;
+export const registerProjectRuntimeAPIs = (apis: RuntimeAPIs | null): void => {
+  projectRuntimeAPIs = apis;
 };
 
-/** The workspace provider sets this before its child effects run. */
-export const setWorkspaceRuntimeActive = (active: boolean): void => {
-  workspaceRuntimeActive = active;
+/** The project provider sets this before its child effects run. */
+export const setProjectRuntimeActive = (active: boolean): void => {
+  projectRuntimeActive = active;
 };
 
-export const isWorkspaceRuntimeActive = (): boolean => workspaceRuntimeActive;
+export const isProjectRuntimeActive = (): boolean => projectRuntimeActive;
 
 export const getRegisteredRuntimeAPIs = (): RuntimeAPIs | null => {
-  if (workspaceRuntimeAPIs) {
-    return workspaceRuntimeAPIs;
+  if (projectRuntimeAPIs) {
+    return projectRuntimeAPIs;
   }
 
   let apis = registeredRuntimeAPIs;
@@ -55,8 +55,8 @@ export const getRegisteredRuntimeAPIs = (): RuntimeAPIs | null => {
       .__OPENCHAMBER_RUNTIME_APIS__ ?? null;
   }
 
-  if (workspaceRuntimeActive && apis) {
-    return { ...apis, settings: workspaceSettingsUnavailable };
+  if (projectRuntimeActive && apis) {
+    return { ...apis, settings: projectSettingsUnavailable };
   }
 
   return apis;

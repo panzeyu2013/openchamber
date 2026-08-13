@@ -36,7 +36,7 @@ const ALLOWED_WS_PATHS = new Set([
 ]);
 
 // WsOpen is an application payload, not a raw HTTP upgrade. Only the headers
-// required by workspace adapters are allowed through; Origin and the relay
+// required by project adapters are allowed through; Origin and the relay
 // connection marker are always overwritten below. In particular, clients
 // cannot smuggle Cookie, Host, or arbitrary hop-by-hop headers into loopback.
 const ALLOWED_WS_TUNNEL_HEADERS = new Set([
@@ -46,13 +46,13 @@ const ALLOWED_WS_TUNNEL_HEADERS = new Set([
   'x-openchamber-directory-encoding',
 ]);
 
-// Workspace-prefixed runtime sockets forwarded by the central workspace
+// Project-prefixed runtime sockets forwarded by the central project
 // upgrade dispatcher. The same exact paths as above under
-// `/api/workspaces/:workspaceId/runtime`; the loopback server authenticates
+// `/api/projects/:projectId/runtime`; the loopback server authenticates
 // them with the tunneled `oc_url_token` exactly like the non-prefixed paths.
-const WORKSPACE_RUNTIME_WS_PATH_PATTERN = /^\/api\/workspaces\/[^/]+\/runtime\/api\/(event\/ws|global\/event\/ws|terminal\/ws)$/;
+const PROJECT_RUNTIME_WS_PATH_PATTERN = /^\/api\/projects\/[^/]+\/runtime\/api\/(event\/ws|global\/event\/ws|terminal\/ws)$/;
 
-const isAllowedWsPath = (pathname) => ALLOWED_WS_PATHS.has(pathname) || WORKSPACE_RUNTIME_WS_PATH_PATTERN.test(pathname);
+const isAllowedWsPath = (pathname) => ALLOWED_WS_PATHS.has(pathname) || PROJECT_RUNTIME_WS_PATH_PATTERN.test(pathname);
 
 // Hop-by-hop headers stripped from tunneled requests; `host` is set by fetch
 // to the loopback origin. content-length is dropped too because the body is

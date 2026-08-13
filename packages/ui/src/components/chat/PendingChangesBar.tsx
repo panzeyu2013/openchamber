@@ -108,7 +108,7 @@ export const PendingChangesBar: React.FC = React.memo(() => {
                 <Icon name="file-edit" className="h-3.5 w-3.5 flex-shrink-0 text-[var(--status-warning)]" />
                 <span className="min-w-0 typography-ui-label text-foreground flex-shrink-0">{labelHead}</span>
                 <span className="status-row__changed-label min-w-0 typography-ui-label text-foreground truncate">
-                    {t('chat.pendingChanges.changedInWorkspace')}
+                    {t('chat.pendingChanges.changedInProject')}
                 </span>
                 <span className="text-[0.75rem] tabular-nums inline-flex items-baseline gap-1 flex-shrink-0">
                     {totalAdded > 0 ? <span style={{ color: 'var(--status-success)' }}>+{totalAdded}</span> : null}

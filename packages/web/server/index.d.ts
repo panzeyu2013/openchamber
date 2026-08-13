@@ -8,6 +8,19 @@ export interface WebUiServerController {
   getOpenCodePort: () => number | null;
   isReady: () => boolean;
   restartOpenCode: () => Promise<void>;
+  /**
+   * Registers a privileged workspace Connection Broker adapter at runtime
+   * (used by the Electron main process for freshly created SSH instances):
+   * seeds its private profile when none exists and starts the session-index
+   * observer. Idempotent for a duplicate adapter.
+   */
+  registerWorkspaceConnectionAdapter?: (adapter: unknown) => Promise<boolean>;
+  /**
+   * Detaches a privileged adapter at runtime (SSH instance removed). Stops
+   * the observer; the saved profile is kept so catalog workspaces stay
+   * resolvable as offline.
+   */
+  unregisterWorkspaceConnectionAdapter?: (connectionId: string) => Promise<boolean>;
   stop: (options?: { exitProcess?: boolean }) => Promise<void>;
 }
 

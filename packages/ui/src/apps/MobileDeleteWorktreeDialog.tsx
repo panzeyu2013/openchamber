@@ -9,11 +9,11 @@ import { cn } from '@/lib/utils';
 import { getWorktreeStatus } from '@/lib/worktrees/worktreeStatus';
 import { removeProjectWorktree, type ProjectRef } from '@/lib/worktrees/worktreeManager';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
-import { useWorkspaceSessionIndexStore } from '@/workspaces/session-index-store';
-import { selectSessionsForConnection, sessionFromSummary } from '@/workspaces/session-summary';
+import { useProjectSessionIndexStore } from '@/projects/session-index-store';
+import { selectSessionsForConnection, sessionFromSummary } from '@/projects/session-summary';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useAllLiveSessions } from '@/sync/sync-context';
-import { isWorkspaceRuntimeActive } from '@/contexts/runtimeAPIRegistry';
+import { isProjectRuntimeActive } from '@/contexts/runtimeAPIRegistry';
 import type { WorktreeMetadata } from '@/types/worktree';
 
 type MobileDeleteWorktreeDialogProps = {
@@ -48,7 +48,7 @@ export const MobileDeleteWorktreeDialog: React.FC<MobileDeleteWorktreeDialogProp
 }) => {
   const { t } = useI18n();
   const liveSessions = useAllLiveSessions();
-  const globalActiveSessions = useWorkspaceSessionIndexStore(
+  const globalActiveSessions = useProjectSessionIndexStore(
     (state) => selectSessionsForConnection(state.snapshot, 'local').filter((s) => !s.archived).map(sessionFromSummary),
   );
   const archiveSessions = useSessionUIStore((state) => state.archiveSessions);
@@ -105,12 +105,12 @@ export const MobileDeleteWorktreeDialog: React.FC<MobileDeleteWorktreeDialogProp
 
         // If the removed worktree was the active directory, fall back to the project root.
         const sessionTarget = useSessionUIStore.getState();
-        const workspaceTargetActive = isWorkspaceRuntimeActive()
+        const projectTargetActive = isProjectRuntimeActive()
           || Boolean(
-            sessionTarget.currentWorkspaceId
-            || (sessionTarget.newSessionDraft?.open && sessionTarget.newSessionDraft.workspaceId),
+            sessionTarget.currentProjectId
+            || (sessionTarget.newSessionDraft?.open && sessionTarget.newSessionDraft.projectId),
           );
-        if (!workspaceTargetActive
+        if (!projectTargetActive
           && normalizePath(currentDirectory) === worktreePath
           && normalizePath(project.path)) {
           useDirectoryStore.getState().setDirectory(normalizePath(project.path), { showOverlay: false });

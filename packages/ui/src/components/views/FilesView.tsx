@@ -64,7 +64,7 @@ import { useDirectoryShowHidden } from '@/lib/directoryShowHidden';
 import { useFilesViewShowGitignored } from '@/lib/filesViewShowGitignored';
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
-import { useWorkspaceRuntime } from '@/workspaces/workspace-runtime-context';
+import { useProjectRuntime } from '@/projects/project-runtime-context';
 import { FileTypeIcon } from '@/components/icons/FileTypeIcon';
 import { Icon } from "@/components/icon/Icon";
 import { useMessageTTS } from '@/hooks/useMessageTTS';
@@ -725,7 +725,7 @@ const useAssetAuthRefresh = (
 export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const { t } = useI18n();
   const { files, runtime } = useRuntimeAPIs();
-  const { handle: workspaceHandle } = useWorkspaceRuntime();
+  const { handle: projectHandle } = useProjectRuntime();
   const { currentTheme, availableThemes, lightThemeId, darkThemeId } = useThemeSystem();
   const { isMobile, isTablet, screenWidth } = useDeviceInfo();
   const isBrowserClient = isBrowserClientRuntime(runtime.platform);
@@ -852,15 +852,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     }
   }, [openPaths, root, selectedPath, setSelectedPath]);
 
-  const selectedFileIsOutsideWorkspace = Boolean(root && selectedFilePath && !isPathWithinRoot(selectedFilePath, root));
-  const selectedOutsideFileGrant = selectedFileIsOutsideWorkspace ? getOutsideFileGrant(selectedFilePath) : undefined;
+  const selectedFileIsOutsideProject = Boolean(root && selectedFilePath && !isPathWithinRoot(selectedFilePath, root));
+  const selectedOutsideFileGrant = selectedFileIsOutsideProject ? getOutsideFileGrant(selectedFilePath) : undefined;
   const selectedFileReadOptions = React.useMemo(
     () => ({
-      allowOutsideWorkspace: mode === 'editor-only' && selectedFileIsOutsideWorkspace,
+      allowOutsideProject: mode === 'editor-only' && selectedFileIsOutsideProject,
       outsideFileGrant: selectedOutsideFileGrant,
       directory: root || undefined,
     }),
-    [mode, selectedFileIsOutsideWorkspace, selectedOutsideFileGrant, root],
+    [mode, selectedFileIsOutsideProject, selectedOutsideFileGrant, root],
   );
 
   // Editor tabs horizontal scroll fades
@@ -905,7 +905,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const [fileLoading, setFileLoading] = React.useState(false);
   const [fileError, setFileError] = React.useState<string | null>(null);
   const [desktopImageSrc, setDesktopImageSrc] = React.useState<string>('');
-  const [workspaceBinaryAssetDataUrl, setWorkspaceBinaryAssetDataUrl] = React.useState<string>('');
+  const [projectBinaryAssetDataUrl, setProjectBinaryAssetDataUrl] = React.useState<string>('');
   const desktopImageBlobUrlRef = React.useRef<string>('');
 
   const [loadedFilePath, setLoadedFilePath] = React.useState<string | null>(null);
@@ -1541,15 +1541,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     };
   }, [currentDirectory, debouncedSearchQuery, searchFiles, showHidden, showGitignored]);
 
-  const readFile = React.useCallback(async (path: string, options?: { allowOutsideWorkspace?: boolean; outsideFileGrant?: string; optional?: boolean }): Promise<string> => {
+  const readFile = React.useCallback(async (path: string, options?: { allowOutsideProject?: boolean; outsideFileGrant?: string; optional?: boolean }): Promise<string> => {
     if (files.readFile) {
       const result = await files.readFile(path, { ...(options ?? {}), directory: root || undefined });
       return result.content ?? '';
     }
 
     const params = new URLSearchParams({ path });
-    if (options?.allowOutsideWorkspace) {
-      params.set('allowOutsideWorkspace', 'true');
+    if (options?.allowOutsideProject) {
+      params.set('allowOutsideProject', 'true');
     }
     if (options?.outsideFileGrant) {
       params.set('outsideFileGrant', options.outsideFileGrant);
@@ -1570,7 +1570,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     return response.text();
   }, [files, root, t]);
 
-  const readFileStat = React.useCallback(async (path: string, options?: { allowOutsideWorkspace?: boolean; outsideFileGrant?: string }): Promise<FileStatSnapshot | null> => {
+  const readFileStat = React.useCallback(async (path: string, options?: { allowOutsideProject?: boolean; outsideFileGrant?: string }): Promise<FileStatSnapshot | null> => {
     if (files.statFile) {
       const result = await files.statFile(path, { ...(options ?? {}), directory: root || undefined });
       return {
@@ -1868,7 +1868,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
     const outsideFileGrant = getOutsideFileGrant(node.path);
     const readOptions = {
-      allowOutsideWorkspace: mode === 'editor-only' && Boolean(root) && !isPathWithinRoot(node.path, root),
+      allowOutsideProject: mode === 'editor-only' && Boolean(root) && !isPathWithinRoot(node.path, root),
       outsideFileGrant,
     };
 
@@ -2382,7 +2382,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
   const canCopyPath = Boolean(selectedFile && displaySelectedPath.length > 0);
   // Keep image/SVG on the preview path: `isBinaryFile` excludes `.svg`, so binary
   // alone would flip canEdit/isTextFile true and show a dead edit toggle + no-op Save.
-  const canEdit = Boolean(selectedFile && !selectedFileIsOutsideWorkspace && !isSelectedBinary && !isSelectedImage && files.writeFile && fileContent.length <= MAX_VIEW_CHARS);
+  const canEdit = Boolean(selectedFile && !selectedFileIsOutsideProject && !isSelectedBinary && !isSelectedImage && files.writeFile && fileContent.length <= MAX_VIEW_CHARS);
   const isMarkdown = Boolean(selectedFile?.path && isMarkdownFile(selectedFile.path));
   const isJson = Boolean(selectedFile?.path && isJsonFile(selectedFile.path));
   const isHtml = Boolean(selectedFile?.path && isHtmlFile(selectedFile.path));
@@ -3002,15 +3002,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     [lightTheme.metadata.id, darkTheme.metadata.id],
   );
 
-  const imageAssetAuthKey = !workspaceHandle && selectedFile?.path && isSelectedImage && !runtime.isDesktop && !isSelectedSvg
-    ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideWorkspace ? 'outside' : 'workspace'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
+  const imageAssetAuthKey = !projectHandle && selectedFile?.path && isSelectedImage && !runtime.isDesktop && !isSelectedSvg
+    ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideProject ? 'outside' : 'project'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
     : '';
 
-  const pdfAssetAuthKey = !workspaceHandle && selectedFile?.path && isSelectedPdf
-    ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideWorkspace ? 'outside' : 'workspace'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
+  const pdfAssetAuthKey = !projectHandle && selectedFile?.path && isSelectedPdf
+    ? `${selectedFile.path}|${selectedFileReadOptions.allowOutsideProject ? 'outside' : 'project'}|${selectedFileReadOptions.outsideFileGrant ?? ''}`
     : '';
 
-  const htmlAssetAuthKey = !workspaceHandle && selectedFile?.path && isHtml && htmlViewMode === 'preview' && !runtime.isVSCode
+  const htmlAssetAuthKey = !projectHandle && selectedFile?.path && isHtml && htmlViewMode === 'preview' && !runtime.isVSCode
     ? selectedFile.path
     : '';
 
@@ -3028,18 +3028,18 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
   React.useEffect(() => {
     const path = selectedFile?.path;
-    const shouldLoadWorkspaceBinary = Boolean(
-      workspaceHandle
+    const shouldLoadProjectBinary = Boolean(
+      projectHandle
       && path
       && ((isSelectedImage && !isSelectedSvg) || isSelectedPdf),
     );
-    if (!shouldLoadWorkspaceBinary || !path) {
-      setWorkspaceBinaryAssetDataUrl((previous) => (previous ? '' : previous));
+    if (!shouldLoadProjectBinary || !path) {
+      setProjectBinaryAssetDataUrl((previous) => (previous ? '' : previous));
       return;
     }
 
     let cancelled = false;
-    setWorkspaceBinaryAssetDataUrl('');
+    setProjectBinaryAssetDataUrl('');
     if (!files.readFileBinary) {
       setFileError(t('filesView.error.readFileFailed'));
       return () => {
@@ -3049,7 +3049,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
 
     void files.readFileBinary(path, selectedFileReadOptions)
       .then((result) => {
-        if (!cancelled) setWorkspaceBinaryAssetDataUrl(result.dataUrl);
+        if (!cancelled) setProjectBinaryAssetDataUrl(result.dataUrl);
       })
       .catch((error) => {
         if (!cancelled) {
@@ -3060,11 +3060,11 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
     return () => {
       cancelled = true;
     };
-  }, [files, isSelectedImage, isSelectedPdf, isSelectedSvg, selectedFile?.path, selectedFileReadOptions, t, workspaceHandle]);
+  }, [files, isSelectedImage, isSelectedPdf, isSelectedSvg, selectedFile?.path, selectedFileReadOptions, t, projectHandle]);
 
   const imageSrc = selectedFile?.path && isSelectedImage
-    ? (workspaceHandle && !isSelectedSvg
-      ? workspaceBinaryAssetDataUrl
+    ? (projectHandle && !isSelectedSvg
+      ? projectBinaryAssetDataUrl
       : runtime.isDesktop
       ? (isSelectedSvg
         ? `data:${getImageMimeType(selectedFile.path)};utf8,${encodeURIComponent(fileContent)}`
@@ -3073,18 +3073,18 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
         ? `data:${getImageMimeType(selectedFile.path)};utf8,${encodeURIComponent(fileContent)}`
         : imageAssetAuthReadyKey === imageAssetAuthKey ? getRuntimeUrlResolver().authenticatedAsset('/api/fs/raw', {
           path: selectedFile.path,
-          allowOutsideWorkspace: selectedFileReadOptions.allowOutsideWorkspace ? 'true' : undefined,
+          allowOutsideProject: selectedFileReadOptions.allowOutsideProject ? 'true' : undefined,
           outsideFileGrant: selectedFileReadOptions.outsideFileGrant,
           directory: root || undefined,
         }) : ''))
     : '';
 
   const pdfSrc = selectedFile?.path && isSelectedPdf && pdfAssetAuthReadyKey === pdfAssetAuthKey
-    ? (workspaceHandle
-      ? workspaceBinaryAssetDataUrl
+    ? (projectHandle
+      ? projectBinaryAssetDataUrl
       : getRuntimeUrlResolver().authenticatedAsset('/api/fs/raw', {
       path: selectedFile.path,
-      allowOutsideWorkspace: selectedFileReadOptions.allowOutsideWorkspace ? 'true' : undefined,
+      allowOutsideProject: selectedFileReadOptions.allowOutsideProject ? 'true' : undefined,
       outsideFileGrant: selectedFileReadOptions.outsideFileGrant,
       directory: root || undefined,
     }))
@@ -3127,7 +3127,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
           const response = await runtimeFetch('/api/fs/raw', {
             query: {
               path: selectedFile.path,
-              allowOutsideWorkspace: selectedFileReadOptions.allowOutsideWorkspace ? 'true' : undefined,
+              allowOutsideProject: selectedFileReadOptions.allowOutsideProject ? 'true' : undefined,
               outsideFileGrant: selectedFileReadOptions.outsideFileGrant,
               directory: root || undefined,
             },
@@ -4013,11 +4013,11 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full' }) => {
             <div className="h-full overflow-hidden">
               <iframe
                 key={htmlPreviewNonce}
-                src={!workspaceHandle && !runtime.isVSCode && htmlAssetAuthReadyKey === htmlAssetAuthKey ? (() => {
+                src={!projectHandle && !runtime.isVSCode && htmlAssetAuthReadyKey === htmlAssetAuthKey ? (() => {
                   const encoded = selectedFile.path.split('/').map((segment) => encodeURIComponent(segment)).join('/');
                   return getRuntimeUrlResolver().authenticatedAsset(`/api/fs/serve${encoded.startsWith('/') ? encoded : `/${encoded}`}`);
                 })() : undefined}
-                srcDoc={runtime.isVSCode || workspaceHandle ? (() => {
+                srcDoc={runtime.isVSCode || projectHandle ? (() => {
                   const basePath = selectedFile.path.substring(0, selectedFile.path.lastIndexOf('/') + 1);
                   if (!basePath) return fileContent;
                   return fileContent.replace(/<head([^>]*)>/i, `<head$1><base href="${basePath}">`);

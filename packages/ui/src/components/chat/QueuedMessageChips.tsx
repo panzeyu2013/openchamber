@@ -121,12 +121,12 @@ export const QueuedMessageChips = memo(({ onEditMessage, onSendMessage }: Queued
             [currentSessionId],
         ),
     );
-    const currentWorkspaceId = useSessionUIStore((state) => state.currentWorkspaceId);
+    const currentProjectId = useSessionUIStore((state) => state.currentProjectId);
     const target = currentSessionId
         ? createMessageQueueTarget(
             currentSessionId,
             currentSessionDirectory,
-            resolveSessionScopeKey(currentSessionId, currentSessionDirectory, currentWorkspaceId),
+            resolveSessionScopeKey(currentSessionId, currentSessionDirectory, currentProjectId),
           )
         : null;
     const queueKey = target ? getMessageQueueKey(target) : null;
